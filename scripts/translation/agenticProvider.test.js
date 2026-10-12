@@ -158,6 +158,27 @@ test('parseCliArgs accepts --codex-home', () => {
   assert.equal(options.codexHome, '/tmp/codex-home');
 });
 
+test('parseCliArgs defaults and validates --reasoning-effort', () => {
+  const base = ['run', '--site-dir', '/tmp/site', '--manifest', 'tmp/m.json', '--report', 'tmp/r.json', '--model', 'm', '--base-url', 'https://x/v1', '--api-key-env', 'KEY'];
+  assert.equal(parseCliArgs(base).reasoningEffort, 'medium');
+  assert.equal(parseCliArgs([...base, '--reasoning-effort', 'low']).reasoningEffort, 'low');
+  assert.throws(() => parseCliArgs([...base, '--reasoning-effort', 'summary']), /--reasoning-effort must be one of/);
+});
+
+test('codexThreadConfig pins summaries off so gateways cannot mangle the reasoning object', () => {
+  const {codexThreadConfig, AGENTIC_REASONING_EFFORTS, DEFAULT_REASONING_EFFORT} = require('./agenticProvider');
+  const config = codexThreadConfig({baseUrl: 'https://gateway/v1', reasoningEffort: 'medium'});
+  // A `summary` key anywhere in the reasoning object makes litellm (<= v1.100)
+  // forward the whole dict as reasoning_effort, which DeepSeek rejects with 422.
+  assert.equal(config.model_reasoning_summary, 'none');
+  assert.equal(config.model_reasoning_effort, 'medium');
+  assert.equal(config.model_provider, 'agenticgateway');
+  assert.equal(config.model_providers.agenticgateway.wire_api, 'responses');
+  assert.ok(DEFAULT_REASONING_EFFORT === 'medium');
+  assert.deepEqual([...AGENTIC_REASONING_EFFORTS], ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra', 'max']);
+  assert.throws(() => codexThreadConfig({baseUrl: 'https://gateway/v1', reasoningEffort: 'summary'}), /reasoning effort must be one of/);
+});
+
 test('preflightAgent passes when the agent writes, the validator runs, and OK is reported', async () => {
   await withSite(async siteDir => {
     const calls = [];
