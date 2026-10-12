@@ -179,6 +179,28 @@ test('codexThreadConfig pins summaries off so gateways cannot mangle the reasoni
   assert.throws(() => codexThreadConfig({baseUrl: 'https://gateway/v1', reasoningEffort: 'summary'}), /reasoning effort must be one of/);
 });
 
+test('createCodexCall threads reasoningEffort into the codex config and defaults to medium', async () => {
+  const {createCodexCall, DEFAULT_REASONING_EFFORT} = require('./agenticProvider');
+  const constructed = [];
+  class StubCodex {
+    constructor(options) {
+      constructed.push(options);
+      this.thread = {run: async () => ({finalResponse: 'OK', usage: undefined})};
+    }
+    startThread() { return this.thread; }
+  }
+  const loadSdk = async () => ({Codex: StubCodex});
+  const low = await createCodexCall({model: 'm', baseUrl: 'https://x/v1', apiKey: 'k', workingDirectory: os.tmpdir(), reasoningEffort: 'low', loadSdk});
+  await low({phase: 'probe', prompt: 'hi', item: null});
+  const defaulted = await createCodexCall({model: 'm', baseUrl: 'https://x/v1', apiKey: 'k', workingDirectory: os.tmpdir(), loadSdk});
+  await defaulted({phase: 'probe', prompt: 'hi', item: null});
+  assert.equal(constructed.length, 2);
+  assert.equal(constructed[0].config.model_reasoning_effort, 'low');
+  assert.equal(constructed[0].config.model_reasoning_summary, 'none');
+  assert.equal(constructed[1].config.model_reasoning_effort, DEFAULT_REASONING_EFFORT);
+  assert.equal(constructed[1].config.model_reasoning_summary, 'none');
+});
+
 test('preflightAgent passes when the agent writes, the validator runs, and OK is reported', async () => {
   await withSite(async siteDir => {
     const calls = [];

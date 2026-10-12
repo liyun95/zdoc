@@ -50,6 +50,9 @@ const MAX_FAILURE_ERROR_LENGTH = 2000
 // the whole `reasoning` dict whenever it carries a `summary` key, which
 // DeepSeek rejects with 422 "unknown variant `summary`" — so the wire shape
 // must be `reasoning: {effort: <value>}` with summaries disabled.
+// 'none' is accepted by the codex binary even though the SDK .d.ts omits it;
+// codex's own 'persistent' effort is excluded (it maps to a nonstandard wire
+// value DeepSeek would reject).
 const AGENTIC_REASONING_EFFORTS = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra', 'max'])
 const DEFAULT_REASONING_EFFORT = 'medium'
 
@@ -561,11 +564,12 @@ async function runAgenticTranslation({siteDir, manifest, callCodex, validate, ma
 }
 
 // Network adapter over the Codex SDK. Kept separate from the tested library
-// surface above so tests inject a fake callCodex and never touch the network.
-async function createCodexCall({model, baseUrl, apiKey, workingDirectory, timeoutMs = 20 * 60 * 1000, codexHome, sandboxMode = 'workspace-write', usageTracker = null, reasoningEffort = DEFAULT_REASONING_EFFORT}) {
+// surface above so tests inject a fake callCodex and never touch the network;
+// loadSdk exists so a test can pin this adapter's config assembly the same way.
+async function createCodexCall({model, baseUrl, apiKey, workingDirectory, timeoutMs = 20 * 60 * 1000, codexHome, sandboxMode = 'workspace-write', usageTracker = null, reasoningEffort = DEFAULT_REASONING_EFFORT, loadSdk = () => import('@openai/codex-sdk')}) {
   if (!['read-only', 'workspace-write', 'danger-full-access'].includes(sandboxMode)) throw new Error('Unsupported agentic sandbox mode')
 
-  const {Codex} = await import('@openai/codex-sdk')
+  const {Codex} = await loadSdk()
   if (codexHome) fs.mkdirSync(path.resolve(codexHome), {recursive: true})
   const codex = new Codex({
     config: codexThreadConfig({baseUrl, reasoningEffort}),
@@ -646,7 +650,7 @@ The sentinel word is still zebra.
 }
 
 function usage() {
-  return 'Usage: node scripts/translation/agenticProvider.js run --site-dir <absolute-dir> --manifest <file> --report <file> --model <id> --base-url <url> --api-key-env <name> [--concurrency 2] [--max-repair-turns 4] [--codex-home <dir>] [--sandbox-mode <workspace-write|danger-full-access>] [--skip-preflight true] [--recovery-analysis <file>] [--semantic-seeds <dir>] [--agent-scratch-root <dir>] [--reasoning-effort <none|minimal|low|medium|high|xhigh|ultra|max>]'
+  return `Usage: node scripts/translation/agenticProvider.js run --site-dir <absolute-dir> --manifest <file> --report <file> --model <id> --base-url <url> --api-key-env <name> [--concurrency 2] [--max-repair-turns 4] [--codex-home <dir>] [--sandbox-mode <workspace-write|danger-full-access>] [--skip-preflight true] [--recovery-analysis <file>] [--semantic-seeds <dir>] [--agent-scratch-root <dir>] [--reasoning-effort <${AGENTIC_REASONING_EFFORTS.join('|')}>]`
 }
 
 function parseCliArgs(argv) {
