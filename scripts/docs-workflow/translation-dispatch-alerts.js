@@ -63,7 +63,7 @@ function main(argv) {
   }
   if (!args.get('--alerts') || !args.get('--plan')) throw new Error('mark requires --alerts and --plan')
   const document = readAlerts(args.get('--alerts'))
-  const plan = JSON.parse(fs.readFileSync(args.get('--plan'), 'utf8'))
+  const plan = require('./translation-dispatch-plan').parseDispatchPlan(JSON.parse(fs.readFileSync(args.get('--plan'), 'utf8')))
   const marked = markAlertsNotified({plan, keys: document.events.map(event => event.key), now: new Date().toISOString()})
   fs.writeFileSync(args.get('--plan'), `${JSON.stringify(marked)}\n`)
 }

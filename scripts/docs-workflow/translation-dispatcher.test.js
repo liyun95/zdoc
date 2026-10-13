@@ -505,11 +505,11 @@ test('the failure budget counts failed conclusions, not successful partial re-di
 
 test('warning lines never count as build-failure evidence, in either direction', async () => {
   const files = {'translation/ja-JP/guides': [{sourcePath: GUIDES_SOURCE, targetPath: GUIDES_TARGET}]}
-  // A broken-link WARNING citing the dispatch-set source must not block the group.
+  // A markdown-link WARNING citing the dispatch-set source must not block the group.
   const warned = adapters({
     counts: {'translation/ja-JP/guides': 60},
     files,
-    gate: {green: false, logText: `[WARNING] Docs: 1 broken link found. Broken link on source page path=/x, linking to /y (source file: ${GUIDES_SOURCE})`},
+    gate: {green: false, logText: `Warning: markdown link target "/x" is not resolved in ${GUIDES_SOURCE}:10:2`},
   })
   const warnedResult = await runDispatcher({plan: createDispatchPlan({generatedAt: NOW}), now: NOW, dispatch: true, adapters: warned, log: QUIET_LOG})
   assert.equal(warnedResult.action, 'skip-build-red', 'a red build whose only evidence is warning noise still fails the cycle closed')
@@ -532,4 +532,16 @@ test('a standing blocked unit retries its backoff alert even on early skip paths
   })
   assert.equal(busy.action, 'skip-busy')
   assert.deepEqual(busy.alerts.map(event => event.key), [`backoff:translation/ja-JP/python:${SHA}`], 'the early busy exit still carries the retryable backoff event')
+})
+
+test('an unmatched ja-JP failing route outside the dispatch set alerts as an orphan page', async () => {
+  const injected = adapters({
+    counts: {'translation/ja-JP/python': 10},
+    files: {'translation/ja-JP/python': [{sourcePath: PYTHON_SOURCE, targetPath: 'i18n/ja-JP/docusaurus-plugin-content-docs/current/reference/api/python/client.md'}]},
+    gate: {green: false, logText: `Error: Can't render static file for pathname "/ja-JP/guides/tutorials/old-broken-page"`},
+  })
+  const result = await runDispatcher({plan: createDispatchPlan({generatedAt: NOW}), now: NOW, dispatch: true, adapters: injected, log: QUIET_LOG})
+  assert.equal(result.action, 'dispatched', 'a translated page outside the set does not gate the dispatch')
+  assert.deepEqual(result.alerts.map(event => event.key), [`target-broken:${SHA}:/ja-JP/guides/tutorials/old-broken-page`])
+  assert.match(result.alerts[0].body, /no scheduled translation will regenerate it/)
 })

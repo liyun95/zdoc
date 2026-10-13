@@ -27,7 +27,8 @@ const RENDER_FAILURE_LOG = [
 const COMPILE_FAILURE_LOG = [
   '[ERROR] Docusaurus could not load the file at content/en/guides/tutorials/broken-example.md.',
   'Error: MDX compile failed for file /home/runner/work/zdoc/zdoc/i18n/ja-JP/docusaurus-plugin-content-docs/current/reference/java/v2/v2-Authentication/v2-Authentication-alterRole.md:88:9',
-  'Expected a JSX element to be closed at content/en/reference/api/java/java/v2/v2-Authentication/v2-Authentication-AlterRole.md:12:5',
+  'Error: cannot resolve a component reference at content/en/reference/api/java/java/v2/v2-Authentication/v2-Authentication-AlterRole.md:12:5',
+  'Expected a JSX element to be closed (continuation line without error context)',
 ].join('\n')
 
 test('render failures yield route pathnames; compile failures yield repo-relative paths with positions stripped', () => {
@@ -92,14 +93,22 @@ test('a ja-JP-prefixed route attributes to the translated file, never to the sou
   assert.deepEqual(verdict.attributedRoutes, ['/ja-JP/reference/node/node/Authentication-alterRole'])
 })
 
-test('warning lines citing repo paths are not failure evidence', () => {
+test('warning lines citing repo paths are not failure evidence, but error lines citing warn-named files are', () => {
+  // Shapes as pinned Docusaurus 3.10.2 emits them: the core broken-links
+  // block cites routes, and mdx-loader's markdown-link warning is a
+  // single-line warning with the repo path on the warning line itself.
   const log = [
-    `[WARNING] Docs: 1 broken link found. Broken link on source page path=/x, linking to /y (source file: ${NODE_ALTER_ROLE})`,
-    `Warning: unresolved link in ${NODE_ALTER_ROLE}:10:2 ignored`,
-    `[INFO] Docusaurus version: 3.10.2`,
+    `[WARNING] Docs: 1 broken link found. Broken link on source page path=/reference/node/node/Authentication-alterRole, linking to /gone (source file: ${NODE_ALTER_ROLE})`,
+    `Warning: markdown link target "/x" is not resolved in ${NODE_ALTER_ROLE}:10:2`,
+    '[INFO] Docusaurus version: 3.10.2',
   ].join('\n')
   assert.deepEqual(parseBuildFailures({logText: log}), {filePaths: [], failingRoutes: []})
-  // Error-context lines still extract alongside warnings.
-  const mixed = `${log}\nError: MDX compile failed for file /home/runner/work/zdoc/zdoc/${NODE_ALTER_ROLE}:12:5`
-  assert.deepEqual(parseBuildFailures({logText: mixed}).filePaths, [NODE_ALTER_ROLE])
+  // An error line citing a warn-named file must survive the filter.
+  const warnNamed = 'content/en/guides/tutorials/warning-signs.md'
+  const errored = `Error: MDX compile failed for file /home/runner/work/zdoc/zdoc/${warnNamed}:12:5`
+  assert.deepEqual(parseBuildFailures({logText: errored}).filePaths, [warnNamed])
+  // Error-context lines still extract alongside warnings; plain continuation
+  // lines (no error context) do not.
+  const mixed = `${log}\n${errored}\nExpected a JSX element to be closed at ${warnNamed}:40:4`
+  assert.deepEqual(parseBuildFailures({logText: mixed}).filePaths, [warnNamed])
 })

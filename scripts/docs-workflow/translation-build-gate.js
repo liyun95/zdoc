@@ -39,19 +39,30 @@ function normalizeRepoPath(token) {
   return null
 }
 
+// Evidence lines must carry error context: a bare substring scan would let
+// WARNING output count as failure evidence (Docusaurus runs with
+// onBrokenLinks 'warn', and link warnings cite repo paths — fake attribution
+// blocking a healthy group, or a red build passing as attributed). The
+// positive match also keeps error lines that merely cite a warn-NAMED path
+// ('Error: MDX compile failed for .../warn.md'), which a warning-substring
+// exclusion would wrongly drop; warning-prefixed lines are excluded even
+// when they mention errors. Lines without error context (plain continuations,
+// info output) are not evidence — their paths drop out and an unexplained
+// failure fails the cycle closed, never blind-dispatches.
+const FAILURE_LINE_PATTERN = /error|fail(?:ed|ure)?|can(?:'?t|not)|##\[error\]/i
+const WARNING_LINE_PREFIX = /^\s*(?:\[[^\]]*warn[^\]]*\]|warn(?:ing)?\b|##\[warning\])/i
+
 // Extract the failure identity from a captured build log. Both shapes come
 // from real incidents: MDX compile errors cite file paths (with :line:col
 // position markers and sometimes an absolute runner prefix) and SSG render
 // errors cite route pathnames ('Can't render static file for pathname
 // "/reference/node/node/X"' with a ReferenceError cause, as in the 2026-10
-// node Authentication-alterRole fetch failure). WARNING lines are excluded
-// before extraction: Docusaurus runs with onBrokenLinks 'warn', and a
-// broken-link warning citing a repo path must never count as failure
-// evidence — it would both fake attribution (blocking a healthy group) and
-// defeat the no-evidence fail-closed rule.
+// node Authentication-alterRole fetch failure).
 function parseBuildFailures({logText}) {
   if (typeof logText !== 'string') throw new Error('A build log text is required')
-  const failureText = logText.split('\n').filter(line => !/\bwarn(?:ing)?\b/i.test(line)).join('\n')
+  const failureText = logText.split('\n')
+    .filter(line => FAILURE_LINE_PATTERN.test(line) && !WARNING_LINE_PREFIX.test(line))
+    .join('\n')
   const filePaths = new Set()
   for (const match of failureText.matchAll(FILE_TOKEN_PATTERN)) {
     const normalized = normalizeRepoPath(match[0])

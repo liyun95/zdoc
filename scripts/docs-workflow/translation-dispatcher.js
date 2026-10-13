@@ -62,6 +62,7 @@ function aggregateGroupTotals({plan, units}) {
 // Same admission rule as unit selection: largest backlog first, stop at the
 // budget, never strand a group larger than the whole budget.
 function selectDispatchGroups({groupTotals, budget}) {
+  if (!Number.isInteger(budget) || budget <= 0) throw new Error('A positive integer dispatch budget is required')
   const ordered = [...groupTotals].sort((left, right) => right.pendingCount - left.pendingCount || left.group.localeCompare(right.group))
   const selected = []
   let total = 0
@@ -89,6 +90,10 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
   const notified = new Set(Object.keys((plan.alerts && plan.alerts.notified) || {}))
   const events = []
   const emit = event => {
+    // Keys are validated here, not only at delivery: a malformed key would
+    // otherwise wedge the whole card step (note/mark fail closed under
+    // set -euo pipefail) with the ledger unmarked — a permanent alert outage.
+    if (typeof event.key !== 'string' || !/^[\w.:+\/-]+$/.test(event.key)) throw new Error(`A guard alert has an invalid key: ${event.key}`)
     if (!notified.has(event.key)) events.push(event)
   }
   for (const unit of Object.values(plan.units)) {
@@ -107,7 +112,7 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
 
   const handoff = adapters.buildHandoff({groups: 'all'})
   const units = handoff.units.filter(unit => unit.group !== 'rest')
-  if (units.length === 0) return {action: 'idle', plan}
+  if (units.length === 0) return {action: 'idle', plan, alerts: events}
 
   const observations = []
   const unitFiles = new Map()
@@ -123,7 +128,7 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
   for (const blocked of backoff.blocked) emit(backoffEvent(blocked))
   if (backoff.unknown) {
     log.log('[translation-dispatcher] dispatch conclusions cannot be determined; refusing to dispatch this cycle')
-    return {action: 'skip-unknown', plan: mergedPlan, alerts: events}
+    return {action: 'skip-unknown', plan: backoff.plan, alerts: events}
   }
   let gatedPlan = backoff.plan
   const selection = selectDispatchGroups({groupTotals: aggregateGroupTotals({plan: gatedPlan, units}), budget})
@@ -258,10 +263,17 @@ async function gateSourceBuild({plan, selection, unitFiles, adapters, log, now})
     }
   }
   // Guard detail for alerting: failing translated files that this dispatch
-  // will NOT retranslate have no automated repair path at all.
+  // will NOT retranslate have no automated repair path at all — the same is
+  // true of locale-prefixed failing routes that map to no dispatch-set file.
   const covered = new Set(allFiles.flatMap(file => [file.sourcePath, file.targetPath]))
-  const orphanTargetFiles = verdict.failures.filePaths.filter(filePath =>
-    !covered.has(filePath) && (filePath.startsWith('i18n/') || filePath.startsWith('content/zh-CN/')))
+  const whole = attributeBuildFailures({failures: verdict.failures, files: allFiles})
+  const attributedRoutes = new Set(whole.attributedRoutes)
+  const orphanTargetFiles = [
+    ...verdict.failures.filePaths.filter(filePath =>
+      !covered.has(filePath) && (filePath.startsWith('i18n/') || filePath.startsWith('content/zh-CN/'))),
+    ...verdict.failures.failingRoutes.filter(route =>
+      route.startsWith('/ja-JP/') && !attributedRoutes.has(route)),
+  ]
   // Completeness: fail the cycle closed when the red build either produced
   // no parseable failure identity at all (infrastructure failure or an
   // unrecognized error shape — our source's breakage cannot be ruled out) or
@@ -270,8 +282,6 @@ async function gateSourceBuild({plan, selection, unitFiles, adapters, log, now})
   // matcher missed. File-path attribution is exact-match reliable, and
   // locale-prefixed routes plus non-set paths provably cannot be this set's
   // SOURCE content, so those residues do not gate the dispatch.
-  const whole = attributeBuildFailures({failures: verdict.failures, files: allFiles})
-  const attributedRoutes = new Set(whole.attributedRoutes)
   const unexplainedRoutes = verdict.failures.failingRoutes.filter(route =>
     !route.startsWith('/ja-JP/') && !attributedRoutes.has(route))
   const noFailureIdentity = verdict.failures.filePaths.length === 0 && verdict.failures.failingRoutes.length === 0
@@ -360,21 +370,31 @@ function createCliAdapters({repository, sourceBranch = 'dev'}) {
   const countingWorkspace = path.join(repositoryRoot, 'tmp', 'dispatch-count-workspace')
   const buildWorkspace = path.join(repositoryRoot, 'tmp', 'dispatch-build-workspace')
   let countingReady = false
+  let countingCreated = false
   let buildReady = false
   let buildCreated = false
   const ensureCountingWorkspace = () => {
     if (countingReady) return
     fs.mkdirSync(path.dirname(countingWorkspace), {recursive: true})
     runCapture('git', ['worktree', 'add', '--detach', countingWorkspace, toolingSha], {cwd: repositoryRoot})
+    countingCreated = true
     runCapture('pnpm', ['install', '--frozen-lockfile'], {cwd: countingWorkspace})
     countingReady = true
   }
+  const removeWorktreeBestEffort = workspace => {
+    try {
+      runCapture('git', ['worktree', 'remove', '--force', workspace], {cwd: repositoryRoot})
+    } catch {
+      // Cleanup is best-effort per worktree: one stuck removal must not skip
+      // the other or fail the cycle before the plan is persisted.
+    }
+  }
   return {
     cleanup() {
-      // A created-but-not-installed build worktree must not leak: local runs
-      // would fail on the next cycle's `git worktree add`.
-      if (buildCreated) runCapture('git', ['worktree', 'remove', '--force', buildWorkspace], {cwd: repositoryRoot})
-      if (countingReady) runCapture('git', ['worktree', 'remove', '--force', countingWorkspace], {cwd: repositoryRoot})
+      // A created-but-not-installed worktree must not leak: local runs would
+      // fail on the next cycle's `git worktree add`.
+      if (buildCreated) removeWorktreeBestEffort(buildWorkspace)
+      if (countingCreated) removeWorktreeBestEffort(countingWorkspace)
     },
     resolveDevSha() {
       return runCapture('git', ['rev-parse', 'refs/remotes/origin/dev'], {cwd: repositoryRoot}).trim()

@@ -116,7 +116,7 @@ jobs:
             echo 'no dispatcher guard alerts this cycle'
             exit 0
           fi
-          if [[ "${TRANSLATION_DISPATCHER_ALERTS_DISABLED:-}" == "true" || "${TRANSLATION_DISPATCHER_ALERTS_DISABLED:-}" == "1" ]]; then
+          if [[ "${FEISHU_NOTIFICATIONS_DISABLED:-}" == "true" || "${FEISHU_NOTIFICATIONS_DISABLED:-}" == "1" ]]; then
             # report-card exits 0 without delivering while muted; marking the
             # ledger then would permanently swallow these alerts on unmute.
             echo 'dispatcher alerts are muted; leaving the dedup ledger unmarked so unmute replays them'

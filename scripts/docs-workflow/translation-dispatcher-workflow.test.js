@@ -79,7 +79,13 @@ test('dispatcher guard alerts bypass the global Feishu mute through their own va
   assert.equal(steps[alertIndex].env.FEISHU_NOTIFICATIONS_DISABLED, "${{ vars.TRANSLATION_DISPATCHER_ALERTS_DISABLED || '' }}", 'alerts use their own default-off mute, never the repo-wide kill switch')
   assert.equal(steps[alertIndex].env.APP_ID, '${{ secrets.APP_ID }}')
   assert.match(workflowSource('translation-dispatcher.yml'), /--alerts-output tmp\/dispatch-alerts\/alerts\.json/, 'the dispatcher hands unseen guard events to the card step')
-  assert.match(workflowSource('translation-dispatcher.yml'), /leaving the dedup ledger unmarked so unmute replays them/, 'muting must skip ledger marking: report-card exits 0 without delivering while muted')
+  // The mute guard must read the variable the step actually injects — a bare
+  // vars.* name in bash is always empty, and a dead guard would let the muted
+  // path silently ledger-consume undelivered alerts.
+  const alertStepSource = workflowSource('translation-dispatcher.yml').split('- name: Send dispatcher guard alerts')[1].split('- name:')[0]
+  assert.match(alertStepSource, /if \[\[ "\$\{FEISHU_NOTIFICATIONS_DISABLED:-\}" == "true" \|\| "\$\{FEISHU_NOTIFICATIONS_DISABLED:-\}" == "1" \]\]/, 'the mute guard reads the injected mute variable')
+  assert.doesNotMatch(alertStepSource, /TRANSLATION_DISPATCHER_ALERTS_DISABLED:-\}/, 'vars.* names never reach bash without an env mapping')
+  assert.match(alertStepSource, /leaving the dedup ledger unmarked so unmute replays them/, 'muting must skip ledger marking: report-card exits 0 without delivering while muted')
 })
 
 test('comma group selectors stay subset-strict in the canonical order', () => {
