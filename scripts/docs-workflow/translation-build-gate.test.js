@@ -91,3 +91,15 @@ test('a ja-JP-prefixed route attributes to the translated file, never to the sou
   assert.match(verdict.targetHits[0], / -> i18n\/ja-JP\/.*Authentication-alterRole\.md$/)
   assert.deepEqual(verdict.attributedRoutes, ['/ja-JP/reference/node/node/Authentication-alterRole'])
 })
+
+test('warning lines citing repo paths are not failure evidence', () => {
+  const log = [
+    `[WARNING] Docs: 1 broken link found. Broken link on source page path=/x, linking to /y (source file: ${NODE_ALTER_ROLE})`,
+    `Warning: unresolved link in ${NODE_ALTER_ROLE}:10:2 ignored`,
+    `[INFO] Docusaurus version: 3.10.2`,
+  ].join('\n')
+  assert.deepEqual(parseBuildFailures({logText: log}), {filePaths: [], failingRoutes: []})
+  // Error-context lines still extract alongside warnings.
+  const mixed = `${log}\nError: MDX compile failed for file /home/runner/work/zdoc/zdoc/${NODE_ALTER_ROLE}:12:5`
+  assert.deepEqual(parseBuildFailures({logText: mixed}).filePaths, [NODE_ALTER_ROLE])
+})

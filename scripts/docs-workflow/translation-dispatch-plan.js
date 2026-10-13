@@ -77,7 +77,10 @@ function mergeDispatchPlan({plan, observations, now}) {
       // every cycle) and any newer checkpoint naturally starts without it.
       unit.current = {...next, status: current.status, lastDispatch: current.lastDispatch || null, dispatchFailures: current.dispatchFailures || 0}
     } else if (current && current.status === 'blocked' && current.sourceCheckpointSha === observation.sourceCheckpointSha) {
-      unit.current = {...next, status: 'blocked', blockedAt: current.blockedAt, blockedReason: current.blockedReason || null, lastDispatch: current.lastDispatch || null}
+      // A blocked entry is carried verbatim except for the refreshed count:
+      // firstSeenAt and dispatchFailures belong to the blocked checkpoint's
+      // story and must not drift while the block stands.
+      unit.current = {...next, firstSeenAt: current.firstSeenAt, dispatchFailures: current.dispatchFailures || 0, status: 'blocked', blockedAt: current.blockedAt, blockedReason: current.blockedReason || null, lastDispatch: current.lastDispatch || null}
     } else {
       if (current && (isOpenStatus(current.status) || current.status === 'blocked')) {
         unit.history.push({...current, status: 'superseded', supersededAt: now})

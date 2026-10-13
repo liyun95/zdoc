@@ -188,9 +188,23 @@ test('producer activity appearing during counting blocks the dispatch', async ()
   }
   const result = await runDispatcher({plan: createDispatchPlan({generatedAt: NOW}), now: NOW, dispatch: true, adapters: injected, log: QUIET_LOG})
   assert.equal(result.action, 'skip-busy')
-  assert.equal(checks, 2, 'activity must be re-checked after counting, immediately before dispatch')
+  assert.equal(checks, 2, 'activity must be re-checked after counting, before the build gate')
   assert.equal(injected.calls.dispatched.length, 0)
   assert.equal(result.plan.units['translation/ja-JP/guides'].current.status, 'open', 'the refreshed plan still persists for the next cycle')
+})
+
+test('producer activity appearing during the build gate blocks the dispatch without emitting gate events', async () => {
+  const injected = adapters({counts: {'translation/ja-JP/guides': 60}, files: {'translation/ja-JP/guides': [{sourcePath: GUIDES_SOURCE, targetPath: GUIDES_TARGET}]}})
+  let checks = 0
+  injected.listActiveProducerRuns = () => {
+    checks += 1
+    return checks === 3 ? [{workflow: 'translate-codex.yml', id: '382500'}] : []
+  }
+  const result = await runDispatcher({plan: createDispatchPlan({generatedAt: NOW}), now: NOW, dispatch: true, adapters: injected, log: QUIET_LOG})
+  assert.equal(result.action, 'skip-busy')
+  assert.equal(checks, 3, 'activity must be re-checked one final time between the gate and the dispatch')
+  assert.equal(injected.calls.dispatched.length, 0)
+  assert.deepEqual(result.alerts, [], 'an aborted dispatch must not claim groups were dispatched')
 })
 
 test('budget excludes smaller groups once the largest consume it', async () => {
@@ -487,4 +501,35 @@ test('the failure budget counts failed conclusions, not successful partial re-di
   plan = (await runDispatcher({plan, now: '2026-10-13T14:30:00.000Z', dispatch: true, adapters: adapters({counts, conclusions: {'382400': 'failure'}}), log: QUIET_LOG})).plan
   assert.equal(plan.units['translation/ja-JP/guides'].current.status, 'blocked')
   assert.equal(plan.units['translation/ja-JP/guides'].current.dispatchFailures, 2)
+})
+
+test('warning lines never count as build-failure evidence, in either direction', async () => {
+  const files = {'translation/ja-JP/guides': [{sourcePath: GUIDES_SOURCE, targetPath: GUIDES_TARGET}]}
+  // A broken-link WARNING citing the dispatch-set source must not block the group.
+  const warned = adapters({
+    counts: {'translation/ja-JP/guides': 60},
+    files,
+    gate: {green: false, logText: `[WARNING] Docs: 1 broken link found. Broken link on source page path=/x, linking to /y (source file: ${GUIDES_SOURCE})`},
+  })
+  const warnedResult = await runDispatcher({plan: createDispatchPlan({generatedAt: NOW}), now: NOW, dispatch: true, adapters: warned, log: QUIET_LOG})
+  assert.equal(warnedResult.action, 'skip-build-red', 'a red build whose only evidence is warning noise still fails the cycle closed')
+  assert.deepEqual(warnedResult.alerts.map(event => event.key), [`build-red:${SHA}`], 'no false source-block from a warning line')
+})
+
+test('a standing blocked unit retries its backoff alert even on early skip paths', async () => {
+  const {markBlocked} = require('./translation-dispatch-plan')
+  let plan = mergeDispatchPlan({plan: createDispatchPlan({generatedAt: NOW}), observations: [
+    {unitKey: 'translation/ja-JP/python', pendingCount: 10, sourceCheckpointSha: SHA},
+  ], now: NOW})
+  plan = markDispatched({plan, unitKeys: ['translation/ja-JP/python'], runId: '382400', requestId: '382399-1', dispatchedAt: NOW})
+  plan = markBlocked({plan, unitKeys: ['translation/ja-JP/python'], blockedAt: NOW, reason: 'fixture'})
+  const busy = await runDispatcher({
+    plan,
+    now: '2026-10-13T12:30:00.000Z',
+    dispatch: true,
+    adapters: adapters({counts: {'translation/ja-JP/python': 10}, active: [{workflow: 'translate-codex.yml', id: '382500'}]}),
+    log: QUIET_LOG,
+  })
+  assert.equal(busy.action, 'skip-busy')
+  assert.deepEqual(busy.alerts.map(event => event.key), [`backoff:translation/ja-JP/python:${SHA}`], 'the early busy exit still carries the retryable backoff event')
 })

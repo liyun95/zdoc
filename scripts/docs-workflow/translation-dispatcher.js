@@ -81,14 +81,28 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
   if (typeof now !== 'string' || !now) throw new Error('A dispatch timestamp is required')
   if (!adapters || typeof adapters !== 'object') throw new Error('Dispatcher adapters are required')
 
+  // Guard alerts are deduplicated by identity against the plan's notified
+  // ledger; only unseen events leave the cycle for the Feishu card step.
+  // Standing backoff units re-emit on EVERY path — including the early exits
+  // below — because a failed card delivery must stay retryable even while
+  // producers keep the cycle busy for hours.
+  const notified = new Set(Object.keys((plan.alerts && plan.alerts.notified) || {}))
+  const events = []
+  const emit = event => {
+    if (!notified.has(event.key)) events.push(event)
+  }
+  for (const unit of Object.values(plan.units)) {
+    if (unit.current && unit.current.status === 'blocked' && unit.current.lastDispatch) emit(backoffEvent(unit.current))
+  }
+
   const active = adapters.listActiveProducerRuns()
   if (active === null || active === undefined) {
     log.log('[translation-dispatcher] producer activity unknown; refusing to dispatch this cycle')
-    return {action: 'skip-unknown', plan}
+    return {action: 'skip-unknown', plan, alerts: events}
   }
   if (active.length > 0) {
     log.log(`[translation-dispatcher] producer work already active (${active.map(run => `${run.workflow}#${run.id}`).join(', ')}); skipping this cycle`)
-    return {action: 'skip-busy', plan}
+    return {action: 'skip-busy', plan, alerts: events}
   }
 
   const handoff = adapters.buildHandoff({groups: 'all'})
@@ -106,33 +120,7 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
 
   const mergedPlan = mergeDispatchPlan({plan, observations, now})
   const backoff = applyDispatchBackoff({plan: mergedPlan, adapters, now, log})
-  // Guard alerts are deduplicated by identity against the plan's notified
-  // ledger; only unseen events leave the cycle for the Feishu card step.
-  const notified = new Set(Object.keys((plan.alerts && plan.alerts.notified) || {}))
-  const events = []
-  const emit = event => {
-    if (!notified.has(event.key)) events.push(event)
-  }
-  // Backoff alerts fire for EVERY blocked unit each cycle, not only on the
-  // blocking transition: delivery is acknowledged in the plan only after the
-  // card step succeeds, so a failed send must find the event again next
-  // cycle (the ledger dedups once delivered).
-  for (const unit of Object.values(backoff.plan.units)) {
-    const current = unit.current
-    if (!current || current.status !== 'blocked' || !current.lastDispatch) continue
-    emit({
-      key: `backoff:${current.unitKey}:${current.sourceCheckpointSha}`,
-      title: 'Translation dispatch backoff engaged',
-      body: [
-        `${current.unitKey} blocked after ${current.dispatchFailures || 'multiple'} failed dispatch conclusion(s); last producer run ${current.lastDispatch.runId}.`,
-        'A newer source checkpoint reopens it automatically, but the paid output of the failed run is salvageable:',
-        '',
-        '```',
-        `gh workflow run recover-translation.yml --ref master -f previous_translation_run_id=${current.lastDispatch.runId} -f publish=false`,
-        '```',
-      ].join('\n'),
-    })
-  }
+  for (const blocked of backoff.blocked) emit(backoffEvent(blocked))
   if (backoff.unknown) {
     log.log('[translation-dispatcher] dispatch conclusions cannot be determined; refusing to dispatch this cycle')
     return {action: 'skip-unknown', plan: mergedPlan, alerts: events}
@@ -161,13 +149,25 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
 
   const gate = await gateSourceBuild({plan: gatedPlan, selection, unitFiles, adapters, log, now})
   gatedPlan = gate.plan
-  // The alert must name the groups that ACTUALLY go out: the post-block
-  // remainder on a dispatch, nothing on blocked-build or skip-build-red.
-  const nothingDispatched = gate.action === 'skip-build-red' || gate.action === 'blocked-build'
-  const dispatchedGroups = nothingDispatched ? [] : (gate.selection ? gate.selection.groups : selection.groups)
-  emitGuardEvents({guard: gate.guard, emit, groups: dispatchedGroups})
-  if (gate.action === 'skip-build-red') return {action: 'skip-build-red', plan: gatedPlan, alerts: events}
-  if (gate.action === 'blocked-build') return {action: 'blocked-build', plan: gatedPlan, selection: gate.selection, alerts: events}
+  if (gate.action === 'skip-build-red' || gate.action === 'blocked-build') {
+    // Nothing goes out on these paths, so the guard alert names no groups.
+    emitGuardEvents({guard: gate.guard, emit, groups: []})
+    return gate.action === 'skip-build-red'
+      ? {action: 'skip-build-red', plan: gatedPlan, alerts: events}
+      : {action: 'blocked-build', plan: gatedPlan, selection: gate.selection, alerts: events}
+  }
+  // The source build gate spans many minutes (fresh worktree, install,
+  // build:en) on an uncached dev HEAD; a producer dispatched in that window —
+  // by Fetch's end-of-run handoff or an operator — would ride a duplicate
+  // paid run, so activity is re-checked one final time immediately before
+  // dispatching. The guard events emit only after this check so an aborted
+  // cycle never claims groups were dispatched.
+  const postGate = adapters.listActiveProducerRuns()
+  if (postGate === null || postGate === undefined || postGate.length > 0) {
+    log.log('[translation-dispatcher] producer activity appeared during the source build gate; refusing to dispatch this cycle')
+    return {action: 'skip-busy', plan: gatedPlan, alerts: events}
+  }
+  emitGuardEvents({guard: gate.guard, emit, groups: gate.selection.groups})
   const dispatchSelection = gate.selection
 
   const dispatchHandoff = adapters.buildHandoff({groups: dispatchSelection.groups.join(',')})
@@ -302,13 +302,14 @@ async function gateSourceBuild({plan, selection, unitFiles, adapters, log, now})
 // recover-translation (salvaging completed batches), not a fresh dispatch.
 function applyDispatchBackoff({plan, adapters, now, log, maxFailures = MAX_DISPATCH_FAILURES}) {
   let gated = plan
+  const blocked = []
   for (const unit of Object.values(plan.units)) {
     const current = unit.current
     if (!current || current.status !== 'dispatched' || !current.lastDispatch) continue
     const conclusion = adapters.getRunConclusion(current.lastDispatch.runId)
     if (conclusion === null || conclusion === undefined) {
       log.log(`[translation-dispatcher] conclusion for run ${current.lastDispatch.runId} (${current.unitKey}) is unknown; safe stop`)
-      return {plan, unknown: true}
+      return {plan, unknown: true, blocked}
     }
     if (!FAILURE_CONCLUSIONS.has(conclusion)) continue
     const failures = (current.dispatchFailures || 0) + 1
@@ -322,8 +323,24 @@ function applyDispatchBackoff({plan, adapters, now, log, maxFailures = MAX_DISPA
     }
     gated = markBlocked({plan: gated, unitKeys: [current.unitKey], blockedAt: now, reason: `${failures} failed dispatch conclusion(s), last ${conclusion} (run ${current.lastDispatch.runId})`})
     log.log(`[translation-dispatcher] blocked ${current.unitKey} after ${failures} failed dispatch conclusion(s); salvage with: gh workflow run recover-translation.yml --ref master -f previous_translation_run_id=${current.lastDispatch.runId} -f publish=false`)
+    blocked.push(gated.units[current.unitKey].current)
   }
-  return {plan: gated, unknown: false}
+  return {plan: gated, unknown: false, blocked}
+}
+
+function backoffEvent(current) {
+  return {
+    key: `backoff:${current.unitKey}:${current.sourceCheckpointSha}`,
+    title: 'Translation dispatch backoff engaged',
+    body: [
+      `${current.unitKey} blocked after ${current.dispatchFailures || 'multiple'} failed dispatch conclusion(s); last producer run ${current.lastDispatch.runId}.`,
+      'A newer source checkpoint reopens it automatically, but the paid output of the failed run is salvageable:',
+      '',
+      '```',
+      `gh workflow run recover-translation.yml --ref master -f previous_translation_run_id=${current.lastDispatch.runId} -f publish=false`,
+      '```',
+    ].join('\n'),
+  }
 }
 
 function runCapture(command, args, options) {
@@ -344,6 +361,7 @@ function createCliAdapters({repository, sourceBranch = 'dev'}) {
   const buildWorkspace = path.join(repositoryRoot, 'tmp', 'dispatch-build-workspace')
   let countingReady = false
   let buildReady = false
+  let buildCreated = false
   const ensureCountingWorkspace = () => {
     if (countingReady) return
     fs.mkdirSync(path.dirname(countingWorkspace), {recursive: true})
@@ -353,7 +371,9 @@ function createCliAdapters({repository, sourceBranch = 'dev'}) {
   }
   return {
     cleanup() {
-      if (buildReady) runCapture('git', ['worktree', 'remove', '--force', buildWorkspace], {cwd: repositoryRoot})
+      // A created-but-not-installed build worktree must not leak: local runs
+      // would fail on the next cycle's `git worktree add`.
+      if (buildCreated) runCapture('git', ['worktree', 'remove', '--force', buildWorkspace], {cwd: repositoryRoot})
       if (countingReady) runCapture('git', ['worktree', 'remove', '--force', countingWorkspace], {cwd: repositoryRoot})
     },
     resolveDevSha() {
@@ -368,6 +388,7 @@ function createCliAdapters({repository, sourceBranch = 'dev'}) {
       if (!buildReady) {
         fs.mkdirSync(path.dirname(buildWorkspace), {recursive: true})
         runCapture('git', ['worktree', 'add', '--detach', buildWorkspace, devSha], {cwd: repositoryRoot})
+        buildCreated = true
         runCapture('pnpm', ['install', '--frozen-lockfile'], {cwd: buildWorkspace})
         buildReady = true
       }

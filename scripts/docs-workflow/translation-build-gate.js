@@ -44,16 +44,21 @@ function normalizeRepoPath(token) {
 // position markers and sometimes an absolute runner prefix) and SSG render
 // errors cite route pathnames ('Can't render static file for pathname
 // "/reference/node/node/X"' with a ReferenceError cause, as in the 2026-10
-// node Authentication-alterRole fetch failure).
+// node Authentication-alterRole fetch failure). WARNING lines are excluded
+// before extraction: Docusaurus runs with onBrokenLinks 'warn', and a
+// broken-link warning citing a repo path must never count as failure
+// evidence — it would both fake attribution (blocking a healthy group) and
+// defeat the no-evidence fail-closed rule.
 function parseBuildFailures({logText}) {
   if (typeof logText !== 'string') throw new Error('A build log text is required')
+  const failureText = logText.split('\n').filter(line => !/\bwarn(?:ing)?\b/i.test(line)).join('\n')
   const filePaths = new Set()
-  for (const match of logText.matchAll(FILE_TOKEN_PATTERN)) {
+  for (const match of failureText.matchAll(FILE_TOKEN_PATTERN)) {
     const normalized = normalizeRepoPath(match[0])
     if (normalized) filePaths.add(normalized)
   }
   const failingRoutes = []
-  for (const match of logText.matchAll(ROUTE_PATTERN)) failingRoutes.push(match[1])
+  for (const match of failureText.matchAll(ROUTE_PATTERN)) failingRoutes.push(match[1])
   return {filePaths: [...filePaths].sort(), failingRoutes}
 }
 

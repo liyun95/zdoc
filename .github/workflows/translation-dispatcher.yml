@@ -116,6 +116,12 @@ jobs:
             echo 'no dispatcher guard alerts this cycle'
             exit 0
           fi
+          if [[ "${TRANSLATION_DISPATCHER_ALERTS_DISABLED:-}" == "true" || "${TRANSLATION_DISPATCHER_ALERTS_DISABLED:-}" == "1" ]]; then
+            # report-card exits 0 without delivering while muted; marking the
+            # ledger then would permanently swallow these alerts on unmute.
+            echo 'dispatcher alerts are muted; leaving the dedup ledger unmarked so unmute replays them'
+            exit 0
+          fi
           note="tmp/dispatch-alerts/note.md"
           node scripts/docs-workflow/translation-dispatch-alerts.js note --alerts "$alerts" --output "$note"
           card_id=$(node scripts/docs-tooling.js report-card create --title "Translation dispatcher guard" --stages "Guards" | tail -n 1)

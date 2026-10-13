@@ -124,6 +124,10 @@ test('blocked units stay blocked on the same checkpoint, clear at zero, and reop
   assert.equal(plan.units[GUIDE].current.blockedReason, '2 dispatch attempt(s) ended failure (last run 100)')
   const sameCheckpoint = mergeDispatchPlan({plan, observations: [observe(GUIDE, 30)], now: '2026-10-13T12:00:00.000Z'})
   assert.equal(sameCheckpoint.units[GUIDE].current.status, 'blocked', 'a blocked unit stays blocked while its checkpoint keeps work pending')
+  assert.equal(sameCheckpoint.units[GUIDE].current.firstSeenAt, T1, 'a standing block keeps its original firstSeen')
+  plan.units[GUIDE].current.dispatchFailures = 2
+  const withFailures = mergeDispatchPlan({plan, observations: [observe(GUIDE, 30)], now: '2026-10-13T12:30:00.000Z'})
+  assert.equal(withFailures.units[GUIDE].current.dispatchFailures, 2, 'the failure count survives merges while the block stands')
   assert.equal(selectDispatchUnits({plan: sameCheckpoint, budget: 300}).selected.includes(GUIDE), false, 'blocked is not open work')
   const externalFix = mergeDispatchPlan({plan: sameCheckpoint, observations: [observe(GUIDE, 0)], now: '2026-10-13T13:00:00.000Z'})
   assert.equal(externalFix.units[GUIDE].current.status, 'cleared', 'work completed by an external run checks the blocked unit off')
