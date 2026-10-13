@@ -7,6 +7,7 @@ const {
   createDispatchPlan,
   mergeDispatchPlan,
   markDispatched,
+  markBlocked,
   selectDispatchUnits,
   summarizePlan,
   parseDispatchPlan,
@@ -103,6 +104,44 @@ test('markDispatched refuses units with no open work', () => {
   assert.equal(plan.units[GUIDE].current, null)
   assert.throws(() => markDispatched({plan, unitKeys: [GUIDE], runId: '1', requestId: '2', dispatchedAt: T2}), /no open work/)
   assert.throws(() => markDispatched({plan, unitKeys: ['translation/ja-JP/nope'], runId: '1', requestId: '2', dispatchedAt: T2}), /unknown units/)
+})
+
+test('re-dispatching the same checkpoint grows the attempt count without resetting it', () => {
+  let plan = mergeDispatchPlan({plan: createDispatchPlan({generatedAt: T1}), observations: [observe(GUIDE, 30)], now: T1})
+  plan = markDispatched({plan, unitKeys: [GUIDE], runId: '100', requestId: '99-1', dispatchedAt: T1})
+  assert.equal(plan.units[GUIDE].current.lastDispatch.attempts, 1)
+  plan = mergeDispatchPlan({plan, observations: [observe(GUIDE, 30)], now: T2})
+  plan = markDispatched({plan, unitKeys: [GUIDE], runId: '200', requestId: '199-1', dispatchedAt: T2})
+  assert.equal(plan.units[GUIDE].current.lastDispatch.runId, '200')
+  assert.equal(plan.units[GUIDE].current.lastDispatch.attempts, 2, 'evidence replacement must not reset the backoff budget')
+})
+
+test('blocked units stay blocked on the same checkpoint, clear at zero, and reopen when the checkpoint moves', () => {
+  let plan = mergeDispatchPlan({plan: createDispatchPlan({generatedAt: T1}), observations: [observe(GUIDE, 30)], now: T1})
+  plan = markDispatched({plan, unitKeys: [GUIDE], runId: '100', requestId: '99-1', dispatchedAt: T1})
+  plan = markBlocked({plan, unitKeys: [GUIDE], blockedAt: T2, reason: '2 dispatch attempt(s) ended failure (last run 100)'})
+  assert.equal(plan.units[GUIDE].current.status, 'blocked')
+  assert.equal(plan.units[GUIDE].current.blockedReason, '2 dispatch attempt(s) ended failure (last run 100)')
+  const sameCheckpoint = mergeDispatchPlan({plan, observations: [observe(GUIDE, 30)], now: '2026-10-13T12:00:00.000Z'})
+  assert.equal(sameCheckpoint.units[GUIDE].current.status, 'blocked', 'a blocked unit stays blocked while its checkpoint keeps work pending')
+  assert.equal(selectDispatchUnits({plan: sameCheckpoint, budget: 300}).selected.includes(GUIDE), false, 'blocked is not open work')
+  const externalFix = mergeDispatchPlan({plan: sameCheckpoint, observations: [observe(GUIDE, 0)], now: '2026-10-13T13:00:00.000Z'})
+  assert.equal(externalFix.units[GUIDE].current.status, 'cleared', 'work completed by an external run checks the blocked unit off')
+  const movedCheckpoint = mergeDispatchPlan({plan, observations: [observe(GUIDE, 9, SHA_B)], now: '2026-10-13T14:00:00.000Z'})
+  assert.equal(movedCheckpoint.units[GUIDE].current.status, 'open', 'a moved checkpoint reopens the unit — the budget reset')
+  assert.equal(movedCheckpoint.units[GUIDE].current.lastDispatch, null)
+  assert.equal(movedCheckpoint.units[GUIDE].history.at(-1).status, 'superseded')
+})
+
+test('markBlocked refuses units without dispatched work and summarizes blocked separately', () => {
+  const plan = mergeDispatchPlan({plan: createDispatchPlan({generatedAt: T1}), observations: [observe(GUIDE, 3)], now: T1})
+  assert.throws(() => markBlocked({plan, unitKeys: [GUIDE], blockedAt: T2, reason: 'x'}), /no dispatched work/)
+  assert.throws(() => markBlocked({plan, unitKeys: ['translation/ja-JP/nope'], blockedAt: T2, reason: 'x'}), /unknown units/)
+  let dispatched = markDispatched({plan, unitKeys: [GUIDE], runId: '100', requestId: '99-1', dispatchedAt: T1})
+  dispatched = markBlocked({plan: dispatched, unitKeys: [GUIDE], blockedAt: T2, reason: 'x'})
+  const summary = summarizePlan(dispatched)
+  assert.equal(summary.blocked, 1)
+  assert.equal(summary.dispatched, 0)
 })
 
 test('budget selection is largest-first, stops at the budget, and never strands an oversized solo unit', () => {

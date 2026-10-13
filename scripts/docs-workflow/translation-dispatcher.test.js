@@ -33,11 +33,12 @@ function handoffUnits() {
   ]
 }
 
-function adapters({counts = {}, active = [], failCountFor} = {}) {
+function adapters({counts = {}, active = [], failCountFor, conclusions = {}} = {}) {
   const calls = {buildHandoff: [], countUnit: [], dispatched: []}
   return {
     calls,
     listActiveProducerRuns: () => active,
+    getRunConclusion: runId => runId in conclusions ? conclusions[runId] : 'success',
     buildHandoff: ({groups}) => {
       calls.buildHandoff.push(groups)
       const selected = handoffUnits().filter(unit => groups === 'all' || groups.split(',').includes(unit.group))
@@ -182,4 +183,56 @@ test('budget excludes smaller groups once the largest consume it', async () => {
   assert.equal(result.action, 'dispatched')
   assert.deepEqual(result.selection.groups, ['java'], 'java (200 files) is largest and guides (150) would exceed the 250 budget after it')
   assert.deepEqual(injected.calls.buildHandoff, ['all', 'java'])
+})
+
+test('a failed first dispatch is retried, and the second failure blocks the unit instead of looping', async () => {
+  let plan = createDispatchPlan({generatedAt: NOW})
+  const first = await runDispatcher({plan, now: NOW, dispatch: true, adapters: adapters({counts: {'translation/ja-JP/guides': 60}}), log: QUIET_LOG})
+  plan = first.plan
+  assert.equal(plan.units['translation/ja-JP/guides'].current.lastDispatch.attempts, 1)
+  const retry = await runDispatcher({
+    plan,
+    now: '2026-10-13T12:30:00.000Z',
+    dispatch: true,
+    adapters: adapters({counts: {'translation/ja-JP/guides': 60}, conclusions: {'382400': 'failure'}}),
+    log: QUIET_LOG,
+  })
+  assert.equal(retry.action, 'dispatched', 'attempt 1 of the budget may retry')
+  assert.equal(retry.plan.units['translation/ja-JP/guides'].current.lastDispatch.attempts, 2)
+  const third = await runDispatcher({
+    plan: retry.plan,
+    now: '2026-10-13T13:30:00.000Z',
+    dispatch: true,
+    adapters: adapters({counts: {'translation/ja-JP/guides': 60, 'translation/ja-JP/python': 5}, conclusions: {'382400': 'failure'}}),
+    log: QUIET_LOG,
+  })
+  assert.equal(third.action, 'dispatched', 'the cycle continues with remaining groups')
+  assert.equal(third.plan.units['translation/ja-JP/guides'].current.status, 'blocked', 'guides exhausted its per-checkpoint attempt budget')
+  assert.deepEqual(third.selection.groups, ['python'], 'blocked units leave selection')
+  assert.match(third.plan.units['translation/ja-JP/guides'].current.blockedReason, /ended failure/)
+})
+
+test('an unknown dispatch conclusion is a safe stop, not a retry or a block', async () => {
+  let plan = createDispatchPlan({generatedAt: NOW})
+  plan = (await runDispatcher({plan, now: NOW, dispatch: true, adapters: adapters({counts: {'translation/ja-JP/guides': 60}}), log: QUIET_LOG})).plan
+  const injected = adapters({counts: {'translation/ja-JP/guides': 60, 'translation/ja-JP/python': 5}, conclusions: {'382400': null}})
+  const result = await runDispatcher({plan, now: '2026-10-13T12:30:00.000Z', dispatch: true, adapters: injected, log: QUIET_LOG})
+  assert.equal(result.action, 'skip-unknown')
+  assert.equal(injected.calls.dispatched.length, 0)
+  assert.equal(result.plan.units['translation/ja-JP/guides'].current.status, 'dispatched', 'no verdict is guessed')
+})
+
+test('a successful concluded dispatch with residual work re-dispatches with the attempt count carried', async () => {
+  let plan = createDispatchPlan({generatedAt: NOW})
+  plan = (await runDispatcher({plan, now: NOW, dispatch: true, adapters: adapters({counts: {'translation/ja-JP/guides': 60}}), log: QUIET_LOG})).plan
+  const result = await runDispatcher({
+    plan,
+    now: '2026-10-13T12:30:00.000Z',
+    dispatch: true,
+    adapters: adapters({counts: {'translation/ja-JP/guides': 25}, conclusions: {'382400': 'success'}}),
+    log: QUIET_LOG,
+  })
+  assert.equal(result.action, 'dispatched')
+  assert.equal(result.plan.units['translation/ja-JP/guides'].current.lastDispatch.attempts, 2)
+  assert.equal(result.plan.units['translation/ja-JP/guides'].current.status, 'dispatched')
 })

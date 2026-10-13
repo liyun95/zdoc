@@ -15,12 +15,18 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const {spawnSync} = require('node:child_process')
-const {createDispatchPlan, isOpenStatus, mergeDispatchPlan, markDispatched, summarizePlan, parseDispatchPlan} = require('./translation-dispatch-plan')
+const {createDispatchPlan, isOpenStatus, mergeDispatchPlan, markDispatched, markBlocked, summarizePlan, parseDispatchPlan} = require('./translation-dispatch-plan')
 const {countPendingUnit} = require('./translation-pending-count')
 const {validateTranslationHandoff} = require('./translation-handoff')
 
 const DEFAULT_BUDGET = 300
 const DEFAULT_GUIDES_MAX_FILES = 150
+// Backoff budget per source checkpoint: a deterministic producer failure
+// (broken source, incompatible handoff) re-dispatched hourly is a paid retry
+// loop, so after this many failed attempts the unit blocks until the source
+// checkpoint moves — which resets the budget through the normal supersede.
+const MAX_DISPATCH_ATTEMPTS = 2
+const FAILURE_CONCLUSIONS = new Set(['failure', 'startup_failure', 'cancelled', 'timed_out', 'stale'])
 const PRODUCER_WORKFLOWS = ['translate-codex.yml', 'publish-translation.yml', 'recover-translation.yml']
 const ACTIVE_RUN_STATUSES = new Set(['queued', 'requested', 'in_progress', 'waiting', 'pending', 'action_required', 'stale'])
 
@@ -88,15 +94,21 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
   }
 
   const mergedPlan = mergeDispatchPlan({plan, observations, now})
-  const selection = selectDispatchGroups({groupTotals: aggregateGroupTotals({plan: mergedPlan, units}), budget})
+  const backoff = applyDispatchBackoff({plan: mergedPlan, adapters, now, log})
+  if (backoff.unknown) {
+    log.log('[translation-dispatcher] dispatch conclusions cannot be determined; refusing to dispatch this cycle')
+    return {action: 'skip-unknown', plan: mergedPlan}
+  }
+  const gatedPlan = backoff.plan
+  const selection = selectDispatchGroups({groupTotals: aggregateGroupTotals({plan: gatedPlan, units}), budget})
   if (selection.groups.length === 0) {
-    log.log(`[translation-dispatcher] nothing to dispatch (open units: ${summarizePlan(mergedPlan).open + summarizePlan(mergedPlan).dispatched})`)
-    return {action: 'idle', plan: mergedPlan}
+    log.log(`[translation-dispatcher] nothing to dispatch (open units: ${summarizePlan(gatedPlan).open + summarizePlan(gatedPlan).dispatched})`)
+    return {action: 'idle', plan: gatedPlan}
   }
 
   if (!dispatch) {
     log.log(`[translation-dispatcher] dry-run: would dispatch groups ${selection.groups.join(', ')} (${selection.totalPending} files, budget ${budget})`)
-    return {action: 'dry-run', plan: mergedPlan, selection}
+    return {action: 'dry-run', plan: gatedPlan, selection}
   }
 
   // Counting spans many minutes (fresh worktree, install, per-unit
@@ -106,16 +118,43 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
   const reappearance = adapters.listActiveProducerRuns()
   if (reappearance === null || reappearance === undefined || reappearance.length > 0) {
     log.log('[translation-dispatcher] producer activity appeared during counting; refusing to dispatch this cycle')
-    return {action: 'skip-busy', plan: mergedPlan}
+    return {action: 'skip-busy', plan: gatedPlan}
   }
 
   const dispatchHandoff = adapters.buildHandoff({groups: selection.groups.join(',')})
   validateTranslationHandoff(dispatchHandoff)
   const requestId = adapters.nextRequestId()
   const dispatchResult = adapters.dispatchTranslation({handoff: dispatchHandoff, mode: 'auto', publish: true, guidesMaxFiles, requestId})
-  const dispatchedPlan = markDispatched({plan: mergedPlan, unitKeys: selection.unitKeys, runId: dispatchResult.runId, requestId, dispatchedAt: now})
+  const dispatchedPlan = markDispatched({plan: gatedPlan, unitKeys: selection.unitKeys, runId: dispatchResult.runId, requestId, dispatchedAt: now})
   log.log(`[translation-dispatcher] dispatched groups ${selection.groups.join(', ')} (${selection.totalPending} files) -> run ${dispatchResult.runId}`)
   return {action: 'dispatched', plan: dispatchedPlan, selection, runId: dispatchResult.runId}
+}
+
+// A dispatched unit whose producer run has gone terminal is retried when the
+// failure looks transient, and blocked once the per-checkpoint attempt budget
+// is exhausted — an hourly redispatch of deterministic breakage is a paid
+// retry loop. The right remediation for a failed producer run is usually
+// recover-translation (salvaging completed batches), not a fresh dispatch.
+function applyDispatchBackoff({plan, adapters, now, log, maxAttempts = MAX_DISPATCH_ATTEMPTS}) {
+  let gated = plan
+  for (const unit of Object.values(plan.units)) {
+    const current = unit.current
+    if (!current || current.status !== 'dispatched' || !current.lastDispatch) continue
+    const conclusion = adapters.getRunConclusion(current.lastDispatch.runId)
+    if (conclusion === null || conclusion === undefined) {
+      log.log(`[translation-dispatcher] conclusion for run ${current.lastDispatch.runId} (${current.unitKey}) is unknown; safe stop`)
+      return {plan, unknown: true}
+    }
+    if (!FAILURE_CONCLUSIONS.has(conclusion)) continue
+    const attempts = current.lastDispatch.attempts || 1
+    if (attempts < maxAttempts) {
+      log.log(`[translation-dispatcher] dispatch attempt ${attempts} for ${current.unitKey} ended ${conclusion}; retry remains before backoff`)
+      continue
+    }
+    gated = markBlocked({plan: gated, unitKeys: [current.unitKey], blockedAt: now, reason: `${attempts} dispatch attempt(s) ended ${conclusion} (last run ${current.lastDispatch.runId})`})
+    log.log(`[translation-dispatcher] blocked ${current.unitKey} after ${attempts} failed dispatch attempt(s); salvage with: gh workflow run recover-translation.yml --ref master -f previous_translation_run_id=${current.lastDispatch.runId} -f publish=false`)
+  }
+  return {plan: gated, unknown: false}
 }
 
 function runCapture(command, args, options) {
@@ -160,6 +199,18 @@ function createCliAdapters({repository, sourceBranch = 'dev'}) {
         return null
       }
       return active
+    },
+    getRunConclusion(runId) {
+      try {
+        const stdout = runCapture('gh', ['run', 'view', runId, '--repo', process.env.GITHUB_REPOSITORY || 'zilliztech/zdoc', '--json', 'status,conclusion'], {cwd: repositoryRoot})
+        const row = JSON.parse(stdout)
+        if (row.status !== 'completed') return null
+        return typeof row.conclusion === 'string' && row.conclusion ? row.conclusion : null
+      } catch {
+        // Same rule as activity: unreadable means unknown, and the caller
+        // takes the safe stop rather than guessing the attempt outcome.
+        return null
+      }
     },
     buildHandoff({groups}) {
       const outputPath = path.join(repositoryRoot, 'tmp', `dispatch-translation-handoff-${groups === 'all' ? 'all' : 'selected'}.json`)
@@ -244,8 +295,10 @@ function main() {
       fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, [
         '## Translation dispatcher', '',
         `- Action: \`${finished.action}\``,
-        `- Open units: ${summary.open}, dispatched: ${summary.dispatched}, cleared: ${summary.cleared}`,
+        `- Open units: ${summary.open}, dispatched: ${summary.dispatched}, cleared: ${summary.cleared}, blocked: ${summary.blocked}`,
         ...summary.rows.slice(0, 8).map(row => `- ${row.unitKey}: ${row.status} (${row.pendingCount} pending${row.lastDispatch ? `, run ${row.lastDispatch}` : ''})`),
+        ...summary.rows.filter(row => row.status === 'blocked').slice(0, 8).map(row =>
+          `- Blocked ${row.unitKey}: salvage with \`gh workflow run recover-translation.yml --ref master -f previous_translation_run_id=${row.lastDispatch} -f publish=false\``),
         '',
       ].join('\n'))
     }
@@ -262,10 +315,12 @@ if (require.main === module) {
 module.exports = {
   DEFAULT_BUDGET,
   DEFAULT_GUIDES_MAX_FILES,
+  MAX_DISPATCH_ATTEMPTS,
   PRODUCER_WORKFLOWS,
   aggregateGroupTotals,
   selectDispatchGroups,
   runDispatcher,
+  applyDispatchBackoff,
   createCliAdapters,
   unitKeyOf,
 }
