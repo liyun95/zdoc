@@ -68,6 +68,19 @@ test('the dispatcher dispatches with the producer selection semantics, not hand-
   assert.match(source, /selection\.groups\.filter\(group => !blockedGroups\.includes\(group\)\)/, 'the build gate drops whole groups, never single units or locales')
 })
 
+test('dispatcher guard alerts bypass the global Feishu mute through their own variable', () => {
+  const doc = workflow('translation-dispatcher.yml')
+  const steps = doc.jobs.dispatch.steps
+  const alertIndex = steps.findIndex(step => step.name === 'Send dispatcher guard alerts')
+  const uploadIndex = steps.findIndex(step => step.name === 'Upload the dispatch plan')
+  assert.ok(alertIndex > -1, 'the alert step exists')
+  assert.ok(alertIndex > -1 && alertIndex < uploadIndex, 'delivery marks the plan notified before the plan is uploaded, so a failed send retries next cycle')
+  assert.equal(steps[alertIndex]['continue-on-error'], true, 'a failed card delivery never fails the dispatcher cycle')
+  assert.equal(steps[alertIndex].env.FEISHU_NOTIFICATIONS_DISABLED, "${{ vars.TRANSLATION_DISPATCHER_ALERTS_DISABLED || '' }}", 'alerts use their own default-off mute, never the repo-wide kill switch')
+  assert.equal(steps[alertIndex].env.APP_ID, '${{ secrets.APP_ID }}')
+  assert.match(workflowSource('translation-dispatcher.yml'), /--alerts-output tmp\/dispatch-alerts\/alerts\.json/, 'the dispatcher hands unseen guard events to the card step')
+})
+
 test('comma group selectors stay subset-strict in the canonical order', () => {
   const {buildTranslationSelection} = require('../translation/selection')
   const subset = buildTranslationSelection({locale: 'all', group: 'java,guides'})

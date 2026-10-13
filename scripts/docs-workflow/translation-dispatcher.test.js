@@ -318,3 +318,74 @@ test('an unattributable red build skips the whole cycle closed, and a moved dev 
   })
   assert.equal(moved.action, 'dispatched', 'a new dev HEAD gets a fresh build verdict')
 })
+
+test('guard events carry stable identity keys and are suppressed once the plan records them delivered', async () => {
+  const gate = {green: false, logText: `[ERROR] MDX compile failed for ${GUIDES_SOURCE}:12:5`}
+  const files = {'translation/ja-JP/guides': [{sourcePath: GUIDES_SOURCE, targetPath: GUIDES_TARGET}]}
+  const first = await runDispatcher({
+    plan: createDispatchPlan({generatedAt: NOW}),
+    now: NOW,
+    dispatch: true,
+    budget: 40,
+    adapters: adapters({counts: {'translation/ja-JP/guides': 60}, files, gate}),
+    log: QUIET_LOG,
+  })
+  assert.equal(first.action, 'blocked-build')
+  assert.deepEqual(first.alerts.map(event => event.key), [`source-block:${SHA}:guides`])
+  assert.match(first.alerts[0].body, /Fix the source content/)
+
+  // The card step marks delivery in the plan; the next cycle stays quiet.
+  const {markAlertsNotified} = require('./translation-dispatch-alerts')
+  const delivered = markAlertsNotified({plan: first.plan, keys: first.alerts.map(event => event.key), now: NOW})
+  const second = await runDispatcher({
+    plan: delivered,
+    now: '2026-10-13T12:30:00.000Z',
+    dispatch: true,
+    budget: 40,
+    adapters: adapters({counts: {'translation/ja-JP/guides': 60}, files, gate}),
+    log: QUIET_LOG,
+  })
+  assert.equal(second.action, 'blocked-build')
+  assert.deepEqual(second.alerts, [], 'a delivered guard event does not re-fire on the same dev HEAD')
+
+  // A new dev HEAD is a new event identity.
+  const third = await runDispatcher({
+    plan: delivered,
+    now: '2026-10-13T13:30:00.000Z',
+    dispatch: true,
+    budget: 40,
+    adapters: adapters({counts: {'translation/ja-JP/guides': 60}, files, gate: {...gate, devSha: OTHER_SHA}}),
+    log: QUIET_LOG,
+  })
+  assert.deepEqual(third.alerts.map(event => event.key), [`source-block:${OTHER_SHA}:guides`])
+})
+
+test('a blocked backoff unit alerts with its recovery command even on a dry cycle', async () => {
+  let plan = createDispatchPlan({generatedAt: NOW})
+  plan = (await runDispatcher({plan, now: NOW, dispatch: true, adapters: adapters({counts: {'translation/ja-JP/guides': 60}}), log: QUIET_LOG})).plan
+  plan = (await runDispatcher({plan, now: '2026-10-13T12:30:00.000Z', dispatch: true, adapters: adapters({counts: {'translation/ja-JP/guides': 60}, conclusions: {'382400': 'failure'}}), log: QUIET_LOG})).plan
+  const dry = await runDispatcher({
+    plan,
+    now: '2026-10-13T13:30:00.000Z',
+    dispatch: false,
+    adapters: adapters({counts: {'translation/ja-JP/guides': 60}, conclusions: {'382400': 'failure'}}),
+    log: QUIET_LOG,
+  })
+  assert.equal(dry.action, 'idle', 'a blocked unit leaves nothing to select, even dry')
+  assert.equal(dry.plan.units['translation/ja-JP/guides'].current.status, 'blocked')
+  assert.deepEqual(dry.alerts.map(event => event.key), [`backoff:translation/ja-JP/guides:${SHA}`])
+  assert.match(dry.alerts[0].body, /recover-translation\.yml .*previous_translation_run_id=382400/)
+})
+
+test('a red build with a failing translated file outside the dispatch set alerts without blocking', async () => {
+  const orphan = 'i18n/ja-JP/docusaurus-plugin-content-docs/current/guides/tutorials/old-broken.md'
+  const injected = adapters({
+    counts: {'translation/ja-JP/python': 10},
+    files: {'translation/ja-JP/python': [{sourcePath: PYTHON_SOURCE, targetPath: 'i18n/ja-JP/docusaurus-plugin-content-docs/current/reference/api/python/client.md'}]},
+    gate: {green: false, logText: `Error: MDX compile failed for ${orphan}:40:4`},
+  })
+  const result = await runDispatcher({plan: createDispatchPlan({generatedAt: NOW}), now: NOW, dispatch: true, adapters: injected, log: QUIET_LOG})
+  assert.equal(result.action, 'dispatched', 'an orphan translated file does not gate the dispatch')
+  assert.deepEqual(result.alerts.map(event => event.key), [`target-broken:${SHA}:${orphan}`])
+  assert.match(result.alerts[0].body, /no scheduled translation will regenerate it/)
+})

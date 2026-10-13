@@ -98,20 +98,41 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
 
   const mergedPlan = mergeDispatchPlan({plan, observations, now})
   const backoff = applyDispatchBackoff({plan: mergedPlan, adapters, now, log})
+  // Guard alerts are deduplicated by identity against the plan's notified
+  // ledger; only unseen events leave the cycle for the Feishu card step.
+  const notified = new Set(Object.keys((plan.alerts && plan.alerts.notified) || {}))
+  const events = []
+  const emit = event => {
+    if (!notified.has(event.key)) events.push(event)
+  }
+  for (const blocked of backoff.blocked) {
+    emit({
+      key: `backoff:${blocked.unitKey}:${blocked.sourceCheckpointSha}`,
+      title: 'Translation dispatch backoff engaged',
+      body: [
+        `${blocked.unitKey} blocked after ${blocked.attempts} failed dispatch attempt(s); last producer run ${blocked.runId}.`,
+        'A newer source checkpoint reopens it automatically, but the paid output of the failed run is salvageable:',
+        '',
+        '```',
+        `gh workflow run recover-translation.yml --ref master -f previous_translation_run_id=${blocked.runId} -f publish=false`,
+        '```',
+      ].join('\n'),
+    })
+  }
   if (backoff.unknown) {
     log.log('[translation-dispatcher] dispatch conclusions cannot be determined; refusing to dispatch this cycle')
-    return {action: 'skip-unknown', plan: mergedPlan}
+    return {action: 'skip-unknown', plan: mergedPlan, alerts: events}
   }
   let gatedPlan = backoff.plan
   const selection = selectDispatchGroups({groupTotals: aggregateGroupTotals({plan: gatedPlan, units}), budget})
   if (selection.groups.length === 0) {
     log.log(`[translation-dispatcher] nothing to dispatch (open units: ${summarizePlan(gatedPlan).open + summarizePlan(gatedPlan).dispatched})`)
-    return {action: 'idle', plan: gatedPlan}
+    return {action: 'idle', plan: gatedPlan, alerts: events}
   }
 
   if (!dispatch) {
     log.log(`[translation-dispatcher] dry-run: would dispatch groups ${selection.groups.join(', ')} (${selection.totalPending} files, budget ${budget})`)
-    return {action: 'dry-run', plan: gatedPlan, selection}
+    return {action: 'dry-run', plan: gatedPlan, selection, alerts: events}
   }
 
   // Counting spans many minutes (fresh worktree, install, per-unit
@@ -121,13 +142,14 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
   const reappearance = adapters.listActiveProducerRuns()
   if (reappearance === null || reappearance === undefined || reappearance.length > 0) {
     log.log('[translation-dispatcher] producer activity appeared during counting; refusing to dispatch this cycle')
-    return {action: 'skip-busy', plan: gatedPlan}
+    return {action: 'skip-busy', plan: gatedPlan, alerts: events}
   }
 
   const gate = await gateSourceBuild({plan: gatedPlan, selection, unitFiles, adapters, log, now})
   gatedPlan = gate.plan
-  if (gate.action === 'skip-build-red') return {action: 'skip-build-red', plan: gatedPlan}
-  if (gate.action === 'blocked-build') return {action: 'blocked-build', plan: gatedPlan, selection: gate.selection}
+  emitGuardEvents({guard: gate.guard, emit, groups: gate.selection ? gate.selection.groups : selection.groups})
+  if (gate.action === 'skip-build-red') return {action: 'skip-build-red', plan: gatedPlan, alerts: events}
+  if (gate.action === 'blocked-build') return {action: 'blocked-build', plan: gatedPlan, selection: gate.selection, alerts: events}
   const dispatchSelection = gate.selection
 
   const dispatchHandoff = adapters.buildHandoff({groups: dispatchSelection.groups.join(',')})
@@ -136,7 +158,42 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
   const dispatchResult = adapters.dispatchTranslation({handoff: dispatchHandoff, mode: 'auto', publish: true, guidesMaxFiles, requestId})
   const dispatchedPlan = markDispatched({plan: gatedPlan, unitKeys: dispatchSelection.unitKeys, runId: dispatchResult.runId, requestId, dispatchedAt: now})
   log.log(`[translation-dispatcher] dispatched groups ${dispatchSelection.groups.join(', ')} (${dispatchSelection.totalPending} files) -> run ${dispatchResult.runId}`)
-  return {action: 'dispatched', plan: dispatchedPlan, selection: dispatchSelection, runId: dispatchResult.runId}
+  return {action: 'dispatched', plan: dispatchedPlan, selection: dispatchSelection, runId: dispatchResult.runId, alerts: events}
+}
+
+function emitGuardEvents({guard, emit, groups}) {
+  if (!guard || !guard.devSha) return
+  for (const group of guard.blockedGroups || []) {
+    emit({
+      key: `source-block:${guard.devSha}:${group}`,
+      title: 'Source build gate blocked a translation group',
+      body: [
+        `Group ${group} was NOT dispatched: the English source it would translate fails the dev build:en gate.`,
+        '',
+        ...(guard.blockedHits || []).slice(0, 5).map(hit => `- ${hit}`),
+        '',
+        `Groups still dispatched this cycle: ${groups.length ? groups.join(', ') : 'none'}.`,
+        'Fix the source content; the gate re-opens the group automatically once dev builds green again.',
+      ].join('\n'),
+    })
+  }
+  for (const filePath of guard.orphanTargetFiles || []) {
+    emit({
+      key: `target-broken:${guard.devSha}:${filePath}`,
+      title: 'Broken translated file has no automated repair',
+      body: [
+        `${filePath} fails the dev build but is not in the current dispatch set, so no scheduled translation will regenerate it.`,
+        'Translated files are pipeline-owned: bring it back with a manual full-mode retranslation of its group, or a source change that reopens the pending set.',
+      ].join('\n'),
+    })
+  }
+  if (guard.unattributable) {
+    emit({
+      key: `build-red:${guard.devSha}`,
+      title: 'Red dev build without dispatch-set attribution',
+      body: 'build:en on dev failed, but no failing file could be attributed to the dispatch set; the cycle was skipped closed instead of dispatching blind. Inspect the dispatcher run log and dev site validation.',
+    })
+  }
 }
 
 // Source-side build gate. Translating broken English ships broken output to
@@ -158,20 +215,25 @@ async function gateSourceBuild({plan, selection, unitFiles, adapters, log, now})
     if (!verdict || typeof verdict !== 'object' || !verdict.failures || typeof verdict.green !== 'boolean') throw new Error('The build gate adapter must return a verdict')
   }
   let gatedPlan = {...plan, buildGate: {...verdict, checkedAt: verdict.checkedAt || now}}
-  if (verdict.green) return {plan: gatedPlan, selection}
+  if (verdict.green) return {plan: gatedPlan, selection, guard: {devSha}}
 
   const groupFiles = new Map()
+  const allFiles = []
   for (const unitKey of selection.unitKeys) {
     const group = unitKey.split('/')[2]
     if (!groupFiles.has(group)) groupFiles.set(group, [])
-    groupFiles.get(group).push(...(unitFiles.get(unitKey) || []))
+    const files = unitFiles.get(unitKey) || []
+    groupFiles.get(group).push(...files)
+    allFiles.push(...files)
   }
   const blockedGroups = []
+  const blockedHits = []
   let sawAttribution = false
   for (const [group, files] of groupFiles) {
     const attribution = attributeBuildFailures({failures: verdict.failures, files})
     if (attribution.sourceHits.length > 0) {
       blockedGroups.push(group)
+      blockedHits.push(...attribution.sourceHits)
       sawAttribution = true
       log.log(`[translation-dispatcher] build gate blocked group ${group}: broken source in the dispatch set (${attribution.sourceHits.slice(0, 5).join(', ')})`)
     }
@@ -180,13 +242,22 @@ async function gateSourceBuild({plan, selection, unitFiles, adapters, log, now})
       log.log(`[translation-dispatcher] broken translated file(s) outside the repair path (${attribution.targetHits.slice(0, 5).join(', ')}); dispatching is the repair path, not blocking`)
     }
   }
+  // Guard detail for alerting: failing translated files that this dispatch
+  // will NOT retranslate have no automated repair path at all. A diagnosed
+  // orphan target is attribution of a kind — the red build is explained and
+  // belongs to no dispatch-set source, so the dispatch still proceeds.
+  const covered = new Set(allFiles.flatMap(file => [file.sourcePath, file.targetPath]))
+  const orphanTargetFiles = verdict.failures.filePaths.filter(filePath =>
+    !covered.has(filePath) && (filePath.startsWith('i18n/') || filePath.startsWith('content/zh-CN/')))
+  if (orphanTargetFiles.length > 0) sawAttribution = true
+  const guard = {devSha, blockedGroups, blockedHits: [...new Set(blockedHits)], orphanTargetFiles, unattributable: !sawAttribution}
   if (!sawAttribution && blockedGroups.length === 0) {
     log.log('[translation-dispatcher] build is red but no failure attributes to the dispatch set; failing the cycle closed instead of dispatching blind')
-    return {plan: gatedPlan, action: 'skip-build-red'}
+    return {plan: gatedPlan, action: 'skip-build-red', guard}
   }
   const remainingGroups = selection.groups.filter(group => !blockedGroups.includes(group))
   if (remainingGroups.length === 0) {
-    return {plan: gatedPlan, action: 'blocked-build', selection}
+    return {plan: gatedPlan, action: 'blocked-build', selection, guard}
   }
   const remainingUnitKeys = selection.unitKeys.filter(unitKey => remainingGroups.includes(unitKey.split('/')[2]))
   const remainingSelection = {
@@ -194,7 +265,7 @@ async function gateSourceBuild({plan, selection, unitFiles, adapters, log, now})
     unitKeys: remainingUnitKeys,
     totalPending: remainingUnitKeys.reduce((total, unitKey) => total + (plan.units[unitKey]?.current?.pendingCount || 0), 0),
   }
-  return {plan: gatedPlan, selection: remainingSelection}
+  return {plan: gatedPlan, selection: remainingSelection, guard}
 }
 
 // A dispatched unit whose producer run has gone terminal is retried when the
@@ -204,13 +275,14 @@ async function gateSourceBuild({plan, selection, unitFiles, adapters, log, now})
 // recover-translation (salvaging completed batches), not a fresh dispatch.
 function applyDispatchBackoff({plan, adapters, now, log, maxAttempts = MAX_DISPATCH_ATTEMPTS}) {
   let gated = plan
+  const blocked = []
   for (const unit of Object.values(plan.units)) {
     const current = unit.current
     if (!current || current.status !== 'dispatched' || !current.lastDispatch) continue
     const conclusion = adapters.getRunConclusion(current.lastDispatch.runId)
     if (conclusion === null || conclusion === undefined) {
       log.log(`[translation-dispatcher] conclusion for run ${current.lastDispatch.runId} (${current.unitKey}) is unknown; safe stop`)
-      return {plan, unknown: true}
+      return {plan, unknown: true, blocked}
     }
     if (!FAILURE_CONCLUSIONS.has(conclusion)) continue
     const attempts = current.lastDispatch.attempts || 1
@@ -220,8 +292,9 @@ function applyDispatchBackoff({plan, adapters, now, log, maxAttempts = MAX_DISPA
     }
     gated = markBlocked({plan: gated, unitKeys: [current.unitKey], blockedAt: now, reason: `${attempts} dispatch attempt(s) ended ${conclusion} (last run ${current.lastDispatch.runId})`})
     log.log(`[translation-dispatcher] blocked ${current.unitKey} after ${attempts} failed dispatch attempt(s); salvage with: gh workflow run recover-translation.yml --ref master -f previous_translation_run_id=${current.lastDispatch.runId} -f publish=false`)
+    blocked.push({unitKey: current.unitKey, runId: current.lastDispatch.runId, sourceCheckpointSha: current.sourceCheckpointSha, attempts})
   }
-  return {plan: gated, unknown: false}
+  return {plan: gated, unknown: false, blocked}
 }
 
 function runCapture(command, args, options) {
@@ -368,24 +441,33 @@ function main() {
   for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1])
   const repository = args.get('--repository') || process.cwd()
   const outputPlanPath = args.get('--output-plan')
+  const alertsOutputPath = args.get('--alerts-output')
   const previousPlanPath = args.get('--previous-plan')
   const budget = Number(args.get('--budget') || DEFAULT_BUDGET)
   const guidesMaxFiles = Number(args.get('--guides-max-files') || DEFAULT_GUIDES_MAX_FILES)
   const dispatch = args.get('--dispatch') === 'true'
+  const now = new Date().toISOString()
   const plan = previousPlanPath && previousPlanPath !== '-' && fs.existsSync(previousPlanPath)
     ? parseDispatchPlan(JSON.parse(fs.readFileSync(previousPlanPath, 'utf8')))
-    : createDispatchPlan({generatedAt: new Date().toISOString()})
+    : createDispatchPlan({generatedAt: now})
   const adapters = createCliAdapters({repository})
   return runDispatcher({
     plan,
     budget,
     guidesMaxFiles,
-    now: new Date().toISOString(),
+    now,
     dispatch,
     adapters,
   }).finally(() => {
     if (adapters.cleanup) adapters.cleanup()
   }).then(finished => {
+    // Unseen guard events only: the workflow card step marks them notified
+    // in the plan AFTER delivery succeeds, so a failed send retries next
+    // cycle instead of being lost.
+    if (alertsOutputPath && Array.isArray(finished.alerts) && finished.alerts.length > 0) {
+      fs.mkdirSync(path.dirname(path.resolve(alertsOutputPath)), {recursive: true})
+      fs.writeFileSync(alertsOutputPath, `${JSON.stringify({schemaVersion: 1, generatedAt: now, events: finished.alerts})}\n`)
+    }
     if (outputPlanPath) {
       fs.mkdirSync(path.dirname(path.resolve(outputPlanPath)), {recursive: true})
       fs.writeFileSync(outputPlanPath, `${JSON.stringify(finished.plan)}\n`)
