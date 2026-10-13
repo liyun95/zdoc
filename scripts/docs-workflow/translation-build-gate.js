@@ -15,6 +15,14 @@
 
 const path = require('node:path')
 
+// build:en renders the en site with the ja-JP locale mounted under docusaurus
+// i18n: en pages serve at their bare pathnames while ja-JP pages are prefixed
+// (createDocusaurusConfig gives non-default locales a /ja-JP/ base URL). A
+// failing pathname therefore splits by prefix: bare routes implicate the
+// English SOURCE (blocking evidence), prefixed routes implicate the ja
+// TRANSLATION (repair evidence — dispatching regenerates it).
+const TARGET_ROUTE_PREFIXES = ['/ja-JP/']
+
 // Path-like tokens as they appear in Docusaurus compile errors — either
 // repo-relative ("content/en/foo.md:12:5") or absolutized by the runner
 // ("/home/runner/work/zdoc/zdoc/i18n/ja-JP/foo.md:88:9") — so extraction
@@ -42,7 +50,7 @@ function parseBuildFailures({logText}) {
   const filePaths = new Set()
   for (const match of logText.matchAll(FILE_TOKEN_PATTERN)) {
     const normalized = normalizeRepoPath(match[0])
-    if (normalized && !normalized.endsWith('.map')) filePaths.add(normalized)
+    if (normalized) filePaths.add(normalized)
   }
   const failingRoutes = []
   for (const match of logText.matchAll(ROUTE_PATTERN)) failingRoutes.push(match[1])
@@ -57,39 +65,50 @@ function stripExtension(value) {
   return basenameKey(value).replace(/\.(md|mdx|json)$/u, '')
 }
 
+function isTargetRoute(route) {
+  return TARGET_ROUTE_PREFIXES.some(prefix => route.startsWith(prefix))
+}
+
 // Match dispatch-set files against build failures. Exact path hits are
 // authoritative; route hits fall back to the slug segment (the doc id), which
-// is the file basename minus extension. A route whose slug matches files in
-// multiple units of different groups cannot be attributed fail-closed, so it
-// is dropped from attribution entirely.
+// is the file basename minus extension — source files for bare routes, target
+// files for locale-prefixed routes. A route whose slug matches multiple
+// distinct files cannot be attributed and stays unexplained instead (the
+// caller treats unexplained source-route evidence fail-closed).
 function attributeBuildFailures({failures, files}) {
   if (!failures || typeof failures !== 'object') throw new Error('Parsed build failures are required')
   if (!Array.isArray(files)) throw new Error('A dispatch file list is required')
   const sourcePaths = new Set()
   const targetPaths = new Set()
-  const filesBySlug = new Map()
+  const filesBySourceSlug = new Map()
+  const filesByTargetSlug = new Map()
   for (const file of files) {
     if (typeof file.sourcePath !== 'string' || typeof file.targetPath !== 'string') throw new Error('Dispatch files need sourcePath and targetPath')
     sourcePaths.add(file.sourcePath)
     targetPaths.add(file.targetPath)
-    const slug = stripExtension(file.sourcePath)
-    if (!filesBySlug.has(slug)) filesBySlug.set(slug, [])
-    filesBySlug.get(slug).push(file)
+    for (const [slug, index] of [[stripExtension(file.sourcePath), filesBySourceSlug], [stripExtension(file.targetPath), filesByTargetSlug]]) {
+      if (!index.has(slug)) index.set(slug, [])
+      index.get(slug).push(file)
+    }
   }
   const sourceHits = []
   const targetHits = []
+  const attributedRoutes = []
   for (const filePath of failures.filePaths) {
     if (sourcePaths.has(filePath)) sourceHits.push(filePath)
     if (targetPaths.has(filePath)) targetHits.push(filePath)
   }
   for (const route of failures.failingRoutes) {
-    const slug = stripExtension(route)
-    const candidates = filesBySlug.get(slug) || []
-    const distinctFiles = new Set(candidates.map(file => file.sourcePath))
-    if (distinctFiles.size !== 1) continue
-    sourceHits.push(`${route} -> ${candidates[0].sourcePath}`)
+    const index = isTargetRoute(route) ? filesByTargetSlug : filesBySourceSlug
+    const candidates = index.get(stripExtension(route)) || []
+    const distinctPaths = new Set(candidates.map(file => isTargetRoute(route) ? file.targetPath : file.sourcePath))
+    if (distinctPaths.size !== 1) continue
+    const hit = `${route} -> ${[...distinctPaths][0]}`
+    attributedRoutes.push(route)
+    if (isTargetRoute(route)) targetHits.push(hit)
+    else sourceHits.push(hit)
   }
-  return {sourceHits: [...new Set(sourceHits)].sort(), targetHits: [...new Set(targetHits)].sort()}
+  return {sourceHits: [...new Set(sourceHits)].sort(), targetHits: [...new Set(targetHits)].sort(), attributedRoutes}
 }
 
 module.exports = {parseBuildFailures, attributeBuildFailures}

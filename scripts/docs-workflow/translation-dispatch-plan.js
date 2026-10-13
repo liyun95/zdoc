@@ -72,7 +72,10 @@ function mergeDispatchPlan({plan, observations, now}) {
         unit.current = {...next, status: 'cleared', clearedAt: now, lastDispatch: current.lastDispatch || null}
       }
     } else if (current && isOpenStatus(current.status) && current.sourceCheckpointSha === observation.sourceCheckpointSha) {
-      unit.current = {...next, status: current.status, lastDispatch: current.lastDispatch || null}
+      // dispatchFailures is the backoff budget for THIS checkpoint; merges
+      // must carry it (a fresh merge shape would otherwise reset the budget
+      // every cycle) and any newer checkpoint naturally starts without it.
+      unit.current = {...next, status: current.status, lastDispatch: current.lastDispatch || null, dispatchFailures: current.dispatchFailures || 0}
     } else if (current && current.status === 'blocked' && current.sourceCheckpointSha === observation.sourceCheckpointSha) {
       unit.current = {...next, status: 'blocked', blockedAt: current.blockedAt, blockedReason: current.blockedReason || null, lastDispatch: current.lastDispatch || null}
     } else {

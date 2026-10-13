@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
 
-const {createDispatchPlan, parseDispatchPlan} = require('./translation-dispatch-plan')
+const {createDispatchPlan, mergeDispatchPlan, markDispatched, parseDispatchPlan} = require('./translation-dispatch-plan')
 const {aggregateGroupTotals, selectDispatchGroups, runDispatcher, unitKeyOf} = require('./translation-dispatcher')
 const {parseBuildFailures} = require('./translation-build-gate')
 
@@ -69,7 +69,7 @@ function adapters({counts = {}, active = [], failCountFor, conclusions = {}, fil
   }
 }
 
-test('aggregateGroupTotals sums both locale tracks per group and skips quiet groups', () => {
+test('aggregateGroupTotals sums both locale tracks per group, skips quiet groups, and holds back blocked groups', () => {
   const plan = {units: {
     'translation/ja-JP/guides': {current: {status: 'open', pendingCount: 52}},
     'translation/ja-JP/python': {current: {status: 'open', pendingCount: 4}},
@@ -78,9 +78,17 @@ test('aggregateGroupTotals sums both locale tracks per group and skips quiet gro
   }}
   const totals = aggregateGroupTotals({plan, units: handoffUnits()})
   assert.deepEqual(totals.sort((left, right) => right.pendingCount - left.pendingCount), [
-    {group: 'guides', pendingCount: 52, unitKeys: ['translation/ja-JP/guides']},
-    {group: 'python', pendingCount: 11, unitKeys: ['translation/ja-JP/python', 'translation/zh-CN-reference/python']},
+    {group: 'guides', pendingCount: 52, blockedPending: 0, unitKeys: ['translation/ja-JP/guides']},
+    {group: 'python', pendingCount: 11, blockedPending: 0, unitKeys: ['translation/ja-JP/python', 'translation/zh-CN-reference/python']},
   ])
+  // A blocked locale track rides with its group: dispatching the open sibling
+  // would hand the producer the blocked track's files through the group
+  // handoff — the paid retry the backoff exists to stop.
+  const diverged = aggregateGroupTotals({plan: {units: {
+    'translation/ja-JP/java': {current: {status: 'blocked', pendingCount: 191, sourceCheckpointSha: SHA}},
+    'translation/zh-CN-reference/java': {current: {status: 'open', pendingCount: 183, sourceCheckpointSha: SHA}},
+  }}, units: handoffUnits()})
+  assert.deepEqual(diverged, [], 'a group with any blocked track holding pending work is not selectable')
 })
 
 test('selectDispatchGroups is largest-first with budget stop and solo-oversize progress', () => {
@@ -216,9 +224,10 @@ test('a failed first dispatch is retried, and the second failure blocks the unit
     log: QUIET_LOG,
   })
   assert.equal(third.action, 'dispatched', 'the cycle continues with remaining groups')
-  assert.equal(third.plan.units['translation/ja-JP/guides'].current.status, 'blocked', 'guides exhausted its per-checkpoint attempt budget')
+  assert.equal(third.plan.units['translation/ja-JP/guides'].current.status, 'blocked', 'guides exhausted its per-checkpoint failure budget')
   assert.deepEqual(third.selection.groups, ['python'], 'blocked units leave selection')
-  assert.match(third.plan.units['translation/ja-JP/guides'].current.blockedReason, /ended failure/)
+  assert.match(third.plan.units['translation/ja-JP/guides'].current.blockedReason, /failed dispatch conclusion/)
+  assert.equal(third.plan.units['translation/ja-JP/guides'].current.dispatchFailures, 2)
 })
 
 test('an unknown dispatch conclusion is a safe stop, not a retry or a block', async () => {
@@ -388,4 +397,94 @@ test('a red build with a failing translated file outside the dispatch set alerts
   assert.equal(result.action, 'dispatched', 'an orphan translated file does not gate the dispatch')
   assert.deepEqual(result.alerts.map(event => event.key), [`target-broken:${SHA}:${orphan}`])
   assert.match(result.alerts[0].body, /no scheduled translation will regenerate it/)
+})
+
+test('a blocked locale track holds its whole group back from dispatch (no ride-along)', async () => {
+  const {markBlocked} = require('./translation-dispatch-plan')
+  let plan = mergeDispatchPlan({plan: createDispatchPlan({generatedAt: NOW}), observations: [
+    {unitKey: 'translation/ja-JP/python', pendingCount: 40, sourceCheckpointSha: SHA},
+    {unitKey: 'translation/zh-CN-reference/python', pendingCount: 30, sourceCheckpointSha: SHA},
+  ], now: NOW})
+  // Divergence: the ja track exhausts its failure budget while the zh track
+  // reopens at the same checkpoint (cleared by an external run, stale again).
+  plan = markDispatched({plan, unitKeys: ['translation/ja-JP/python'], runId: '382400', requestId: '382399-1', dispatchedAt: NOW})
+  plan = markBlocked({plan, unitKeys: ['translation/ja-JP/python'], blockedAt: NOW, reason: 'fixture'})
+  const injected = adapters({counts: {'translation/ja-JP/guides': 200, 'translation/ja-JP/python': 40, 'translation/zh-CN-reference/python': 30}})
+  const result = await runDispatcher({plan, now: NOW, dispatch: true, budget: 300, adapters: injected, log: QUIET_LOG})
+  assert.equal(result.action, 'dispatched')
+  assert.deepEqual(result.selection.groups, ['guides'], 'python is held back with its blocked ja track, not dispatched via the zh sibling')
+  assert.deepEqual(injected.calls.buildHandoff, ['all', 'guides'])
+  assert.equal(result.plan.units['translation/ja-JP/python'].current.status, 'blocked')
+})
+
+test('backoff alerts retry until delivery is acknowledged', async () => {
+  let plan = createDispatchPlan({generatedAt: NOW})
+  plan = (await runDispatcher({plan, now: NOW, dispatch: true, adapters: adapters({counts: {'translation/ja-JP/guides': 60}}), log: QUIET_LOG})).plan
+  const failing = {counts: {'translation/ja-JP/guides': 60, 'translation/ja-JP/python': 5}, conclusions: {'382400': 'failure'}}
+  let current = plan
+  for (let cycle = 0; cycle < 2; cycle += 1) {
+    current = (await runDispatcher({plan: current, now: `2026-10-13T1${cycle + 2}:30:00.000Z`, dispatch: true, adapters: adapters(failing), log: QUIET_LOG})).plan
+  }
+  assert.equal(current.units['translation/ja-JP/guides'].current.status, 'blocked')
+  // First send fails (nothing marked): the next cycle must find the event again.
+  const standing = {counts: {'translation/ja-JP/guides': 60, 'translation/ja-JP/python': 5}}
+  const undelivered = await runDispatcher({plan: current, now: '2026-10-13T15:30:00.000Z', dispatch: true, adapters: adapters(standing), log: QUIET_LOG})
+  assert.deepEqual(undelivered.alerts.map(event => event.key), [`backoff:translation/ja-JP/guides:${SHA}`], 'an unacknowledged backoff alert re-fires')
+  // After delivery marks the ledger, the cycle goes quiet.
+  const {markAlertsNotified} = require('./translation-dispatch-alerts')
+  const delivered = await runDispatcher({plan: markAlertsNotified({plan: undelivered.plan, keys: undelivered.alerts.map(event => event.key), now: NOW}), now: '2026-10-13T16:30:00.000Z', dispatch: true, adapters: adapters(standing), log: QUIET_LOG})
+  assert.deepEqual(delivered.alerts, [])
+})
+
+test('a failing ja-JP-prefixed route is repair evidence, not a group block', async () => {
+  const target = 'i18n/ja-JP/docusaurus-plugin-content-docs/current/reference/api/python/client.md'
+  const injected = adapters({
+    counts: {'translation/ja-JP/python': 10},
+    files: {'translation/ja-JP/python': [{sourcePath: PYTHON_SOURCE, targetPath: target}]},
+    gate: {green: false, logText: `Error: Can't render static file for pathname "/ja-JP/reference/api/python/client"`},
+  })
+  const result = await runDispatcher({plan: createDispatchPlan({generatedAt: NOW}), now: NOW, dispatch: true, adapters: injected, log: QUIET_LOG})
+  assert.equal(result.action, 'dispatched', 'the failing ja page is the pending translation itself — dispatch repairs it')
+  assert.deepEqual(result.alerts, [], 'no guard event: the dispatch is the fix')
+})
+
+test('an unexplained English route fails the cycle closed even alongside explained failures', async () => {
+  const orphan = 'i18n/ja-JP/docusaurus-plugin-content-docs/current/guides/tutorials/old-broken.md'
+  const injected = adapters({
+    counts: {'translation/ja-JP/python': 10},
+    files: {'translation/ja-JP/python': [{sourcePath: PYTHON_SOURCE, targetPath: 'i18n/ja-JP/docusaurus-plugin-content-docs/current/reference/api/python/client.md'}]},
+    gate: {green: false, logText: `Error: MDX compile failed for ${orphan}:40:4\nError: Can't render static file for pathname "/guides/tutorials/some-unmapped-page"`},
+  })
+  const result = await runDispatcher({plan: createDispatchPlan({generatedAt: NOW}), now: NOW, dispatch: true, adapters: injected, log: QUIET_LOG})
+  assert.equal(result.action, 'skip-build-red', 'a bare failing route that maps to nothing could hide a broken dispatch-set source')
+  const keys = result.alerts.map(event => event.key)
+  assert.ok(keys.includes(`build-red:${SHA}`), 'the skip surfaces as a build-red guard event')
+  assert.ok(keys.includes(`target-broken:${SHA}:${orphan}`))
+})
+
+test('the blocked-build alert names only the groups that actually go out', async () => {
+  const injected = adapters({
+    counts: {'translation/ja-JP/guides': 60},
+    files: {'translation/ja-JP/guides': [{sourcePath: GUIDES_SOURCE, targetPath: GUIDES_TARGET}]},
+    gate: {green: false, logText: `[ERROR] MDX compile failed for ${GUIDES_SOURCE}:12:5`},
+  })
+  const result = await runDispatcher({plan: createDispatchPlan({generatedAt: NOW}), now: NOW, dispatch: true, adapters: injected, log: QUIET_LOG})
+  assert.equal(result.action, 'blocked-build')
+  assert.match(result.alerts[0].body, /Groups still dispatched this cycle: none\./)
+})
+
+test('the failure budget counts failed conclusions, not successful partial re-dispatches', async () => {
+  let plan = createDispatchPlan({generatedAt: NOW})
+  const counts = {'translation/ja-JP/guides': 60}
+  // Dispatch 1 publishes part of the work; the residual re-dispatch succeeds too.
+  plan = (await runDispatcher({plan, now: NOW, dispatch: true, adapters: adapters({counts}), log: QUIET_LOG})).plan
+  plan = (await runDispatcher({plan, now: '2026-10-13T12:30:00.000Z', dispatch: true, adapters: adapters({counts, conclusions: {'382400': 'success'}}), log: QUIET_LOG})).plan
+  assert.equal(plan.units['translation/ja-JP/guides'].current.dispatchFailures, 0, 'a successful conclusion does not consume the failure budget')
+  assert.equal(plan.units['translation/ja-JP/guides'].current.lastDispatch.attempts, 2)
+  // Two FAILED conclusions are what block — attempts alone never do.
+  plan = (await runDispatcher({plan, now: '2026-10-13T13:30:00.000Z', dispatch: true, adapters: adapters({counts, conclusions: {'382400': 'failure'}}), log: QUIET_LOG})).plan
+  assert.equal(plan.units['translation/ja-JP/guides'].current.status, 'dispatched', 'first failure leaves a retry')
+  plan = (await runDispatcher({plan, now: '2026-10-13T14:30:00.000Z', dispatch: true, adapters: adapters({counts, conclusions: {'382400': 'failure'}}), log: QUIET_LOG})).plan
+  assert.equal(plan.units['translation/ja-JP/guides'].current.status, 'blocked')
+  assert.equal(plan.units['translation/ja-JP/guides'].current.dispatchFailures, 2)
 })

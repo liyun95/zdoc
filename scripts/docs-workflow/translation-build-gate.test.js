@@ -73,11 +73,21 @@ test('an ambiguous slug attributes nothing and a clean log attributes nothing', 
   assert.deepEqual(attributeBuildFailures({failures: ambiguous, files: collisions}).sourceHits, [])
 
   const green = parseBuildFailures({logText: '[INFO] Docusaurus version: 3.10.2\nSuccess! Site built'})
-  assert.deepEqual(attributeBuildFailures({failures: green, files: collisions}), {sourceHits: [], targetHits: []})
+  assert.deepEqual(attributeBuildFailures({failures: green, files: collisions}), {sourceHits: [], targetHits: [], attributedRoutes: []})
 })
 
 test('case-insensitive slug fallback catches casing drift between route and file', () => {
   const files = [{sourcePath: 'content/en/reference/api/cpp/cpp/Authentication/Authentication-AlterRole.md', targetPath: 't'}]
   const verdict = attributeBuildFailures({failures: parseBuildFailures({logText: RENDER_FAILURE_LOG}), files})
   assert.equal(verdict.sourceHits.length, 1, 'Authentication-alterRole route matches the Authentication-AlterRole file')
+})
+
+test('a ja-JP-prefixed route attributes to the translated file, never to the source', () => {
+  const files = [{sourcePath: NODE_ALTER_ROLE, targetPath: 'i18n/ja-JP/docusaurus-plugin-content-docs/current/reference/node/node/Authentication/Authentication-alterRole.md'}]
+  const log = 'Error: Can\'t render static file for pathname "/ja-JP/reference/node/node/Authentication-alterRole"'
+  const verdict = attributeBuildFailures({failures: parseBuildFailures({logText: log}), files})
+  assert.deepEqual(verdict.sourceHits, [], 'a failing ja page is target-side: dispatching regenerates it')
+  assert.equal(verdict.targetHits.length, 1)
+  assert.match(verdict.targetHits[0], / -> i18n\/ja-JP\/.*Authentication-alterRole\.md$/)
+  assert.deepEqual(verdict.attributedRoutes, ['/ja-JP/reference/node/node/Authentication-alterRole'])
 })

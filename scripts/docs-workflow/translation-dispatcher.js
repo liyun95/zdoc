@@ -22,11 +22,12 @@ const {parseBuildFailures, attributeBuildFailures} = require('./translation-buil
 
 const DEFAULT_BUDGET = 300
 const DEFAULT_GUIDES_MAX_FILES = 150
-// Backoff budget per source checkpoint: a deterministic producer failure
-// (broken source, incompatible handoff) re-dispatched hourly is a paid retry
-// loop, so after this many failed attempts the unit blocks until the source
-// checkpoint moves — which resets the budget through the normal supersede.
-const MAX_DISPATCH_ATTEMPTS = 2
+// Backoff budget per source checkpoint, counted in FAILED conclusions: a
+// deterministic producer failure (broken source, incompatible handoff)
+// re-dispatched hourly is a paid retry loop, so after this many failed runs
+// the unit blocks until the source checkpoint moves — which resets the
+// budget through the normal supersede.
+const MAX_DISPATCH_FAILURES = 2
 const FAILURE_CONCLUSIONS = new Set(['failure', 'startup_failure', 'cancelled', 'timed_out', 'stale'])
 const PRODUCER_WORKFLOWS = ['translate-codex.yml', 'publish-translation.yml', 'recover-translation.yml']
 const ACTIVE_RUN_STATUSES = new Set(['queued', 'requested', 'in_progress', 'waiting', 'pending', 'action_required', 'stale'])
@@ -36,19 +37,26 @@ function unitKeyOf(unit) {
 }
 
 // Groups ride together with both of their locale tracks (ja + zh-CN), exactly
-// like a Fetch dispatch, so budgets and rotation operate per source group.
+// like a Fetch dispatch, so budgets and rotation operate per source group —
+// and blocking rides with the group too: a group handoff enumerates every
+// unit of the group from git state, so dispatching the open sibling of a
+// blocked track hands the producer the blocked track's files. That is the
+// paid retry the backoff exists to stop, so a group with any blocked track
+// holding pending work is not selectable at all.
 function aggregateGroupTotals({plan, units}) {
   const groups = new Map()
   for (const unit of units) {
-    if (!groups.has(unit.group)) groups.set(unit.group, {group: unit.group, pendingCount: 0, unitKeys: []})
+    if (!groups.has(unit.group)) groups.set(unit.group, {group: unit.group, pendingCount: 0, blockedPending: 0, unitKeys: []})
     const entry = groups.get(unit.group)
     const current = plan.units[unitKeyOf(unit)]?.current
-    if (current && isOpenStatus(current.status)) {
+    if (!current) continue
+    if (current.status === 'blocked' && current.pendingCount > 0) entry.blockedPending += current.pendingCount
+    if (isOpenStatus(current.status)) {
       entry.pendingCount += current.pendingCount
       entry.unitKeys.push(unitKeyOf(unit))
     }
   }
-  return [...groups.values()].filter(entry => entry.pendingCount > 0)
+  return [...groups.values()].filter(entry => entry.pendingCount > 0 && entry.blockedPending === 0)
 }
 
 // Same admission rule as unit selection: largest backlog first, stop at the
@@ -105,16 +113,22 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
   const emit = event => {
     if (!notified.has(event.key)) events.push(event)
   }
-  for (const blocked of backoff.blocked) {
+  // Backoff alerts fire for EVERY blocked unit each cycle, not only on the
+  // blocking transition: delivery is acknowledged in the plan only after the
+  // card step succeeds, so a failed send must find the event again next
+  // cycle (the ledger dedups once delivered).
+  for (const unit of Object.values(backoff.plan.units)) {
+    const current = unit.current
+    if (!current || current.status !== 'blocked' || !current.lastDispatch) continue
     emit({
-      key: `backoff:${blocked.unitKey}:${blocked.sourceCheckpointSha}`,
+      key: `backoff:${current.unitKey}:${current.sourceCheckpointSha}`,
       title: 'Translation dispatch backoff engaged',
       body: [
-        `${blocked.unitKey} blocked after ${blocked.attempts} failed dispatch attempt(s); last producer run ${blocked.runId}.`,
+        `${current.unitKey} blocked after ${current.dispatchFailures || 'multiple'} failed dispatch conclusion(s); last producer run ${current.lastDispatch.runId}.`,
         'A newer source checkpoint reopens it automatically, but the paid output of the failed run is salvageable:',
         '',
         '```',
-        `gh workflow run recover-translation.yml --ref master -f previous_translation_run_id=${blocked.runId} -f publish=false`,
+        `gh workflow run recover-translation.yml --ref master -f previous_translation_run_id=${current.lastDispatch.runId} -f publish=false`,
         '```',
       ].join('\n'),
     })
@@ -147,7 +161,11 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
 
   const gate = await gateSourceBuild({plan: gatedPlan, selection, unitFiles, adapters, log, now})
   gatedPlan = gate.plan
-  emitGuardEvents({guard: gate.guard, emit, groups: gate.selection ? gate.selection.groups : selection.groups})
+  // The alert must name the groups that ACTUALLY go out: the post-block
+  // remainder on a dispatch, nothing on blocked-build or skip-build-red.
+  const nothingDispatched = gate.action === 'skip-build-red' || gate.action === 'blocked-build'
+  const dispatchedGroups = nothingDispatched ? [] : (gate.selection ? gate.selection.groups : selection.groups)
+  emitGuardEvents({guard: gate.guard, emit, groups: dispatchedGroups})
   if (gate.action === 'skip-build-red') return {action: 'skip-build-red', plan: gatedPlan, alerts: events}
   if (gate.action === 'blocked-build') return {action: 'blocked-build', plan: gatedPlan, selection: gate.selection, alerts: events}
   const dispatchSelection = gate.selection
@@ -228,31 +246,38 @@ async function gateSourceBuild({plan, selection, unitFiles, adapters, log, now})
   }
   const blockedGroups = []
   const blockedHits = []
-  let sawAttribution = false
   for (const [group, files] of groupFiles) {
     const attribution = attributeBuildFailures({failures: verdict.failures, files})
     if (attribution.sourceHits.length > 0) {
       blockedGroups.push(group)
       blockedHits.push(...attribution.sourceHits)
-      sawAttribution = true
       log.log(`[translation-dispatcher] build gate blocked group ${group}: broken source in the dispatch set (${attribution.sourceHits.slice(0, 5).join(', ')})`)
     }
     if (attribution.targetHits.length > 0) {
-      sawAttribution = true
-      log.log(`[translation-dispatcher] broken translated file(s) outside the repair path (${attribution.targetHits.slice(0, 5).join(', ')}); dispatching is the repair path, not blocking`)
+      log.log(`[translation-dispatcher] broken translated file(s) in the dispatch set (${attribution.targetHits.slice(0, 5).join(', ')}); dispatching is the repair path, not blocking`)
     }
   }
   // Guard detail for alerting: failing translated files that this dispatch
-  // will NOT retranslate have no automated repair path at all. A diagnosed
-  // orphan target is attribution of a kind — the red build is explained and
-  // belongs to no dispatch-set source, so the dispatch still proceeds.
+  // will NOT retranslate have no automated repair path at all.
   const covered = new Set(allFiles.flatMap(file => [file.sourcePath, file.targetPath]))
   const orphanTargetFiles = verdict.failures.filePaths.filter(filePath =>
     !covered.has(filePath) && (filePath.startsWith('i18n/') || filePath.startsWith('content/zh-CN/')))
-  if (orphanTargetFiles.length > 0) sawAttribution = true
-  const guard = {devSha, blockedGroups, blockedHits: [...new Set(blockedHits)], orphanTargetFiles, unattributable: !sawAttribution}
-  if (!sawAttribution && blockedGroups.length === 0) {
-    log.log('[translation-dispatcher] build is red but no failure attributes to the dispatch set; failing the cycle closed instead of dispatching blind')
+  // Completeness: fail the cycle closed when the red build either produced
+  // no parseable failure identity at all (infrastructure failure or an
+  // unrecognized error shape — our source's breakage cannot be ruled out) or
+  // left an unprefixed (English) failing route that attributes to nothing —
+  // the one residue that could hide a broken dispatch-set source the slug
+  // matcher missed. File-path attribution is exact-match reliable, and
+  // locale-prefixed routes plus non-set paths provably cannot be this set's
+  // SOURCE content, so those residues do not gate the dispatch.
+  const whole = attributeBuildFailures({failures: verdict.failures, files: allFiles})
+  const attributedRoutes = new Set(whole.attributedRoutes)
+  const unexplainedRoutes = verdict.failures.failingRoutes.filter(route =>
+    !route.startsWith('/ja-JP/') && !attributedRoutes.has(route))
+  const noFailureIdentity = verdict.failures.filePaths.length === 0 && verdict.failures.failingRoutes.length === 0
+  const guard = {devSha, blockedGroups, blockedHits: [...new Set(blockedHits)], orphanTargetFiles, unattributable: noFailureIdentity || unexplainedRoutes.length > 0}
+  if (guard.unattributable) {
+    log.log(`[translation-dispatcher] build is red with unexplained English route failure(s) (${unexplainedRoutes.slice(0, 3).join(', ')}); failing the cycle closed instead of dispatching blind`)
     return {plan: gatedPlan, action: 'skip-build-red', guard}
   }
   const remainingGroups = selection.groups.filter(group => !blockedGroups.includes(group))
@@ -269,32 +294,36 @@ async function gateSourceBuild({plan, selection, unitFiles, adapters, log, now})
 }
 
 // A dispatched unit whose producer run has gone terminal is retried when the
-// failure looks transient, and blocked once the per-checkpoint attempt budget
-// is exhausted — an hourly redispatch of deterministic breakage is a paid
-// retry loop. The right remediation for a failed producer run is usually
+// failure looks transient, and blocked once the per-checkpoint FAILURE budget
+// (failures are counted, not dispatch marks — a legitimately multi-run group
+// must not exhaust its budget on successful partial re-dispatches) is
+// exhausted — an hourly redispatch of deterministic breakage is a paid retry
+// loop. The right remediation for a failed producer run is usually
 // recover-translation (salvaging completed batches), not a fresh dispatch.
-function applyDispatchBackoff({plan, adapters, now, log, maxAttempts = MAX_DISPATCH_ATTEMPTS}) {
+function applyDispatchBackoff({plan, adapters, now, log, maxFailures = MAX_DISPATCH_FAILURES}) {
   let gated = plan
-  const blocked = []
   for (const unit of Object.values(plan.units)) {
     const current = unit.current
     if (!current || current.status !== 'dispatched' || !current.lastDispatch) continue
     const conclusion = adapters.getRunConclusion(current.lastDispatch.runId)
     if (conclusion === null || conclusion === undefined) {
       log.log(`[translation-dispatcher] conclusion for run ${current.lastDispatch.runId} (${current.unitKey}) is unknown; safe stop`)
-      return {plan, unknown: true, blocked}
+      return {plan, unknown: true}
     }
     if (!FAILURE_CONCLUSIONS.has(conclusion)) continue
-    const attempts = current.lastDispatch.attempts || 1
-    if (attempts < maxAttempts) {
-      log.log(`[translation-dispatcher] dispatch attempt ${attempts} for ${current.unitKey} ended ${conclusion}; retry remains before backoff`)
+    const failures = (current.dispatchFailures || 0) + 1
+    gated = {...gated, units: {...gated.units, [current.unitKey]: {
+      ...unit,
+      current: {...current, dispatchFailures: failures},
+    }}}
+    if (failures < maxFailures) {
+      log.log(`[translation-dispatcher] dispatch failure ${failures} for ${current.unitKey} ended ${conclusion}; retry remains before backoff`)
       continue
     }
-    gated = markBlocked({plan: gated, unitKeys: [current.unitKey], blockedAt: now, reason: `${attempts} dispatch attempt(s) ended ${conclusion} (last run ${current.lastDispatch.runId})`})
-    log.log(`[translation-dispatcher] blocked ${current.unitKey} after ${attempts} failed dispatch attempt(s); salvage with: gh workflow run recover-translation.yml --ref master -f previous_translation_run_id=${current.lastDispatch.runId} -f publish=false`)
-    blocked.push({unitKey: current.unitKey, runId: current.lastDispatch.runId, sourceCheckpointSha: current.sourceCheckpointSha, attempts})
+    gated = markBlocked({plan: gated, unitKeys: [current.unitKey], blockedAt: now, reason: `${failures} failed dispatch conclusion(s), last ${conclusion} (run ${current.lastDispatch.runId})`})
+    log.log(`[translation-dispatcher] blocked ${current.unitKey} after ${failures} failed dispatch conclusion(s); salvage with: gh workflow run recover-translation.yml --ref master -f previous_translation_run_id=${current.lastDispatch.runId} -f publish=false`)
   }
-  return {plan: gated, unknown: false, blocked}
+  return {plan: gated, unknown: false}
 }
 
 function runCapture(command, args, options) {
@@ -348,6 +377,11 @@ function createCliAdapters({repository, sourceBranch = 'dev'}) {
         maxBuffer: 64 * 1024 * 1024,
         env: {...process.env, CI: '1'},
       })
+      // A spawn-level failure (OOM kill, buffer overflow) is infrastructure,
+      // not a build verdict: mapping it to a sticky red-unattributable result
+      // would cache a false "dev is broken" until dev moves. Fail the cycle
+      // loudly instead.
+      if (result.error) throw new Error(`The source build gate could not run build:en: ${result.error.message}`)
       const logText = `${result.stdout || ''}\n${result.stderr || ''}`
       return {
         devSha,
@@ -497,7 +531,7 @@ if (require.main === module) {
 module.exports = {
   DEFAULT_BUDGET,
   DEFAULT_GUIDES_MAX_FILES,
-  MAX_DISPATCH_ATTEMPTS,
+  MAX_DISPATCH_FAILURES,
   PRODUCER_WORKFLOWS,
   aggregateGroupTotals,
   selectDispatchGroups,
