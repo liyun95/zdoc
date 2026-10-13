@@ -188,6 +188,15 @@ test('summary counts statuses and parse rejects foreign shapes', () => {
   assert.throws(() => parseDispatchPlan({schemaVersion: 1, units: []}), /units map/)
 })
 
+test('cycle caches survive a merge so build verdicts and alert dedup persist across cycles', () => {
+  const plan = mergeDispatchPlan({plan: createDispatchPlan({generatedAt: T1}), observations: [observe(GUIDE, 30)], now: T1})
+  plan.buildGate = {devSha: SHA_B, green: true, failures: {filePaths: [], failingRoutes: []}, checkedAt: T2}
+  plan.alerts = {notified: {'source-block:x': T1}}
+  const merged = mergeDispatchPlan({plan, observations: [observe(GUIDE, 25)], now: T2})
+  assert.deepEqual(merged.buildGate, plan.buildGate)
+  assert.deepEqual(merged.alerts, plan.alerts)
+})
+
 test('merge validates observations fail-closed', () => {
   const plan = createDispatchPlan({generatedAt: T1})
   assert.throws(() => mergeDispatchPlan({plan, observations: [{unitKey: 'not-a-unit', pendingCount: 1, sourceCheckpointSha: SHA_A}], now: T1}), /invalid unit key/)

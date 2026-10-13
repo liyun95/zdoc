@@ -13,6 +13,15 @@ function createDispatchPlan({generatedAt}) {
   return {schemaVersion: PLAN_SCHEMA_VERSION, generatedAt, units: {}}
 }
 
+// Cycle-scoped caches (the build-gate verdict and the alert dedup ledger)
+// ride through merges untouched: they key on dev HEADs and event identities,
+// not on unit observations, so a merge must never drop them.
+function carryCycleCaches({from, onto}) {
+  if (from.buildGate !== undefined) onto.buildGate = from.buildGate
+  if (from.alerts !== undefined) onto.alerts = from.alerts
+  return onto
+}
+
 function assertObservation(observation) {
   if (!observation || typeof observation !== 'object') throw new Error('Dispatch observation must be an object')
   if (typeof observation.unitKey !== 'string' || !observation.unitKey.startsWith('translation/')) throw new Error(`Dispatch observation has an invalid unit key: ${observation.unitKey}`)
@@ -38,7 +47,7 @@ function mergeDispatchPlan({plan, observations, now}) {
     assertObservation(observation)
     return [observation.unitKey, observation]
   }))
-  const merged = createDispatchPlan({generatedAt: now})
+  const merged = carryCycleCaches({from: plan, onto: createDispatchPlan({generatedAt: now})})
   for (const [unitKey, unit] of Object.entries(plan.units || {})) {
     merged.units[unitKey] = {current: unit.current ? {...unit.current} : null, history: [...(unit.history || [])]}
   }

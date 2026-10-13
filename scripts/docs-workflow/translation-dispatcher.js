@@ -18,6 +18,7 @@ const {spawnSync} = require('node:child_process')
 const {createDispatchPlan, isOpenStatus, mergeDispatchPlan, markDispatched, markBlocked, summarizePlan, parseDispatchPlan} = require('./translation-dispatch-plan')
 const {countPendingUnit} = require('./translation-pending-count')
 const {validateTranslationHandoff} = require('./translation-handoff')
+const {parseBuildFailures, attributeBuildFailures} = require('./translation-build-gate')
 
 const DEFAULT_BUDGET = 300
 const DEFAULT_GUIDES_MAX_FILES = 150
@@ -87,9 +88,11 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
   if (units.length === 0) return {action: 'idle', plan}
 
   const observations = []
+  const unitFiles = new Map()
   for (const unit of units) {
-    const summary = adapters.countUnit(unit)
+    const summary = adapters.countUnit(unit, {printFiles: dispatch})
     observations.push({unitKey: unitKeyOf(unit), sourceCheckpointSha: unit.sourceCheckpointSha, pendingCount: summary.pendingCount})
+    if (summary.files) unitFiles.set(unitKeyOf(unit), summary.files)
     log.log(`[translation-dispatcher] ${unitKeyOf(unit)} pending=${summary.pendingCount} mode=${summary.effectiveMode}`)
   }
 
@@ -99,7 +102,7 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
     log.log('[translation-dispatcher] dispatch conclusions cannot be determined; refusing to dispatch this cycle')
     return {action: 'skip-unknown', plan: mergedPlan}
   }
-  const gatedPlan = backoff.plan
+  let gatedPlan = backoff.plan
   const selection = selectDispatchGroups({groupTotals: aggregateGroupTotals({plan: gatedPlan, units}), budget})
   if (selection.groups.length === 0) {
     log.log(`[translation-dispatcher] nothing to dispatch (open units: ${summarizePlan(gatedPlan).open + summarizePlan(gatedPlan).dispatched})`)
@@ -121,13 +124,77 @@ async function runDispatcher({plan, budget = DEFAULT_BUDGET, guidesMaxFiles = DE
     return {action: 'skip-busy', plan: gatedPlan}
   }
 
-  const dispatchHandoff = adapters.buildHandoff({groups: selection.groups.join(',')})
+  const gate = await gateSourceBuild({plan: gatedPlan, selection, unitFiles, adapters, log, now})
+  gatedPlan = gate.plan
+  if (gate.action === 'skip-build-red') return {action: 'skip-build-red', plan: gatedPlan}
+  if (gate.action === 'blocked-build') return {action: 'blocked-build', plan: gatedPlan, selection: gate.selection}
+  const dispatchSelection = gate.selection
+
+  const dispatchHandoff = adapters.buildHandoff({groups: dispatchSelection.groups.join(',')})
   validateTranslationHandoff(dispatchHandoff)
   const requestId = adapters.nextRequestId()
   const dispatchResult = adapters.dispatchTranslation({handoff: dispatchHandoff, mode: 'auto', publish: true, guidesMaxFiles, requestId})
-  const dispatchedPlan = markDispatched({plan: gatedPlan, unitKeys: selection.unitKeys, runId: dispatchResult.runId, requestId, dispatchedAt: now})
-  log.log(`[translation-dispatcher] dispatched groups ${selection.groups.join(', ')} (${selection.totalPending} files) -> run ${dispatchResult.runId}`)
-  return {action: 'dispatched', plan: dispatchedPlan, selection, runId: dispatchResult.runId}
+  const dispatchedPlan = markDispatched({plan: gatedPlan, unitKeys: dispatchSelection.unitKeys, runId: dispatchResult.runId, requestId, dispatchedAt: now})
+  log.log(`[translation-dispatcher] dispatched groups ${dispatchSelection.groups.join(', ')} (${dispatchSelection.totalPending} files) -> run ${dispatchResult.runId}`)
+  return {action: 'dispatched', plan: dispatchedPlan, selection: dispatchSelection, runId: dispatchResult.runId}
+}
+
+// Source-side build gate. Translating broken English ships broken output to
+// every locale, so an armed cycle first builds the current dev tree and
+// attributes failures to the dispatch set. The expensive build result is
+// cached per dev HEAD; attribution is pure and re-derived every cycle against
+// the CURRENT selection, so a cached verdict never goes stale when rotation
+// picks different groups on an unchanged dev. Only source-side hits block
+// (whole groups — the source is shared by both locale tracks); target-side
+// hits never block because dispatching is the repair path for translated
+// files, and an unattributable red fails the whole cycle closed.
+async function gateSourceBuild({plan, selection, unitFiles, adapters, log, now}) {
+  const devSha = adapters.resolveDevSha()
+  if (typeof devSha !== 'string' || !/^[0-9a-f]{40}$/.test(devSha)) throw new Error('A dev HEAD SHA is required for the build gate')
+  let verdict = plan.buildGate && plan.buildGate.devSha === devSha ? plan.buildGate : null
+  if (!verdict) {
+    log.log(`[translation-dispatcher] running the source build gate against dev ${devSha.slice(0, 12)} (build:en)`)
+    verdict = await adapters.runSourceBuildGate({devSha})
+    if (!verdict || typeof verdict !== 'object' || !verdict.failures || typeof verdict.green !== 'boolean') throw new Error('The build gate adapter must return a verdict')
+  }
+  let gatedPlan = {...plan, buildGate: {...verdict, checkedAt: verdict.checkedAt || now}}
+  if (verdict.green) return {plan: gatedPlan, selection}
+
+  const groupFiles = new Map()
+  for (const unitKey of selection.unitKeys) {
+    const group = unitKey.split('/')[2]
+    if (!groupFiles.has(group)) groupFiles.set(group, [])
+    groupFiles.get(group).push(...(unitFiles.get(unitKey) || []))
+  }
+  const blockedGroups = []
+  let sawAttribution = false
+  for (const [group, files] of groupFiles) {
+    const attribution = attributeBuildFailures({failures: verdict.failures, files})
+    if (attribution.sourceHits.length > 0) {
+      blockedGroups.push(group)
+      sawAttribution = true
+      log.log(`[translation-dispatcher] build gate blocked group ${group}: broken source in the dispatch set (${attribution.sourceHits.slice(0, 5).join(', ')})`)
+    }
+    if (attribution.targetHits.length > 0) {
+      sawAttribution = true
+      log.log(`[translation-dispatcher] broken translated file(s) outside the repair path (${attribution.targetHits.slice(0, 5).join(', ')}); dispatching is the repair path, not blocking`)
+    }
+  }
+  if (!sawAttribution && blockedGroups.length === 0) {
+    log.log('[translation-dispatcher] build is red but no failure attributes to the dispatch set; failing the cycle closed instead of dispatching blind')
+    return {plan: gatedPlan, action: 'skip-build-red'}
+  }
+  const remainingGroups = selection.groups.filter(group => !blockedGroups.includes(group))
+  if (remainingGroups.length === 0) {
+    return {plan: gatedPlan, action: 'blocked-build', selection}
+  }
+  const remainingUnitKeys = selection.unitKeys.filter(unitKey => remainingGroups.includes(unitKey.split('/')[2]))
+  const remainingSelection = {
+    groups: remainingGroups,
+    unitKeys: remainingUnitKeys,
+    totalPending: remainingUnitKeys.reduce((total, unitKey) => total + (plan.units[unitKey]?.current?.pendingCount || 0), 0),
+  }
+  return {plan: gatedPlan, selection: remainingSelection}
 }
 
 // A dispatched unit whose producer run has gone terminal is retried when the
@@ -172,7 +239,9 @@ function createCliAdapters({repository, sourceBranch = 'dev'}) {
   // the TypeScript loaders resolve through. One install serves all units;
   // translation-pending-count resets per-unit state inside it.
   const countingWorkspace = path.join(repositoryRoot, 'tmp', 'dispatch-count-workspace')
+  const buildWorkspace = path.join(repositoryRoot, 'tmp', 'dispatch-build-workspace')
   let countingReady = false
+  let buildReady = false
   const ensureCountingWorkspace = () => {
     if (countingReady) return
     fs.mkdirSync(path.dirname(countingWorkspace), {recursive: true})
@@ -182,7 +251,37 @@ function createCliAdapters({repository, sourceBranch = 'dev'}) {
   }
   return {
     cleanup() {
+      if (buildReady) runCapture('git', ['worktree', 'remove', '--force', buildWorkspace], {cwd: repositoryRoot})
       if (countingReady) runCapture('git', ['worktree', 'remove', '--force', countingWorkspace], {cwd: repositoryRoot})
+    },
+    resolveDevSha() {
+      return runCapture('git', ['rev-parse', 'refs/remotes/origin/dev'], {cwd: repositoryRoot}).trim()
+    },
+    // The gate builds the CONTENT branch with its own toolchain: dev is the
+    // tree every dispatched translation consumes, and it is the tree sync
+    // validates, so a green dev build is exactly the state translations
+    // should be produced from. A nonzero build exit is the verdict, not an
+    // infrastructure error — only install/worktree failures throw.
+    async runSourceBuildGate({devSha}) {
+      if (!buildReady) {
+        fs.mkdirSync(path.dirname(buildWorkspace), {recursive: true})
+        runCapture('git', ['worktree', 'add', '--detach', buildWorkspace, devSha], {cwd: repositoryRoot})
+        runCapture('pnpm', ['install', '--frozen-lockfile'], {cwd: buildWorkspace})
+        buildReady = true
+      }
+      const result = spawnSync('pnpm', ['--filter', '@zilliz/docs-site', 'run', 'build:en'], {
+        cwd: buildWorkspace,
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+        env: {...process.env, CI: '1'},
+      })
+      const logText = `${result.stdout || ''}\n${result.stderr || ''}`
+      return {
+        devSha,
+        green: result.status === 0,
+        failures: parseBuildFailures({logText}),
+        checkedAt: new Date().toISOString(),
+      }
     },
     listActiveProducerRuns() {
       const active = []
@@ -218,7 +317,7 @@ function createCliAdapters({repository, sourceBranch = 'dev'}) {
       runCapture('node', ['scripts/docs-workflow/build-manual-translation-handoff.js', '--source-branch', sourceBranch, '--repository', repositoryRoot, '--locale', 'all', '--group', groups, '--output', outputPath], {cwd: repositoryRoot})
       return JSON.parse(fs.readFileSync(outputPath, 'utf8'))
     },
-    countUnit(unit) {
+    countUnit(unit, {printFiles = false} = {}) {
       ensureCountingWorkspace()
       const stdout = runCapture('node', ['scripts/docs-workflow/translation-pending-count.js',
         '--repository', countingWorkspace,
@@ -227,6 +326,7 @@ function createCliAdapters({repository, sourceBranch = 'dev'}) {
         '--source-baseline-sha', unit.sourceBaselineSha,
         '--source-checkpoint-sha', unit.sourceCheckpointSha,
         '--target-baseline-sha', unit.targetBaselineSha || unit.sourceCheckpointSha,
+        ...(printFiles ? ['--print-files', 'true'] : []),
       ], {cwd: repositoryRoot})
       const line = stdout.trim().split('\n').filter(part => part.startsWith('[translation-pending-count] ')).pop()
       if (!line) throw new Error(`pending count produced no summary for ${unitKeyOf(unit)}`)

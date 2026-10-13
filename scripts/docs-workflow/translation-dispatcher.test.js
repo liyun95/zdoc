@@ -5,8 +5,10 @@ const test = require('node:test')
 
 const {createDispatchPlan, parseDispatchPlan} = require('./translation-dispatch-plan')
 const {aggregateGroupTotals, selectDispatchGroups, runDispatcher, unitKeyOf} = require('./translation-dispatcher')
+const {parseBuildFailures} = require('./translation-build-gate')
 
 const SHA = 'a'.repeat(40)
+const OTHER_SHA = 'b'.repeat(40)
 const NOW = '2026-10-13T11:30:00.000Z'
 const QUIET_LOG = {log() {}}
 
@@ -33,12 +35,17 @@ function handoffUnits() {
   ]
 }
 
-function adapters({counts = {}, active = [], failCountFor, conclusions = {}} = {}) {
-  const calls = {buildHandoff: [], countUnit: [], dispatched: []}
+function adapters({counts = {}, active = [], failCountFor, conclusions = {}, files = {}, gate = {}} = {}) {
+  const calls = {buildHandoff: [], countUnit: [], dispatched: [], runSourceBuildGate: []}
   return {
     calls,
     listActiveProducerRuns: () => active,
     getRunConclusion: runId => runId in conclusions ? conclusions[runId] : 'success',
+    resolveDevSha: () => gate.devSha || SHA,
+    async runSourceBuildGate({devSha}) {
+      calls.runSourceBuildGate.push(devSha)
+      return {devSha, green: gate.green !== false, failures: parseBuildFailures({logText: gate.logText || ''}), checkedAt: NOW}
+    },
     buildHandoff: ({groups}) => {
       calls.buildHandoff.push(groups)
       const selected = handoffUnits().filter(unit => groups === 'all' || groups.split(',').includes(unit.group))
@@ -50,7 +57,9 @@ function adapters({counts = {}, active = [], failCountFor, conclusions = {}} = {
     countUnit: unit => {
       if (failCountFor && failCountFor(unit)) throw new Error(`count failed for ${unitKeyOf(unit)}`)
       const pending = counts[unitKeyOf(unit)] ?? 0
-      return {unitKey: unitKeyOf(unit), pendingCount: pending, effectiveMode: 'incremental', candidateCounts: {total: pending}}
+      const summary = {unitKey: unitKeyOf(unit), pendingCount: pending, effectiveMode: 'incremental', candidateCounts: {total: pending}}
+      if (files[unitKeyOf(unit)]) summary.files = files[unitKeyOf(unit)]
+      return summary
     },
     dispatchTranslation: payload => {
       calls.dispatched.push(payload)
@@ -235,4 +244,77 @@ test('a successful concluded dispatch with residual work re-dispatches with the 
   assert.equal(result.action, 'dispatched')
   assert.equal(result.plan.units['translation/ja-JP/guides'].current.lastDispatch.attempts, 2)
   assert.equal(result.plan.units['translation/ja-JP/guides'].current.status, 'dispatched')
+})
+
+const GUIDES_SOURCE = 'content/en/guides/tutorials/fenced-table.md'
+const GUIDES_TARGET = 'i18n/ja-JP/docusaurus-plugin-content-docs/current/guides/tutorials/fenced-table.md'
+const PYTHON_SOURCE = 'content/en/reference/api/python/client.md'
+
+test('a green source build gates nothing and runs once per dev HEAD', async () => {
+  const injected = adapters({counts: {'translation/ja-JP/guides': 60, 'translation/ja-JP/python': 10}, files: {'translation/ja-JP/guides': [{sourcePath: GUIDES_SOURCE, targetPath: GUIDES_TARGET}]}})
+  const result = await runDispatcher({plan: createDispatchPlan({generatedAt: NOW}), now: NOW, dispatch: true, adapters: injected, log: QUIET_LOG})
+  assert.equal(result.action, 'dispatched')
+  assert.equal(injected.calls.runSourceBuildGate.length, 1)
+  assert.equal(result.plan.buildGate.green, true)
+  const cached = await runDispatcher({plan: result.plan, now: '2026-10-13T12:30:00.000Z', dispatch: true, adapters: adapters({counts: {'translation/ja-JP/guides': 5}}), log: QUIET_LOG})
+  assert.equal(cached.action, 'dispatched')
+  assert.deepEqual(cached.plan.buildGate, result.plan.buildGate, 'an unchanged dev HEAD reuses the cached build verdict')
+})
+
+test('a source-side build failure blocks its whole group and dispatches the rest', async () => {
+  const injected = adapters({
+    counts: {'translation/ja-JP/guides': 60, 'translation/ja-JP/python': 10},
+    files: {
+      'translation/ja-JP/guides': [{sourcePath: GUIDES_SOURCE, targetPath: GUIDES_TARGET}],
+      'translation/ja-JP/python': [{sourcePath: PYTHON_SOURCE, targetPath: 'i18n/ja-JP/docusaurus-plugin-content-docs/current/reference/api/python/client.md'}],
+    },
+    gate: {green: false, logText: `[ERROR] MDX compile failed for ${GUIDES_SOURCE}:12:5`},
+  })
+  const result = await runDispatcher({plan: createDispatchPlan({generatedAt: NOW}), now: NOW, dispatch: true, adapters: injected, log: QUIET_LOG})
+  assert.equal(result.action, 'dispatched', 'the python group still goes out')
+  assert.deepEqual(result.selection.groups, ['python'], 'the implicated group is dropped from the dispatch')
+  assert.deepEqual(injected.calls.buildHandoff, ['all', 'python'])
+  assert.equal(result.plan.units['translation/ja-JP/guides'].current.status, 'open', 'the blocked group is not marked dispatched')
+  assert.equal(result.plan.buildGate.green, false, 'the red verdict persists for the next cycle')
+})
+
+test('a source-side failure covering every selected group blocks the whole cycle', async () => {
+  const injected = adapters({
+    counts: {'translation/ja-JP/guides': 60},
+    files: {'translation/ja-JP/guides': [{sourcePath: GUIDES_SOURCE, targetPath: GUIDES_TARGET}]},
+    gate: {green: false, logText: `Error: Can't render static file for pathname "/guides/tutorials/fenced-table"`},
+  })
+  const result = await runDispatcher({plan: createDispatchPlan({generatedAt: NOW}), now: NOW, dispatch: true, adapters: injected, log: QUIET_LOG})
+  assert.equal(result.action, 'blocked-build')
+  assert.equal(injected.calls.dispatched.length, 0)
+  assert.equal(result.plan.units['translation/ja-JP/guides'].current.status, 'open')
+})
+
+test('a target-side failure never blocks — dispatching is the repair path', async () => {
+  const injected = adapters({
+    counts: {'translation/ja-JP/guides': 60},
+    files: {'translation/ja-JP/guides': [{sourcePath: GUIDES_SOURCE, targetPath: GUIDES_TARGET}]},
+    gate: {green: false, logText: `Error: MDX compile failed for /home/runner/work/zdoc/zdoc/${GUIDES_TARGET}:88:9`},
+  })
+  const result = await runDispatcher({plan: createDispatchPlan({generatedAt: NOW}), now: NOW, dispatch: true, adapters: injected, log: QUIET_LOG})
+  assert.equal(result.action, 'dispatched', 'the broken translated file rides the dispatch that retranslates it')
+  assert.deepEqual(result.selection.groups, ['guides'])
+})
+
+test('an unattributable red build skips the whole cycle closed, and a moved dev HEAD rebuilds', async () => {
+  const gate = {green: false, logText: 'Error: Something unrelated exploded in a plugin'}
+  const files = {'translation/ja-JP/guides': [{sourcePath: GUIDES_SOURCE, targetPath: GUIDES_TARGET}]}
+  const injected = adapters({counts: {'translation/ja-JP/guides': 60}, files, gate})
+  const result = await runDispatcher({plan: createDispatchPlan({generatedAt: NOW}), now: NOW, dispatch: true, adapters: injected, log: QUIET_LOG})
+  assert.equal(result.action, 'skip-build-red')
+  assert.equal(injected.calls.dispatched.length, 0)
+  assert.equal(result.plan.buildGate.green, false)
+  const moved = await runDispatcher({
+    plan: result.plan,
+    now: '2026-10-13T12:30:00.000Z',
+    dispatch: true,
+    adapters: adapters({counts: {'translation/ja-JP/guides': 60}, files, gate: {...gate, devSha: OTHER_SHA, green: true}}),
+    log: QUIET_LOG,
+  })
+  assert.equal(moved.action, 'dispatched', 'a new dev HEAD gets a fresh build verdict')
 })

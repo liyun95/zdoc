@@ -1,0 +1,105 @@
+'use strict'
+
+// Source-side build gate for the armed translation dispatcher. Translating a
+// broken English source ships broken output to every locale while the site
+// stays red downstream, so before dispatching, the dispatcher builds the
+// current dev tree (build:en covers the en content every locale translates
+// plus the existing ja-JP files) and attributes failures to the dispatch
+// set. Only SOURCE-side attribution blocks: translated files are never
+// hand-edited, so dispatching is itself the repair path for a broken target
+// file — blocking on target-side breakage would deadlock the fix. Render
+// failures do not cite source paths directly (only route pathnames), so
+// routes are matched back to candidate files by their slug segment; an
+// ambiguous or path-less failure is treated as unattributed and the cycle
+// takes the safe skip instead of dispatching on a red build.
+
+const path = require('node:path')
+
+// Path-like tokens as they appear in Docusaurus compile errors — either
+// repo-relative ("content/en/foo.md:12:5") or absolutized by the runner
+// ("/home/runner/work/zdoc/zdoc/i18n/ja-JP/foo.md:88:9") — so extraction
+// matches the token first and then trims back to the repository root.
+const FILE_TOKEN_PATTERN = /[^\s"'`():,]+\.(?:md|mdx|json)(?::\d+:\d+)?\b/g
+const REPO_ROOT_SEGMENTS = ['content/', 'generated/', 'i18n/']
+const ROUTE_PATTERN = /Can't render static file for pathname "([^"]+)"/g
+
+function normalizeRepoPath(token) {
+  for (const segment of REPO_ROOT_SEGMENTS) {
+    const index = token.indexOf(segment)
+    if (index !== -1) return token.slice(index).replace(/:\d+:\d+$/, '')
+  }
+  return null
+}
+
+// Extract the failure identity from a captured build log. Both shapes come
+// from real incidents: MDX compile errors cite file paths (with :line:col
+// position markers and sometimes an absolute runner prefix) and SSG render
+// errors cite route pathnames ('Can't render static file for pathname
+// "/reference/node/node/X"' with a ReferenceError cause, as in the 2026-10
+// node Authentication-alterRole fetch failure).
+function parseBuildFailures({logText}) {
+  if (typeof logText !== 'string') throw new Error('A build log text is required')
+  const filePaths = new Set()
+  for (const match of logText.matchAll(FILE_TOKEN_PATTERN)) {
+    const normalized = normalizeRepoPath(match[0])
+    if (normalized && !normalized.endsWith('.map')) filePaths.add(normalized)
+  }
+  const failingRoutes = []
+  for (const match of logText.matchAll(ROUTE_PATTERN)) failingRoutes.push(match[1])
+  return {filePaths: [...filePaths].sort(), failingRoutes}
+}
+
+function basenameKey(value) {
+  return path.basename(value).toLowerCase()
+}
+
+function stripExtension(value) {
+  return basenameKey(value).replace(/\.(md|mdx|json)$/u, '')
+}
+
+// Match dispatch-set files against build failures. Exact path hits are
+// authoritative; route hits fall back to the slug segment (the doc id), which
+// is the file basename minus extension. A route whose slug matches files in
+// multiple units of different groups cannot be attributed fail-closed, so it
+// is dropped from attribution entirely.
+function attributeBuildFailures({failures, files}) {
+  if (!failures || typeof failures !== 'object') throw new Error('Parsed build failures are required')
+  if (!Array.isArray(files)) throw new Error('A dispatch file list is required')
+  const sourcePaths = new Set()
+  const targetPaths = new Set()
+  const filesBySlug = new Map()
+  for (const file of files) {
+    if (typeof file.sourcePath !== 'string' || typeof file.targetPath !== 'string') throw new Error('Dispatch files need sourcePath and targetPath')
+    sourcePaths.add(file.sourcePath)
+    targetPaths.add(file.targetPath)
+    const slug = stripExtension(file.sourcePath)
+    if (!filesBySlug.has(slug)) filesBySlug.set(slug, [])
+    filesBySlug.get(slug).push(file)
+  }
+  const sourceHits = []
+  const targetHits = []
+  for (const filePath of failures.filePaths) {
+    if (sourcePaths.has(filePath)) sourceHits.push(filePath)
+    if (targetPaths.has(filePath)) targetHits.push(filePath)
+  }
+  for (const route of failures.failingRoutes) {
+    const slug = stripExtension(route)
+    const candidates = filesBySlug.get(slug) || []
+    const distinctFiles = new Set(candidates.map(file => file.sourcePath))
+    if (distinctFiles.size !== 1) continue
+    sourceHits.push(`${route} -> ${candidates[0].sourcePath}`)
+  }
+  return {sourceHits: [...new Set(sourceHits)].sort(), targetHits: [...new Set(targetHits)].sort()}
+}
+
+module.exports = {parseBuildFailures, attributeBuildFailures}
+
+if (require.main === module) {
+  const fs = require('node:fs')
+  const args = new Map()
+  for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], args[i + 1])
+  const logText = args.get('--log') ? fs.readFileSync(args.get('--log'), 'utf8') : fs.readFileSync(0, 'utf8')
+  const files = JSON.parse(fs.readFileSync(args.get('--files'), 'utf8'))
+  const failures = parseBuildFailures({logText})
+  console.log(JSON.stringify({failures, attribution: attributeBuildFailures({failures, files})}, null, 2))
+}

@@ -52,6 +52,7 @@ test('the dispatcher workflow stays off the production queue and arms only throu
   assert.equal(doc.jobs.dispatch.permissions.actions, 'write')
   assert.equal(doc.jobs.dispatch.permissions.contents, 'read')
   assert.ok(doc.on.schedule.some(entry => entry.cron === '30 * * * *'), 'hourly schedule at :30')
+  assert.equal(doc.jobs.dispatch['timeout-minutes'], 75, 'counting plus the armed-only build gate fits the cycle')
   const source = workflowSource('translation-dispatcher.yml')
   assert.match(source, /TRANSLATION_DISPATCHER_DISPATCH/, 'arming must flow through the repo variable')
   assert.match(source, /--dispatch "\$armed"/, 'the armed flag must reach the dispatcher CLI')
@@ -63,7 +64,8 @@ test('the dispatcher dispatches with the producer selection semantics, not hand-
   assert.match(source, /guidesMaxFiles/, 'dispatches carry the Guides cap')
   assert.match(source, /mode: 'auto'/, 'the dispatcher never requests a full retranslation')
   assert.match(source, /publish: true/, 'dispatched producers publish through their own short-lock publisher')
-  assert.match(source, /buildHandoff\(\{groups: selection\.groups\.join\(','\)\}\)/, 'handoffs come from the group selector, not unit filtering')
+  assert.match(source, /buildHandoff\(\{groups: dispatchSelection\.groups\.join\(','\)\}\)/, 'handoffs come from the group selector, not unit filtering')
+  assert.match(source, /selection\.groups\.filter\(group => !blockedGroups\.includes\(group\)\)/, 'the build gate drops whole groups, never single units or locales')
 })
 
 test('comma group selectors stay subset-strict in the canonical order', () => {

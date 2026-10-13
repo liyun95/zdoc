@@ -36,7 +36,9 @@ env:
 jobs:
   dispatch:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Counting (~2 min) plus the armed-only source build gate (fresh dev
+    # worktree install + build:en, 10-25 min); dry cycles stay near two.
+    timeout-minutes: 75
     permissions:
       contents: read
       actions: write
