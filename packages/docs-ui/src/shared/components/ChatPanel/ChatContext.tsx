@@ -2,6 +2,7 @@ import React, {createContext, useContext, useState, useRef, useCallback, useEffe
 import {useLocation} from '@docusaurus/router';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import type {Source, ChatMessage, ChatHistoryEntry, AgentType, ConfidenceLevel, GroundingCitation} from './types';
+import {getVisitorId} from './visitorIdentity';
 import {createAgentStreamState, parseAgentStreamEvent, type AgentStreamUpdate} from './agentStream';
 import {getChatAgentConfig} from './agentConfig';
 import {fetchPageContext} from './pageContext';
@@ -282,6 +283,7 @@ export function ChatProvider({chatEndpoint, debugDefault = false, children}: Cha
       });
       const requestBody = {
         message: outgoing,
+        user_id: getVisitorId(),
         session_id: sessionIdRef.current,
         conversationId,
         streaming_mode: 'token',
