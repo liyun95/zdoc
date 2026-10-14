@@ -1,6 +1,6 @@
 import React from 'react';
 import {describe, it, expect, vi, beforeEach, afterEach} from 'vitest';
-import {render, screen, fireEvent, cleanup} from '@testing-library/react';
+import {render, screen, fireEvent, cleanup, act} from '@testing-library/react';
 
 const {siteState} = vi.hoisted(() => ({siteState: {current: 'en'}}));
 
@@ -80,6 +80,44 @@ describe('SearchModal search_performed', () => {
     await typeAndSettle(input, '');
     await typeAndSettle(input, 'cluster');
     expect(window.dataLayer.filter(e => e.event === 'search_performed')).toHaveLength(0);
+  });
+
+  it('attributes result_count to the current query when a stale response lands mid-flight', async () => {
+    // 'mil' gets one (deferred) result, anything else two — so a stale
+    // attribution is observable in result_count.
+    let resolveFirst!: (value: unknown) => void;
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: unknown) => {
+        call += 1;
+        const q = decodeURIComponent(String(url).split('q=')[1] || '');
+        const body = q === 'mil'
+          ? {results: [{title: 'mil-only', url: '/mil', section: 'docs'}]}
+          : {results: [{title: 'a', url: '/a', section: 'docs'}, {title: 'b', url: '/b', section: 'docs'}]};
+        if (call === 1) {
+          return new Promise(resolve => {
+            resolveFirst = resolve;
+          });
+        }
+        return Promise.resolve({ok: true, json: () => Promise.resolve(body)});
+      })
+    );
+    render(<SearchModal onClose={vi.fn()} />);
+    const input = screen.getByPlaceholderText('Search documentation...');
+    fireEvent.change(input, {target: {value: 'mil'}});
+    await vi.advanceTimersByTimeAsync(450); // 'mil' fetch in flight
+    fireEvent.change(input, {target: {value: 'mila'}});
+    // The stale 'mil' response lands inside 'mila's debounce window.
+    await act(async () => {
+      resolveFirst({ok: true, json: () => Promise.resolve({results: [{title: 'mil-only', url: '/mil'}]})});
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(window.dataLayer.filter(e => e.event === 'search_performed')).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(700); // 'mila' settles
+    expect(window.dataLayer.filter(e => e.event === 'search_performed')).toEqual([
+      {event: 'search_performed', search_term: 'mila', result_count: '2', surface: 'modal'},
+    ]);
   });
 
   it('reports zero results when the endpoint errors', async () => {
