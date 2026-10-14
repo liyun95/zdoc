@@ -49,7 +49,6 @@ function getPageContext(): string | undefined {
   return (article.textContent || '').slice(0, 6000);
 }
 
-// Persistent user ID
 function uuid(): string {
   // crypto.randomUUID() requires a secure context (HTTPS / localhost).
   // Fall back to crypto.getRandomValues() for plain HTTP origins.
@@ -498,17 +497,15 @@ export function ChatProvider({chatEndpoint, debugDefault = false, children}: Cha
   }, [chatDebug, chatEndpoint, location.pathname, siteConfig.customFields?.site, uiText.chat]);
 
   const rateFeedback = useCallback((messageIndex: number, rating: 'up' | 'down') => {
+    // Feedback is analytics-only since the chat-proxy /api/feedback backend
+    // was retired; ask_ai_feedback in GA4 is the durable record. Fired outside
+    // the state updater so StrictMode double-invocation cannot double-count it.
+    trackEvent('ask_ai_feedback', {rating, surface: chatSurface()});
     setMessages(prev => {
       const updated = [...prev];
       const msg = updated[messageIndex];
       if (!msg || msg.role !== 'assistant') return prev;
-      const newRating = msg.feedback === rating ? null : rating;
-      updated[messageIndex] = {...msg, feedback: newRating};
-
-      // Feedback is analytics-only since the chat-proxy /api/feedback backend
-      // was retired; ask_ai_feedback in GA4 is the durable record.
-      trackEvent('ask_ai_feedback', {rating, surface: chatSurface()});
-
+      updated[messageIndex] = {...msg, feedback: msg.feedback === rating ? null : rating};
       return updated;
     });
   }, []);
