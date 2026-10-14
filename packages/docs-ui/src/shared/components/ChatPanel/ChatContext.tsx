@@ -2,7 +2,6 @@ import React, {createContext, useContext, useState, useRef, useCallback, useEffe
 import {useLocation} from '@docusaurus/router';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import type {Source, ChatMessage, ChatHistoryEntry, AgentType, ConfidenceLevel, GroundingCitation} from './types';
-import {getFeedbackEndpoint} from './endpoints';
 import {createAgentStreamState, parseAgentStreamEvent, type AgentStreamUpdate} from './agentStream';
 import {getChatAgentConfig} from './agentConfig';
 import {fetchPageContext} from './pageContext';
@@ -51,8 +50,6 @@ function getPageContext(): string | undefined {
 }
 
 // Persistent user ID
-const USER_ID_KEY = 'zd-user-id';
-
 function uuid(): string {
   // crypto.randomUUID() requires a secure context (HTTPS / localhost).
   // Fall back to crypto.getRandomValues() for plain HTTP origins.
@@ -63,15 +60,6 @@ function uuid(): string {
     const r = (crypto.getRandomValues(new Uint8Array(1))[0] & 15) >> (c === 'x' ? 0 : 2);
     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
   });
-}
-
-function getUserId(): string {
-  let userId = localStorage.getItem(USER_ID_KEY);
-  if (!userId) {
-    userId = uuid();
-    localStorage.setItem(USER_ID_KEY, userId);
-  }
-  return userId;
 }
 
 const HISTORY_KEY = 'zd-chat-history';
@@ -517,23 +505,13 @@ export function ChatProvider({chatEndpoint, debugDefault = false, children}: Cha
       const newRating = msg.feedback === rating ? null : rating;
       updated[messageIndex] = {...msg, feedback: newRating};
 
+      // Feedback is analytics-only since the chat-proxy /api/feedback backend
+      // was retired; ask_ai_feedback in GA4 is the durable record.
       trackEvent('ask_ai_feedback', {rating, surface: chatSurface()});
-      const endpoint = getFeedbackEndpoint(chatEndpoint);
-      fetch(endpoint, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          sessionId: sessionIdRef.current,
-          messageIndex,
-          rating: newRating || rating,
-          pageUrl: location.pathname,
-          userId: getUserId(),
-        }),
-      }).catch(() => {});
 
       return updated;
     });
-  }, [chatEndpoint, location.pathname]);
+  }, []);
 
   const stop = useCallback(() => {
     const sessionId = sessionIdRef.current;
