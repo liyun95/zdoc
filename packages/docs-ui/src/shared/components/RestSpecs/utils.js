@@ -1,7 +1,7 @@
 import { capitalize } from 'lodash';
 import { i18n } from './i18n.js'
 import { renderMarkdownHtml } from '../../markdown/renderMarkdownHtml.js'
-import { normalizeDocsLinkLocale, rewriteHtmlHrefAttributes } from '../../links/rewriteDocLinks'
+import { normalizeDocsLinkLocale, rewriteHtmlHrefAttributes } from '../../links/rewriteDocLinks.ts'
 // planeConfig is passed from callers that read it via useDocusaurusContext
 
 export const getBaseUrl = (endpoint, lang, pubTarget, planeConfig) => {
