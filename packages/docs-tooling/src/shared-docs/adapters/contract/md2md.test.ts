@@ -5,7 +5,7 @@ import { md2mdCases as cases, md2mdContract } from './suites'
 
 md2mdContract('fake Md2md', () => new FakeMd2md({
   parseBlocks(content, options) {
-    expect([content, options]).toEqual([cases.content, { sourceName: 'page.md' }])
+    expect([content, options]).toEqual([cases.content, { sourceName: 'page.md', isFragment: true }])
     return cases.parsed
   },
   stripBlockMarkers(content) { expect(content).toBe(cases.content); return cases.stripped },

@@ -5,4 +5,4 @@ source:
 
 publish:
   - manual: guides
-    path: tutorials/development/function/text-embedding-functions/openai
+    path: tutorials/development/function/text-embedding-funcs/openai

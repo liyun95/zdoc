@@ -20,5 +20,7 @@ section 5 of the implementation guide.
 - Write all upstream-facing content in English: code, comments, test names,
   commit messages, AGENTS.md, PR titles, and descriptions. Use conventional
   commit PR titles, such as `feat(shared-docs): add test and layout skeleton`.
-  Fork review discussions may use Chinese. Code must depend only on requirement
-  IDs and `area_id`, never on the catalog's descriptive text.
+  PR comments and review discussion are in English as well. Do not link fork
+  comments from PR descriptions; state decisions directly or link the design
+  repository. Code must depend only on requirement IDs and `area_id`, never on
+  the catalog's descriptive text.

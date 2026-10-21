@@ -28,7 +28,7 @@ export type PreprocessResult = {
 
 /** Synchronous signatures from technical design 03; no implementation in WP0. */
 export interface Md2md {
-  parseBlocks(content: string, options?: { sourceName?: string }): ParseBlocksResult
+  parseBlocks(content: string, options?: { sourceName?: string; isFragment?: boolean }): ParseBlocksResult
   stripBlockMarkers(content: string): string
   preprocess(input: PreprocessInput): PreprocessResult
 }

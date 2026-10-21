@@ -38,7 +38,7 @@
         "guides"
       ],
       "output_paths": {
-        "guides": "tutorials/development/function/text-embedding-functions/openai"
+        "guides": "tutorials/development/function/text-embedding-funcs/openai"
       }
     }
   ]

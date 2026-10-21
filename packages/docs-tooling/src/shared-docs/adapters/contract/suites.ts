@@ -29,7 +29,7 @@ export function md2mdContract(name: string, create: () => Md2md) {
   describe(name, () => {
     it('preserves synchronous block and preprocessing result shapes', () => {
       const adapter = create()
-      expect(adapter.parseBlocks(md2mdCases.content, { sourceName: 'page.md' })).toEqual(md2mdCases.parsed)
+      expect(adapter.parseBlocks(md2mdCases.content, { sourceName: 'page.md', isFragment: true })).toEqual(md2mdCases.parsed)
       expect(adapter.stripBlockMarkers(md2mdCases.content)).toBe(md2mdCases.stripped)
       const result = adapter.preprocess(md2mdCases.input)
       expect(result).toMatchObject({ ...md2mdCases.output, engine: { name: '@zilliz/mdtomd', version: expect.any(String) } })
