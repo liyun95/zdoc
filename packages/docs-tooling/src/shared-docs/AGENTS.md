@@ -1,11 +1,24 @@
-# Shared docs Agent 的规则
+# Shared docs agent rules
 
-与仓库根目录的 AGENTS.md 一起生效（实现指南第 5 节）：
+These rules apply together with the repository root AGENTS.md and reflect
+section 5 of the implementation guide.
 
-- 只改任务卡“可以改”中列出的路径；要改别的，先在 PR 中说明，等审阅人同意。
-- `core/` 中不读写文件、网络、Git，不引用 `lark/`；外部依赖只经过 `adapters/`。
-- 不改 `spec/requirements.json`；它从设计仓库复制而来。
-- 不改基准输出，除非任务卡要求；改了就在 PR 说明中逐个解释。
-- 不改产品需求和技术设计；发现它们有问题、互相矛盾或不够用，在 PR 中提出，由推动者决定。
-- 在单独的工作树中工作，不动仓库主目录中未提交的文件。按根目录 AGENTS.md，工作树建在 `.claude/worktrees/` 下，只向 master 开 PR，不碰 dev。
-- 提审前跑完 L1，在 PR 说明中贴出命令与结果；跳过或没跑完的要写明。
+- Change only the paths allowed by the task card. Describe any additional scope
+  in the PR and wait for reviewer approval before changing other paths.
+- Do not read or write files, access the network or Git, or reference `lark/`
+  from `core/`. Route external dependencies through `adapters/`.
+- Do not hand-edit `spec/requirements.json`; copy it from the design repository.
+- Do not change golden outputs unless the task card requires it. Explain each
+  changed golden file in the PR description.
+- Do not change product requirements or technical designs. Report problems,
+  contradictions, or missing details in the PR for the project owner to decide.
+- Use a separate worktree under `.claude/worktrees/` as required by the root
+  AGENTS.md. Preserve uncommitted files in the main checkout, target `master`
+  with PRs, and do not modify `dev`.
+- Complete L1 validation before requesting review. Include commands and results
+  in the PR description, explicitly identifying skipped or incomplete checks.
+- Write all upstream-facing content in English: code, comments, test names,
+  commit messages, AGENTS.md, PR titles, and descriptions. Use conventional
+  commit PR titles, such as `feat(shared-docs): add test and layout skeleton`.
+  Fork review discussions may use Chinese. Code must depend only on requirement
+  IDs and `area_id`, never on the catalog's descriptive text.

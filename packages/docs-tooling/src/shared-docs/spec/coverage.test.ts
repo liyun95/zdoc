@@ -3,13 +3,28 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import requirements from './requirements.json'
 import pending from './pending.json'
-import { checkCoverage, readTestSources, testReferences } from './coverage'
+import { checkCoverage, readTestSources, requirementIds, testReferences } from './coverage'
 
 const small = { behaviours: [{ id: '3-1' }], acceptance: [], errors: [] }
 describe('requirement coverage infrastructure', () => {
   it('accounts for every zdoc requirement and reports remaining work', () => {
     const result = checkCoverage(requirements, pending, readTestSources(fileURLToPath(new URL('../', import.meta.url))))
     console.info(`Shared docs: ${result.remaining} requirement IDs pending`)
+  })
+  it('uses stable IDs and area IDs without depending on display text', () => {
+    const machineOnly = {
+      behaviours: requirements.behaviours.map(({ id }) => ({ id })),
+      acceptance: requirements.acceptance.map(({ id }) => ({ id })),
+      errors: requirements.errors.map(({ code, area_id }) => ({ code, area_id })),
+    }
+    const owned = requirementIds(machineOnly, true)
+    expect(owned).toEqual(requirementIds(requirements, true))
+    expect(owned).not.toContain('1-2')
+    expect(owned).not.toContain('T01')
+    expect(owned).not.toContain('BLOCK_DUPLICATE_ID')
+    expect(owned).not.toContain('VAR_MISSING')
+    expect(owned).toContain('CONFIG_FIELD_MISSING')
+    expect(requirementIds(machineOnly)).toEqual(requirementIds(requirements))
   })
   it('rejects unknown test IDs, missing coverage and obsolete pending entries', () => {
     expect(() => checkCoverage(small, { '3-1': 'WP3' }, ["it('[UNKNOWN_ID] fails', () => {})"]))

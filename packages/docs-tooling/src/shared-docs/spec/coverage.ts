@@ -5,13 +5,14 @@ import ts from 'typescript'
 export interface Requirements {
   behaviours: { id: string }[]
   acceptance: { id: string }[]
-  errors: { code: string; area: string }[]
+  errors: { code: string; area_id: string }[]
 }
 const md2mdIds = new Set(['1-2', '1-3', '1-4', '1-5', '2-1', '2-2', '2-3', 'T01', 'T02', 'T03', 'T11'])
+const md2mdAreas = new Set(['named-blocks', 'variables-and-fragments'])
 export function requirementIds(requirements: Requirements, ownedOnly = false): string[] {
   return [...requirements.behaviours, ...requirements.acceptance].map(row => row.id)
     .filter(id => !ownedOnly || !md2mdIds.has(id))
-    .concat(requirements.errors.filter(row => !ownedOnly || !['命名块', '变量与片段'].includes(row.area)).map(row => row.code))
+    .concat(requirements.errors.filter(row => !ownedOnly || !md2mdAreas.has(row.area_id)).map(row => row.code))
 }
 
 /** Parse test declarations, not comments, assertion strings or fake error responses. */

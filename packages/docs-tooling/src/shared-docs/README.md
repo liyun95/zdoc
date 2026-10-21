@@ -10,8 +10,10 @@ boundary test rejects filesystem, process, network, Git and source-adapter depen
 
 `spec/requirements.json` is copied byte-for-byte from the design repository.
 Its `source.prd_commit` identifies the design revision. WP0 covers no business
-IDs: all 124 zdoc-owned IDs remain in `pending.json`. Ownership follows guide
-2.1; work packages follow section 4. For requirements spanning packages,
+IDs: all 124 zdoc-owned IDs remain in `pending.json`. Ownership uses behaviour
+and acceptance IDs and error `area_id` values, never display labels or
+descriptions. Ownership follows guide 2.1; work packages follow section 4.
+For requirements spanning packages,
 T06 is assigned to WP5 (with WP4), T08/T10 to WP15, and T12 to WP8 for its
 candidate journey. `MERGE_NESTED_CHANNEL` belongs to WP11 and
 `RECOVER_INPUT_MISSING` to WP15. These entries stay pending until the complete
