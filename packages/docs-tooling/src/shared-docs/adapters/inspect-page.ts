@@ -49,17 +49,19 @@ export async function inspectPage(input: ReadPageInput & { variablesJson: string
     const blocks = inventoryBlocks(markdown, parsed)
     const content = md2md.stripBlockMarkers(markdown)
     await reader.withFragments(read.lock[channel], async snapshot => {
-      const result = md2md.preprocess({ content, fragmentRoot: snapshot.root, variables: variables.variables, sourceName })
-      errors.push(...result.errors.map(error => annotate({ ...error,
+      const annotateSnapshotError = (error: SharedDocsError): SharedDocsError => annotate({ ...error,
+        ...(error.file && snapshot.files.has(error.file) ? { file: `site/en/${error.file}` } : {}),
         ...(error.file === sourceName && error.line ? { line: originalPageLine(error.line, parsed.blocks) } : {}),
-      })))
+      })
+      const result = md2md.preprocess({ content, fragmentRoot: snapshot.root, variables: variables.variables, sourceName })
+      errors.push(...result.errors.map(annotateSnapshotError))
       // Validate every successfully read dependency before any content can be returned.
       // Unreferenced fragments do not affect this page; md2md owns traversal and limits.
       for (const dependency of result.dependencies.fragments) {
         const fragment = snapshot.files.get(dependency.path)
         if (fragment === undefined) throw new Error(`Preprocessor returned an unknown fragment: ${dependency.path}`)
         const checked = md2md.parseBlocks(fragment, { sourceName: dependency.path, isFragment: true })
-        errors.push(...checked.errors.map(annotate))
+        errors.push(...checked.errors.map(annotateSnapshotError))
       }
       if (result.ok) channels[channel] = { commit: read.lock[channel], blocks, content: result.content,
         dependencies: result.dependencies, engine: result.engine }

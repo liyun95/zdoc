@@ -87,13 +87,14 @@ it('fails missing Cloud variables without fallback and remaps page diagnostics a
 it('[2-4] aggregates bad markers and next-channel preprocess errors without partial Markdown', async () => {
   const f = await setup()
   const before = await f.commit('<!-- doc:block:start id="Wrong" -->\n<!-- doc:block:end id="absent" -->\n')
-  const after = await f.commit('{{var.missing}}\n{{fragments/example.md}}\n', '<!-- doc:block:start id="fragment" -->\n')
+  const after = await f.commit('{{var.missing}}\n{{fragments/example.md}}\n', '<!-- doc:block:start id="fragment" -->\n{{var.fragment_missing}}\n')
   const result = await inspectPage({ ...f.input, lockYaml: locked(before, after) }, f.reader, f.adapter)
   expect(result).toMatchObject({ errors: [
     { code: 'BLOCK_MALFORMED', file: f.pagePath, line: 1, page: f.page, channel: 'current' },
     { code: 'BLOCK_UNMATCHED_END', line: 2, channel: 'current' },
     { code: 'VAR_MISSING', line: 1, channel: 'next' },
-    { code: 'BLOCK_IN_FRAGMENT', file: 'fragments/example.md', line: 1, channel: 'next' },
+    { code: 'VAR_MISSING', file: f.fragmentPath, line: 2, channel: 'next' },
+    { code: 'BLOCK_IN_FRAGMENT', file: f.fragmentPath, line: 1, channel: 'next' },
   ] })
   expect('channels' in result).toBe(false)
 })
