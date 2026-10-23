@@ -1,3 +1,4 @@
+import {createRequire} from 'node:module';
 import {describe, expect, it} from 'vitest';
 import {compile} from '@mdx-js/mdx';
 import {
@@ -231,6 +232,72 @@ describe('heading anchor deduplication policy', () => {
 
     expect(values(first)).toEqual(['Same{#same}', 'Same{#same-1}']);
     expect(values(second)).toEqual(['Same{#same}', 'Same{#same-1}']);
+  });
+
+  it('neither counts nor rewrites anchors that do not sit in a trailing text node', () => {
+    // Docusaurus still consumes these shapes, so the wrapped copy keeps the bare
+    // id; the plugin stays out of nested nodes rather than risk display text.
+    const tree = {
+      type: 'root',
+      children: [
+        heading('Plain tail{#c}'),
+        heading(undefined, [{type: 'strong', children: [{type: 'text', value: 'Entirely bold {#c}'}]}]),
+        heading('Plain2 tail{#c}'),
+        heading(undefined, [{type: 'text', value: 'Code tail '}, {type: 'inlineCode', value: 'probe{#d}'}]),
+        heading(undefined, [{type: 'text', value: 'Code tail '}, {type: 'inlineCode', value: 'probe{#d}'}]),
+      ],
+    };
+    const untouched = () => JSON.stringify([tree.children[1], tree.children[3], tree.children[4]]);
+    const before = untouched();
+    remarkDedupeHeadingAnchors()(tree);
+
+    expect(values(tree)).toEqual([
+      'Plain tail{#c}',
+      'Entirely bold {#c}',
+      'Plain2 tail{#c-1}',
+      'Code tail probe{#d}',
+      'Code tail probe{#d}',
+    ]);
+    expect(untouched()).toBe(before);
+  });
+
+  it('rewrites only the token Docusaurus consumes when an unbalanced {# precedes it', () => {
+    const tree = {
+      type: 'root',
+      children: [heading('A{#p{#id}'), heading('A{#p{#id}')],
+    };
+    remarkDedupeHeadingAnchors()(tree);
+
+    expect(values(tree)).toEqual(['A{#p{#id}', 'A{#p{#id-1}']);
+  });
+
+  it('yields distinct ids from the real Docusaurus headings plugin, which collide without it', async () => {
+    // The headings plugin is a transitive dependency; resolve it through the
+    // docs plugin that ships it so the test runs what the site build runs.
+    const docsPluginRequire = createRequire(createRequire(import.meta.url).resolve('@docusaurus/plugin-content-docs'));
+    const docusaurusHeadings = docsPluginRequire('@docusaurus/mdx-loader/lib/remark/headings').default;
+    const source = [
+      '### Via RESTful API\\{#via-restful-api}',
+      '',
+      '### Via web console\\{#via-web-console}',
+      '',
+      '### Via RESTful API\\{#via-restful-api}',
+      '',
+      '### Via RESTful API\\{#via-restful-api}',
+    ].join('\n');
+    const idsOf = (compiled: string) => Array.from(compiled.matchAll(/\bid:\s*"([^"]+)"/g), match => match[1]);
+    const policy = resolveMarkdownPolicy({remarkPlugins: [], rehypePlugins: []}, 'en');
+
+    const fixed = String(await compile(source, {
+      remarkPlugins: [...policy.beforeDefaultRemarkPlugins, [docusaurusHeadings, {anchorsMaintainCase: false}]],
+    }));
+    const control = String(await compile(source, {
+      remarkPlugins: [[docusaurusHeadings, {anchorsMaintainCase: false}]],
+    }));
+
+    expect(idsOf(fixed)).toEqual(['via-restful-api', 'via-web-console', 'via-restful-api-1', 'via-restful-api-2']);
+    expect(fixed).not.toContain('{#');
+    expect(idsOf(control)).toEqual(['via-restful-api', 'via-web-console', 'via-restful-api', 'via-restful-api']);
   });
 
   it('compiles escaped writer output so every duplicate anchor carries its own id', async () => {

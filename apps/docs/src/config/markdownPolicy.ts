@@ -201,8 +201,12 @@ export function remarkStripHeadingZeroWidthChars() {
 // strip and ahead of the built-in headings/TOC plugins, which then consume the
 // rewritten anchors as ordinary explicit ids.
 const HEADING_ANCHOR_PATTERN = /\s*\{#(?<id>(?:.(?!\{#|\}))*.)\}$/;
+// The token alone, so a rewrite replaces exactly what Docusaurus consumes even
+// when an unbalanced `{#` precedes it in the same text node.
+const HEADING_ANCHOR_TOKEN = /\{#(?:.(?!\{#|\}))*.\}$/;
 
-// Mirrors mdast-util-to-string over the nodes Docusaurus concatenates.
+// Mirrors mdast-util-to-string over the nodes Docusaurus concatenates, minus
+// image alt text; a trailing image fails the text-node gate below either way.
 function headingTextOf(node: AstNode): string {
   if (typeof node.value === 'string') return node.value;
   return (node.children ?? []).map(headingTextOf).join('');
@@ -211,7 +215,10 @@ function headingTextOf(node: AstNode): string {
 // Mirrors @docusaurus/mdx-loader's extraction: html/jsx children are excluded
 // from the heading text, and the anchor only counts when it closes that text.
 // Returns the trailing text node carrying the token so the rewrite stays
-// inside it, or undefined when the token is not safely rewritable.
+// inside it. Anchors Docusaurus consumes from elsewhere — a token wrapped in
+// emphasis, carried by trailing inline code, or written as an MDX/HTML comment
+// — are deliberately neither counted nor rewritten: touching those nodes is
+// where display text could be damaged, so such shapes may still share an id.
 function headingAnchor(node: AstNode): {node: AstNode; id: string} | undefined {
   const textChildren = (node.children ?? []).filter(
     child => child.type !== 'html' && child.type !== 'jsx',
@@ -220,10 +227,8 @@ function headingAnchor(node: AstNode): {node: AstNode; id: string} | undefined {
     ?.groups?.id.trim();
   if (!id) return undefined;
   const last = textChildren[textChildren.length - 1];
-  const lastId = last?.type === 'text' && typeof last.value === 'string'
-    ? HEADING_ANCHOR_PATTERN.exec(last.value)?.groups?.id.trim()
-    : undefined;
-  if (lastId !== id || !last) return undefined;
+  if (last?.type !== 'text' || typeof last.value !== 'string') return undefined;
+  if (HEADING_ANCHOR_PATTERN.exec(last.value)?.groups?.id.trim() !== id) return undefined;
   return {node: last, id};
 }
 
@@ -258,10 +263,7 @@ export function remarkDedupeHeadingAnchors() {
         assigned.add(final);
       }
       if (final !== base) {
-        anchor.node.value = (anchor.node.value as string).replace(
-          /\{#[^}]*\}$/,
-          `{#${final}}`,
-        );
+        anchor.node.value = (anchor.node.value as string).replace(HEADING_ANCHOR_TOKEN, `{#${final}}`);
       }
     }
   };
