@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { execFile } from 'node:child_process'
+import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises'
@@ -223,6 +224,55 @@ it('collects independent link and paired-image failures for every cached version
   await expect(readdir(options.out)).rejects.toMatchObject({ code: 'ENOENT' })
 })
 
+it('prints the image failure reason alongside its diagnostic and source context', async () => {
+  const options = await demo()
+  const reason = 'The operation was aborted due to timeout'
+  const images = new FakeImageFetcher(new Map([[externalImage, new Error(reason)]]))
+  const result = await command({ ...options, page: 'build-pipeline' }, images)
+  expect(result.code).toBe(1)
+  expect(result.text).toContain(`[build-pipeline/current] IMAGE_FETCH_FAILED: Cannot read a stable image: ${externalImage} (${reason})\n`)
+  expect(result.text).toContain(`[build-pipeline/next] IMAGE_FETCH_FAILED: Cannot read a stable image: ${externalImage} (${reason})\n`)
+  await expect(readdir(options.out)).rejects.toMatchObject({ code: 'ENOENT' })
+})
+
+it.each([{ seconds: undefined, milliseconds: 120_000 }, { seconds: 0.25, milliseconds: 250 }])(
+  'uses $milliseconds ms for each independent image read', async ({ seconds, milliseconds }) => {
+    const options = await demo()
+    const timeout = vi.spyOn(AbortSignal, 'timeout')
+    const http = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(imageBytes))
+    try {
+      let text = ''
+      const code = await runBuild({ ...options, page: 'build-pipeline', imageTimeout: seconds }, value => { text += value })
+      expect(code, text).toBe(0)
+      expect(timeout.mock.calls).toEqual([[milliseconds], [milliseconds]])
+      expect(http).toHaveBeenCalledTimes(2)
+    } finally { timeout.mockRestore(); http.mockRestore() }
+  },
+)
+
+it('applies the real CLI image timeout override and reports the timeout reason without output', async () => {
+  const server = createServer(() => { /* Keep the image request pending until the client timeout. */ })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Missing test image endpoint')
+    const directory = await mkdtemp(join(tmpdir(), 'shared-docs-image-timeout-')); roots.push(directory)
+    const url = `http://127.0.0.1:${address.port}/slow.png`
+    const options = await createBuildDemo(directory, url)
+    const root = fileURLToPath(new URL('../../../../../..', import.meta.url))
+    const result = await promisify(execFile)(process.execPath, ['scripts/docs-tooling.js', 'shared-docs', 'build',
+      '--shared-docs', options.sharedDocs, '--repo', options.repo, '--dev', options.dev, '--out', options.out,
+      '--page', 'build-pipeline', '--image-timeout', '0.02'], { cwd: root, timeout: 10_000 })
+      .then(value => ({ code: 0, output: value.stdout + value.stderr }), error => ({ code: error.code, output: error.stdout + error.stderr }))
+    expect(result.code).toBe(1)
+    expect(result.output).toContain(`IMAGE_FETCH_FAILED: Cannot read a stable image: ${url} (The operation was aborted due to timeout)`)
+    await expect(readdir(options.out)).rejects.toMatchObject({ code: 'ENOENT' })
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+  }
+}, 15_000)
+
 it('replays both image results and cached failures without collapsing the download pair', async () => {
   const changing = new FakeImageFetcher(new Map([[externalImage, [new Uint8Array([1]), new Uint8Array([2])]]]))
   const pair = createPairedImageFetcher(changing)
@@ -363,6 +413,10 @@ it('rejects malformed real CLI invocations before generating files', async () =>
     { args: [...good, '--unknown', 'value'], message: 'Unknown build option' },
     { args: [...good, 'unexpected'], message: 'Unexpected argument' },
     { args: [...good, '--page', '../escape'], message: '--page must be a lowercase page ID' },
+    { args: [...good, '--image-timeout'], message: '--image-timeout is required' },
+    ...['0', '-1', 'not-a-number', 'Infinity', '2147484'].map(value => ({
+      args: [...good, '--image-timeout', value], message: '--image-timeout must be a positive number of seconds',
+    })),
   ]
   for (const { args, message } of cases) {
     const result = await exec(process.execPath, [...base, ...args], { cwd: root, timeout: 30_000 })

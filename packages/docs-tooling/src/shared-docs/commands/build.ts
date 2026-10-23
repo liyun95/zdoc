@@ -17,7 +17,7 @@ import { parseTabsRules } from '../core/site'
 import type { SharedDocsError } from '../core/types'
 import { parseVariables } from '../core/variables'
 
-export interface BuildOptions { sharedDocs: string; repo: string; dev: string; out: string; page?: string }
+export interface BuildOptions { sharedDocs: string; repo: string; dev: string; out: string; page?: string; imageTimeout?: number }
 const within = (parent: string, path: string) => {
   const child = relative(parent, path)
   return child === '' || (!child.startsWith(`..${sep}`) && child !== '..' && !isAbsolute(child))
@@ -125,9 +125,19 @@ async function writeBuild(out: string, pages: readonly BuiltPage[], images: read
 export async function runBuild(options: BuildOptions, write: (text: string) => void = text => process.stdout.write(text),
   dependencies: { fetcher?: ImageFetcher } = {}): Promise<number> {
   const print = (errors: readonly SharedDocsError[]) => {
-    for (const error of errors) write(`${error.file ?? '<input>'}${error.line ? `:${error.line}` : ''} [${error.page ?? '*'}/${error.channel ?? 'both'}] ${error.code}: ${error.message}\n`)
+    for (const error of errors) {
+      const detail = error.detail
+      const reason = detail && typeof detail === 'object' && 'reason' in detail && typeof detail.reason === 'string' && detail.reason
+        ? ` (${detail.reason})` : ''
+      write(`${error.file ?? '<input>'}${error.line ? `:${error.line}` : ''} [${error.page ?? '*'}/${error.channel ?? 'both'}] ${error.code}: ${error.message}${reason}\n`)
+    }
   }
   try {
+    const imageTimeoutMs = Math.ceil((options.imageTimeout ?? 120) * 1_000)
+    // Larger delays overflow Node's timer range and would time out almost immediately.
+    if (!Number.isFinite(imageTimeoutMs) || imageTimeoutMs <= 0 || imageTimeoutMs > 2_147_483_647) {
+      throw new Error('--image-timeout must be a positive number of seconds no greater than 2147483.647')
+    }
     if (options.page !== undefined && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(options.page)) throw new Error('--page must be a lowercase page ID')
     const sharedRoot = await realpath(resolve(options.sharedDocs)), repo = await realpath(resolve(options.repo)), dev = await realpath(resolve(options.dev))
     const out = resolve(options.out)
@@ -151,7 +161,7 @@ export async function runBuild(options: BuildOptions, write: (text: string) => v
       if (publication && !zdoc.has(manual)) zdoc.set(manual, createZdocContentReader({ checkout: dev, manualDirectory: publication.contentRoot }))
     }
     const reader = createBuildReader(repo)
-    const runtime = createBuildRuntime({ sharedDocs, reader, fetcher: dependencies.fetcher ?? new HttpImageFetcher(), zdoc, guides: createGuidesSnapshot(dev) })
+    const runtime = createBuildRuntime({ sharedDocs, reader, fetcher: dependencies.fetcher ?? new HttpImageFetcher(imageTimeoutMs), zdoc, guides: createGuidesSnapshot(dev) })
     const pages: BuiltPage[] = [], plannedLocks: string[] = []
     let failed = false
     try {
