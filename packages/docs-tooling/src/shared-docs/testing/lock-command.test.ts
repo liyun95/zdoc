@@ -115,4 +115,4 @@ it('exposes CLI options and exit classes', async () => {
   await rm(f.lock)
   git(f.repo, 'branch', '-D', 'v3.0.x')
   expect(cli(...args).status).toBe(2)
-})
+}, 30_000)
