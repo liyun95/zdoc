@@ -56,7 +56,7 @@ export function rewriteLinksAndImages(input: RewriteInput) {
           fail(ref, 'LINK_TARGET_ABSENT', `Shared target is absent in this commit: ${file}`, { target: file })
           continue
         }
-      } else if (mapped !== undefined) destination = mapped
+      } else if (mapped !== undefined) destination = isMilvusUrl(mapped) ? mapped : `./${mapped}`
       else if (input.cloudPages.some(page => page.slug === file.slice(0, -3))) destination = `./${file.slice(0, -3)}`
       else {
         const fallback = file.slice(0, -3).replace(/-/g, ' ')

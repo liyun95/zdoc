@@ -48,11 +48,11 @@ export async function runLinksDemo(directory: string) {
   }
   const deleted = results.get('delete-entities')!
   const openai = results.get('openai')!
-  if (!deleted.markdown?.includes('(filtering-overview)')) throw new Error('Delete Entities did not resolve boolean.md')
+  if (!deleted.markdown?.includes('(./filtering-overview)')) throw new Error('Delete Entities did not resolve boolean.md')
   if (openai.errors?.length !== 1 || openai.errors[0].code !== 'LINK_UNRESOLVED') throw new Error('OpenAI did not produce the expected unresolved link')
   return {
     repository, commit,
-    deleteEntities: { replacement: 'boolean.md -> filtering-overview', excerpt: deleted.markdown.split('\n').find(line => line.includes('(filtering-overview)')) },
+    deleteEntities: { replacement: 'boolean.md -> ./filtering-overview', excerpt: deleted.markdown.split('\n').find(line => line.includes('(./filtering-overview)')) },
     openai: openai.errors,
   }
 }

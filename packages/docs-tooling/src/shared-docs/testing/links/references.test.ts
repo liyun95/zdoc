@@ -17,7 +17,7 @@ it('rewrites used reference definitions exactly once, including collapsed and sh
   expect(refs.images.map(ref => ref.url)).toEqual(['image.png'])
   const result = rewriteLinksAndImages(input(markdown, { linkMap: new Map([['boolean.md', 'filtering-overview']]),
     images: new Map([['image.png', { bytes: new Uint8Array(), sha256: 'a'.repeat(64) }]]) }))
-  expect(result).toHaveProperty('markdown', markdown.replace('<boolean.md>', '<filtering-overview>').replace('[pic]: image.png', `[pic]: shared/${'a'.repeat(64)}.png`))
+  expect(result).toHaveProperty('markdown', markdown.replace('<boolean.md>', '<./filtering-overview>').replace('[pic]: image.png', `[pic]: shared/${'a'.repeat(64)}.png`))
 })
 it('excludes code, comments, front matter and language switches without hiding ordinary anchors', () => {
   const markdown = ['---', 'description: "[metadata](missing.md)"', '---',
@@ -45,7 +45,7 @@ it('maps multiline blockquote definitions back to their actual destinations', ()
   const ref = collectReferences(markdown).links[0]
   expect(markdown.slice(ref.start, ref.end)).toBe('boolean.md')
   expect(rewriteLinksAndImages(input(markdown, { linkMap: new Map([['boolean.md', 'filtering-overview']]) })))
-    .toHaveProperty('markdown', '[x][id]\n\n> [id]:\n> filtering-overview')
+    .toHaveProperty('markdown', '[x][id]\n\n> [id]:\n> ./filtering-overview')
 })
 it('counts bare carriage returns and collects autolinks including unsupported schemes', () => {
   const refs = collectReferences('[x](a.md)\r<https://example.test>\r<javascript:bad>')

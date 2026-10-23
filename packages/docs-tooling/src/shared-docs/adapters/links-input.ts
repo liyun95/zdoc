@@ -93,11 +93,13 @@ export class FakeLinkInputReader implements LinkInputReader {
   }
 }
 
+// Matches IGNORE_FILES in milvus-io/milvus.io src/utils/docs.ts at 43e66d8.
 const ignored = new Set(['README.md', 'Variables.json', '.DS_Store', 'fragments', 'menuStructure', '.git', 'home', 'template', '_md2md_demo', 'release_notes', 'Tips.json'])
 /** Public IDs, sorted paths, first match wins: schema.md resolves to reference/schema.md. */
 async function readTargetIndex(commit: string, reader: LinkInputReader, wanted: Set<string>) {
   const targets = new Map<string, string | null>([...wanted].map(id => [id, null]))
   if (!wanted.size) return targets
+  // WP8 may batch target reads across pages and channels with git cat-file --batch.
   for (const path of (await reader.listFiles(commit, 'site/en')).sort()) {
     if (!path.startsWith('site/en/') || !path.endsWith('.md') || path.split('/').some(part => ignored.has(part))) continue
     const content = await reader.readFile(commit, path)

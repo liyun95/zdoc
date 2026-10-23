@@ -76,7 +76,7 @@ export function collectHeadings(markdown: string): Heading[] {
   // HTML blocks must not swallow Markdown headings in Milvus wrapper divs.
   const env = {}
   const tokens = new MarkdownIt({ html: false }).parse(analysisMarkdown(markdown), env)
-  const counts = new Map<string, number>()
+  const used = new Set<string>()
   const headings: Heading[] = []
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index]
@@ -84,10 +84,13 @@ export function collectHeadings(markdown: string): Heading[] {
     const text = visibleText(parser.parseInline(tokens[index + 1].content, env)[0])
     const level = Number(token.tag.slice(1))
     const base = cloudAnchor(text)
-    const count = level === 1 ? 0 : counts.get(base) ?? 0
-    if (level !== 1) counts.set(base, count + 1)
+    let cloud = base
+    if (level !== 1) {
+      for (let suffix = 1; used.has(cloud); suffix++) cloud = `${base}-${suffix}`
+      used.add(cloud)
+    }
     headings.push({ text, level, line: (token.map?.[0] ?? 0) + 1,
-      milvus: milvusAnchor(text), cloud: count ? `${base}-${count}` : base })
+      milvus: milvusAnchor(text), cloud })
   }
   return headings
 }

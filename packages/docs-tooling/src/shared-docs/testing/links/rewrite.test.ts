@@ -8,7 +8,7 @@ it('[5-1] classifies every link form and rewrites valid references without leavi
   expect(forms.map(classifyLink)).toEqual(['anchor', 'external', 'external', 'milvus-url', 'page', 'root', 'unknown'])
   const markdown = '# Title\n\n## Heading\n\n' + forms.slice(0, 5).map(url => `[x](${url})`).join(' ')
   const result = rewriteLinksAndImages(input(markdown, { linkMap: new Map([['boolean.md', 'filtering-overview']]), targets: new Map([['boolean.md', '## Heading']]) }))
-  expect(result).toHaveProperty('markdown', markdown.replace('(#Heading)', '(#heading)').replace('(boolean.md#Heading)', '(filtering-overview#heading)'))
+  expect(result).toHaveProperty('markdown', markdown.replace('(#Heading)', '(#heading)').replace('(boolean.md#Heading)', '(./filtering-overview#heading)'))
   const failed = rewriteLinksAndImages(input(forms.slice(5).map(url => `[x](${url})`).join('\n')))
   expect(failed).not.toHaveProperty('markdown')
   expect(failed.errors?.map(error => error.code)).toEqual(['LINK_ROOT_PATH', 'LINK_UNKNOWN_FORM'])
@@ -18,7 +18,7 @@ it('[5-2] shares one validated map across pages and rejects duplicate keys', () 
   expect(parsed).toHaveProperty('map')
   if ('errors' in parsed) throw new Error('Invalid fixture')
   for (const page of ['first', 'second']) expect(rewriteLinksAndImages(input('[x](boolean.md)', { linkMap: parsed.map, context: { ...context, page } })))
-    .toHaveProperty('markdown', '[x](filtering-overview)')
+    .toHaveProperty('markdown', '[x](./filtering-overview)')
   expect(parseLinkMap('boolean.md: one\nboolean.md: two\n', context)).toMatchObject({ errors: [{ code: 'LINK_MAP_INVALID', line: 2 }] })
 })
 it('validates YAML shape, filename keys and destination values with source lines', () => {
@@ -31,12 +31,12 @@ it('validates YAML shape, filename keys and destination values with source lines
 it('stops at the first lookup match, preserves explicit Milvus fragments, and validates shared targets', () => {
   const overrides = { sharedPages: new Map([['a.md', 'shared-a']]), linkMap: new Map([['a.md', 'mapped-a'], ['b.md', 'https://milvus.io/docs/b.md']]),
     cloudPages: [{ slug: 'a', title: 'A' }, { slug: 'c', title: 'C' }], targets: new Map([['a.md', '## Heading']]) }
-  expect(rewriteLinksAndImages(input('[a](a.md) [b](b.md#Keep-Case) [c](c.md)', overrides)))
-    .toHaveProperty('markdown', '[a](./shared-a) [b](https://milvus.io/docs/b.md#Keep-Case) [c](./c)')
+  expect(rewriteLinksAndImages(input('[a](a.md) [b](b.md) [section](b.md#Keep-Case) [c](c.md)', overrides)))
+    .toHaveProperty('markdown', '[a](./shared-a) [b](https://milvus.io/docs/b.md) [section](https://milvus.io/docs/b.md#Keep-Case) [c](./c)')
   expect(rewriteLinksAndImages(input('[a](a.md)', { ...overrides, targets: new Map([['a.md', null]]) })))
     .toMatchObject({ errors: [{ code: 'LINK_TARGET_ABSENT' }] })
   expect(rewriteLinksAndImages(input('[a](a.md)', { ...overrides, sharedPages: new Map() })))
-    .toHaveProperty('markdown', '[a](mapped-a)')
+    .toHaveProperty('markdown', '[a](./mapped-a)')
 })
 it('[5-7] suggests equal and similar titles without adopting a differently named page', () => {
   const cloudPages = [{ slug: 'vector-embedding', title: 'Embedding Function Overview' }, { slug: 'functions', title: 'Embedding Functions' }]
@@ -52,7 +52,7 @@ it('requires exact Milvus anchors and uses target headings rather than lowercasi
   const targets = new Map([['a.md', '## Phase 1: Ingestion & key classification\n\n## Example\n\n## example']])
   const overrides = { targets, linkMap: new Map([['a.md', 'a']]) }
   expect(rewriteLinksAndImages(input('[x](a.md#Phase-1-Ingestion--key-classification) [y](a.md#example)', overrides)))
-    .toHaveProperty('markdown', '[x](a#phase-1-ingestion-and-key-classification) [y](a#example-1)')
+    .toHaveProperty('markdown', '[x](./a#phase-1-ingestion-and-key-classification) [y](./a#example-1)')
   expect(rewriteLinksAndImages(input('[x](a.md#EXAMPLE)', overrides))).toMatchObject({ errors: [{ code: 'ANCHOR_NOT_FOUND' }] })
 })
 it('[5-6] preserves recorded image digests and returns a notice without failing', () => {

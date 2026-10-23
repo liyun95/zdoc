@@ -8,7 +8,8 @@ it('demonstrates the requested Delete Entities rewrite and OpenAI candidates thr
   const root = await mkdtemp(join(tmpdir(), 'wp5-demo-test-'))
   try {
     const result = await runLinksDemo(root)
-    expect(result.deleteEntities.excerpt).toContain('(filtering-overview)')
+    expect(result.deleteEntities.replacement).toBe('boolean.md -> ./filtering-overview')
+    expect(result.deleteEntities.excerpt).toContain('(./filtering-overview)')
     expect(result.openai).toMatchObject([{ code: 'LINK_UNRESOLVED', detail: {
       target: 'embedding-function-overview.md', candidates: [{ slug: 'text-embedding-functions' }, { slug: 'model-inference' }],
     } }])

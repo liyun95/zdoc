@@ -41,6 +41,17 @@ it('numbers explicit Cloud IDs in order, excluding H1, while identical Milvus an
   const result = rewriteLinksAndImages(input(markdown))
   expect(result).toHaveProperty('markdown', markdown.replace('[x](#example)', '[x](#example-1)').replace('[first](#Example)', '[first](#example)'))
 })
+it('skips Cloud IDs already assigned to either a heading slug or a generated suffix', () => {
+  for (const [headings, expected, anchor] of [
+    ['## Example\n\n## Example\n\n## Example 1', ['example', 'example-1', 'example-1-1'], 'example-1-1'],
+    ['## Example 1\n\n## Example\n\n## Example', ['example-1', 'example', 'example-2'], 'example-1'],
+  ] as const) {
+    const markdown = `# Example\n\n${headings}\n\n[target](#Example-1)`
+    expect(collectHeadings(markdown).map(heading => heading.cloud)).toEqual(['example', ...expected])
+    expect(rewriteLinksAndImages(input(markdown)))
+      .toHaveProperty('markdown', markdown.replace('[target](#Example-1)', `[target](#${anchor})`))
+  }
+})
 it('ignores front matter and fenced code and reads setext headings', () => {
   const headings = collectHeadings('---\nid: foo.md\n---\n\n# Title\n\n```md\n## False\n```\n\nSetext\n------\n')
   expect(headings.map(h => h.text)).toEqual(['Title', 'Setext'])

@@ -5,7 +5,7 @@
     "prd": "docs/prd.md",
     "plan": "docs/phase-1.md",
     "errors": "docs/design/09-error-catalog.md",
-    "prd_commit": "be630ec36302a1ec965f0d51b1aff2471fd3d6ab"
+    "prd_commit": "b3300cb32a13a0af6db35bf897157e6388c471a7"
   },
   "behaviours": [
     {
@@ -918,7 +918,7 @@
     {
       "code": "ADAPT_UNSUPPORTED_MARKUP",
       "area": "站点适配",
-      "when": "提示框写法不在支持范围内，出现 Milvus 站点专用的版式 `div`，或同一个多语言代码组中一种语言出现两次",
+      "when": "提示框写法不在支持范围内；出现代码组切换栏与提示框之外的 `<div>`，如 Milvus 站点专用的版式、按 SDK 语言显示的说明；同一个多语言代码组中一种语言出现两次",
       "area_id": "site-adaptation"
     },
     {
