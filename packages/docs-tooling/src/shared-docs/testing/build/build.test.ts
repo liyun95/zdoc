@@ -18,6 +18,10 @@ import { buildImageManifest, readSharedDocs, runBuild } from '../../commands/bui
 import { imageDigest } from '../../core/links'
 import { createBuildDemo, externalImage, git, imageBytes, pageYaml, runBuildDemo, write } from './demo'
 
+// These tests start Git or CLI subprocesses. A slow shared CI runner can run several
+// times slower than usual, so they get a generous per-file limit instead of vitest's 5 s.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 })
+
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 async function demo() {
@@ -271,7 +275,7 @@ it('applies the real CLI image timeout override and reports the timeout reason w
     server.closeAllConnections()
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   }
-}, 15_000)
+}, 120_000)
 
 it('replays both image results and cached failures without collapsing the download pair', async () => {
   const changing = new FakeImageFetcher(new Map([[externalImage, [new Uint8Array([1]), new Uint8Array([2])]]]))
@@ -353,7 +357,7 @@ it('runs the real CLI success/failure demo without external network and preserve
   await expect(readdir(result.failedOut)).rejects.toMatchObject({ code: 'ENOENT' })
   expect(await git(result.repo, 'status', '--porcelain')).toBe('')
   expect(await git(result.dev, 'status', '--porcelain')).toBe('')
-}, 60_000)
+}, 120_000)
 
 it('reports an absent dev manual at each publish path without losing page/channel context', async () => {
   const options = await demo()
@@ -425,4 +429,4 @@ it('rejects malformed real CLI invocations before generating files', async () =>
     expect(result.output).toContain(message)
   }
   await expect(readdir(options.out)).rejects.toMatchObject({ code: 'ENOENT' })
-}, 30_000)
+}, 120_000)
