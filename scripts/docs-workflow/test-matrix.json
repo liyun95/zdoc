@@ -1197,7 +1197,8 @@
     {
       "id": "shared-docs",
       "paths": [
-        "packages/docs-tooling/src/shared-docs/**"
+        "packages/docs-tooling/src/shared-docs/**",
+        "shared-docs/**"
       ],
       "focusedTests": [
         "pnpm test:shared-docs"
@@ -1208,7 +1209,7 @@
         "pnpm test:workflow-matrix",
         "git diff --check"
       ],
-      "reason": "Shared docs types, test helpers, fixtures and adapter contracts must stay isolated from external systems and keep the requirement coverage ledger complete."
+      "reason": "Shared docs types, test helpers, fixtures, adapter contracts and root onboarding source/page inputs must keep complete requirement coverage and all-page candidate validation without external test dependencies."
     },
     {
       "id": "shared-docs-pr-workflows",
