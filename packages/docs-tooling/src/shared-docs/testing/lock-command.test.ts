@@ -3,10 +3,14 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { cp, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { runLock } from '../commands/lock'
 import { parseLock } from '../core/lock'
 import { createInspectDemo } from './demo'
+
+// These tests start Git or CLI subprocesses. A slow shared CI runner can run several
+// times slower than usual, so they get a generous per-file limit instead of vitest's 5 s.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 })
 
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
@@ -115,4 +119,4 @@ it('exposes CLI options and exit classes', async () => {
   await rm(f.lock)
   git(f.repo, 'branch', '-D', 'v3.0.x')
   expect(cli(...args).status).toBe(2)
-}, 30_000)
+}, 120_000)

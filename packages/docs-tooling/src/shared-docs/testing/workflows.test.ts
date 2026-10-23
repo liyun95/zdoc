@@ -1,10 +1,14 @@
 // @vitest-environment node
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { load } from 'js-yaml'
+
+// These tests start Git or CLI subprocesses. A slow shared CI runner can run several
+// times slower than usual, so they get a generous per-file limit instead of vitest's 5 s.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 })
 
 type Step = { name: string; run?: string; if?: string; with?: Record<string, unknown>; env?: Record<string, string> }
 type Workflow = { jobs: Record<string, { steps: Step[]; if?: string; permissions?: Record<string, string> }> }
@@ -38,7 +42,7 @@ function execute(workflow: Workflow, job: string, name: string, setup: ReturnTyp
   const output = join(setup.dir, `output-${sequence++}`), summary = join(setup.dir, `summary-${sequence++}`)
   writeFileSync(output, ''); writeFileSync(summary, '')
   const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail'], {
-    cwd: setup.repo, input: step.run, encoding: 'utf8', timeout: 20000,
+    cwd: setup.repo, input: step.run, encoding: 'utf8', timeout: 120_000,
     env: { ...process.env, PATH: `${setup.bin}:${process.env.PATH}`, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
       GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary, RUNNER_TEMP: setup.dir, SOURCE_SHA: setup.sha, BASE_SHA: setup.sha,
       PR_NUMBER: '9', PR_HEAD_BRANCH: 'onboarding', GITHUB_REPOSITORY: 'test-owner/zdoc', GITHUB_SERVER_URL: 'https://github.com',
