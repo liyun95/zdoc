@@ -1,0 +1,9 @@
+schema_version: 1
+source:
+  file: site/en/reference/sys_config/configure_tls.md
+publish:
+  - manual: guides
+    path: tutorials/development/insert-and-delete/delete-entities
+metadata:
+  title: WP8b Synthetic Onboarding
+  description: A temporary candidate used only to demonstrate lock and validation workflows.
