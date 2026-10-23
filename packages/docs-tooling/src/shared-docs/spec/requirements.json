@@ -5,7 +5,7 @@
     "prd": "docs/prd.md",
     "plan": "docs/phase-1.md",
     "errors": "docs/design/09-error-catalog.md",
-    "prd_commit": "80c3be2ba4685f3383cb33370b88087889e998da"
+    "prd_commit": "be630ec36302a1ec965f0d51b1aff2471fd3d6ab"
   },
   "behaviours": [
     {
@@ -802,6 +802,12 @@
       "area_id": "links-and-images"
     },
     {
+      "code": "LINK_MAP_INVALID",
+      "area": "链接与图片",
+      "when": "`links.yaml` 格式不对：不是合法的 YAML，同一个 Milvus 页面登记了两次，键不是 `.md` 文件名，或值既不是页面标识也不是 `https://milvus.io/` 开头的地址",
+      "area_id": "links-and-images"
+    },
+    {
       "code": "LINK_TARGET_ABSENT",
       "area": "链接与图片",
       "when": "链接指向的共享页在这个版本中不存在",
@@ -894,7 +900,7 @@
     {
       "code": "TABS_UNKNOWN_LANGUAGE",
       "area": "站点适配",
-      "when": "代码组中有 Tabs 规则中没有的语言",
+      "when": "代码组中有 Tabs 规则中没有的语言，包括多语言代码组中没写语言名的代码块",
       "area_id": "site-adaptation"
     },
     {
@@ -912,7 +918,7 @@
     {
       "code": "ADAPT_UNSUPPORTED_MARKUP",
       "area": "站点适配",
-      "when": "提示框写法不在支持范围内，或出现 Milvus 站点专用的版式 `div`",
+      "when": "提示框写法不在支持范围内，出现 Milvus 站点专用的版式 `div`，或同一个多语言代码组中一种语言出现两次",
       "area_id": "site-adaptation"
     },
     {
