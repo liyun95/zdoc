@@ -7,11 +7,12 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 
-const {finalizePublicationSelection, validatePublicationResults} = require('./publication-contracts')
+const {finalizePublicationSelection, validatePublicationProgress, validatePublicationResults} = require('./publication-contracts')
 const {
   buildRecoveryHandoff,
   extractArtifactZip,
   planTranslationRecovery: planTranslationRecoveryWithRequiredAudit,
+  resolveReferenceManifestCheckpoint,
   validateDownloadedArtifactTree,
 } = require('./translation-recovery-planner')
 
@@ -1171,6 +1172,136 @@ test('forwardSourceAuthorityCheckpoints rejects a non-SHA resolved checkpoint', 
   }), /must be an exact commit SHA/)
 })
 
+test('forwardReferenceManifestCheckpoints forwards the manifest-bound checkpoint for both tracks of a source group', async t => {
+  const value = fixture(t)
+  const resolvedGroups = []
+  const planned = await planTranslationRecovery({
+    repository: 'zilliztech/zdoc', previousRunId: RUN_ID, outputRoot: path.join(value.root, 'reference-forwarded'),
+    targetBaselineSha: SHA('8'), executionToolingSha: EXECUTION_TOOLING_SHA, client: value.client,
+    forwardReferenceManifestCheckpoints: async (unit, targetBaselineSha) => {
+      assert.equal(targetBaselineSha, SHA('8'))
+      resolvedGroups.push(unit.sourceGroup)
+      return SHA('e')
+    },
+  })
+  for (const unit of planned.handoff.units) {
+    if (unit.group === 'guides') assert.equal(unit.sourceCheckpointSha, SHA('c'))
+    else assert.equal(unit.sourceCheckpointSha, SHA('e'), `${unit.target}/${unit.group} must carry the group-forwarded checkpoint`)
+  }
+  assert.deepEqual([...new Set(resolvedGroups)].sort(), ['cli', 'go', 'java', 'node', 'python'])
+})
+
+test('forwardReferenceManifestCheckpoints rejects a non-SHA resolved checkpoint', async t => {
+  const value = fixture(t)
+  await assert.rejects(() => planTranslationRecovery({
+    repository: 'zilliztech/zdoc', previousRunId: RUN_ID, outputRoot: path.join(value.root, 'bad-reference-forward'),
+    targetBaselineSha: SHA('8'), executionToolingSha: EXECUTION_TOOLING_SHA, client: value.client,
+    forwardReferenceManifestCheckpoints: async () => 'not-a-sha',
+  }), /Forwarded Reference manifest checkpoint .* must be an exact commit SHA/)
+})
+
+// Models the production shape that broke run 39892871378: the baseline's
+// Reference source manifest binds a fetch commit newer than the immutable
+// source checkpoint, with the recovered group's own sources unchanged.
+function referenceForwardingRepository(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reference-forwarding-'))
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}))
+  const {execFileSync} = require('node:child_process')
+  const run = args => execFileSync('git', ['-C', root, ...args], {encoding: 'utf8'}).trim()
+  const commit = message => {
+    run(['add', '.'])
+    run(['-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', message])
+    return run(['rev-parse', 'HEAD'])
+  }
+  const write = (relative, content) => {
+    const file = path.join(root, relative)
+    fs.mkdirSync(path.dirname(file), {recursive: true})
+    fs.writeFileSync(file, content)
+  }
+  const bindManifest = sourceCommit => write('generated/en/manifests/reference.json', `${JSON.stringify({schemaVersion: 1, sourceCommit})}\n`)
+  run(['init', '-b', 'main'])
+  write('content/en/reference/api/java/java/v2/Collections.md', 'collections\n')
+  write('content/en/reference/api/python/python/MilvusClient.md', 'client\n')
+  const sourceBaseline = commit('source baseline')
+  bindManifest(sourceBaseline)
+  const sourceCheckpoint = commit('source checkpoint')
+  write('content/en/reference/api/python/python/MilvusClientV2.md', 'client v2\n')
+  const manifestCommit = commit('python source advances, checkpoint manifest binding kept')
+  bindManifest(manifestCommit)
+  write('content/zh-CN/reference/api/python/python/MilvusClient.md', '客户端\n')
+  const targetBaseline = commit('target baseline keeps the manifest binding')
+  return {root, sourceBaseline, sourceCheckpoint, manifestCommit, targetBaseline, run, commit, write, bindManifest}
+}
+
+test('resolveReferenceManifestCheckpoint forwards to the manifest-bound commit when group sources are unchanged', async t => {
+  const repository = referenceForwardingRepository(t)
+  const resolved = resolveReferenceManifestCheckpoint({
+    repository: repository.root,
+    sourceCheckpointSha: repository.sourceCheckpoint,
+    sourceBaselineSha: repository.sourceBaseline,
+    targetBaselineSha: repository.targetBaseline,
+    group: 'java',
+  })
+  assert.equal(resolved, repository.manifestCommit)
+})
+
+test('resolveReferenceManifestCheckpoint keeps the checkpoint when the baseline manifest already binds it', async t => {
+  const repository = referenceForwardingRepository(t)
+  repository.bindManifest(repository.sourceCheckpoint)
+  const baseline = repository.commit('baseline binds the source checkpoint')
+  const resolved = resolveReferenceManifestCheckpoint({
+    repository: repository.root,
+    sourceCheckpointSha: repository.sourceCheckpoint,
+    sourceBaselineSha: repository.sourceBaseline,
+    targetBaselineSha: baseline,
+    group: 'java',
+  })
+  assert.equal(resolved, repository.sourceCheckpoint)
+})
+
+test('resolveReferenceManifestCheckpoint keeps the checkpoint when the baseline predates the Reference manifest', async t => {
+  const repository = referenceForwardingRepository(t)
+  const resolved = resolveReferenceManifestCheckpoint({
+    repository: repository.root,
+    sourceCheckpointSha: repository.sourceCheckpoint,
+    sourceBaselineSha: repository.sourceBaseline,
+    targetBaselineSha: repository.sourceBaseline,
+    group: 'java',
+  })
+  assert.equal(resolved, repository.sourceCheckpoint)
+})
+
+test('resolveReferenceManifestCheckpoint rejects when the recovered group source changed', async t => {
+  const repository = referenceForwardingRepository(t)
+  repository.write('content/en/reference/api/java/java/v2/Collections.md', 'collections revised\n')
+  const changedSourceCommit = repository.commit('java source moves')
+  repository.bindManifest(changedSourceCommit)
+  const targetBaseline = repository.commit('baseline binds the changed source commit')
+  assert.throws(() => resolveReferenceManifestCheckpoint({
+    repository: repository.root,
+    sourceCheckpointSha: repository.sourceCheckpoint,
+    sourceBaselineSha: repository.sourceBaseline,
+    targetBaselineSha: targetBaseline,
+    group: 'java',
+  }), /changed between the source checkpoint and the target baseline manifest commit/)
+})
+
+test('resolveReferenceManifestCheckpoint rejects a manifest commit outside the checkpoint lineage', async t => {
+  const repository = referenceForwardingRepository(t)
+  repository.run(['checkout', '-q', '-b', 'side', repository.sourceBaseline])
+  repository.write('content/en/reference/api/python/python/MilvusClientV3.md', 'side\n')
+  const sideCommit = repository.commit('side advance')
+  repository.bindManifest(sideCommit)
+  const sideBaseline = repository.commit('side baseline')
+  assert.throws(() => resolveReferenceManifestCheckpoint({
+    repository: repository.root,
+    sourceCheckpointSha: repository.sourceCheckpoint,
+    sourceBaselineSha: repository.sourceBaseline,
+    targetBaselineSha: sideBaseline,
+    group: 'java',
+  }), /not a descendant of the source checkpoint/)
+})
+
 test('authenticates split-publication evidence from the dispatched publisher run', async t => {
   const PUBLISHER_RUN_ID = 555001
   const base = fixture(t)
@@ -1234,6 +1365,121 @@ test('authenticates split-publication evidence from the dispatched publisher run
   assert.ok(!('ja-JP/python' in planned.plan.recoveryMap))
   assert.ok(!('zh-CN-reference/python' in planned.plan.recoveryMap))
   assert.ok('ja-JP/java' in planned.plan.recoveryMap)
+})
+
+test('authenticates split-publication progress uploaded only by the dispatched publisher run', async t => {
+  const PUBLISHER_RUN_ID = 555004
+  const base = fixture(t)
+  base.addArtifact(`docs-translation-publication-handoff-${RUN_ID}`, directory => writeJson(directory, 'publication-handoff.json', {
+    schemaVersion: 1,
+    producerRunId: RUN_ID,
+    producerRunAttempt: 2,
+    publisherRunId: PUBLISHER_RUN_ID,
+    publisherRunAttempt: 1,
+    publisherRunUrl: `https://github.com/zilliztech/zdoc/actions/runs/${PUBLISHER_RUN_ID}`,
+  }))
+  // A producer run that failed mid-run (after dispatching its publisher) never
+  // uploads progress shadow copies: run 39352608787 carried zero
+  // publication-progress artifacts while its publisher published revisions
+  // 1..6 under the producer's selection identity.
+  const statusByUnitKey = {}
+  for (const unit of base.selected.units) statusByUnitKey[unit.unitKey] = unit.unitKey === 'translation/zh-CN-reference/java' ? 'publish_failed' : 'no_changes'
+  const raw = JSON.parse(JSON.stringify(publicationResultsWithStatuses(base.selected, statusByUnitKey, 'failure')))
+  const publisherBound = validatePublicationResults({...raw, publisherRunId: PUBLISHER_RUN_ID, publisherRunAttempt: 1}, {selection: base.selected, allowLegacyChineseRest: true})
+  const publisherPayloadRoot = path.join(base.root, 'publisher-payloads')
+  for (const revision of [1, 2]) {
+    const snapshot = validatePublicationProgress({
+      schemaVersion: 1,
+      document: 'publication-progress',
+      workflow: 'translation',
+      repository: base.selected.repository,
+      runId: base.selected.runId,
+      runAttempt: base.selected.runAttempt,
+      selectionSha256: base.selected.selectionSha256,
+      publisherRunId: PUBLISHER_RUN_ID,
+      publisherRunAttempt: 1,
+      mode: 'publish',
+      revision,
+      generatedAt: '2026-08-08T02:30:00.000Z',
+      activeUnitKey: null,
+      queue: [],
+      units: base.selected.units.map(unit => ({
+        unitKey: unit.unitKey,
+        state: 'ready',
+        producerJobId: null,
+        producerCompletedAt: null,
+        readyAt: null,
+        sequence: null,
+        publishStartedAt: null,
+        publishCompletedAt: null,
+        baseSha: null,
+        resultSha: null,
+        commitShas: [],
+        attempts: 0,
+        failure: null,
+      })),
+    }, {selection: base.selected})
+    writeJson(publisherPayloadRoot, `progress-${revision}/publication-progress-${revision}.json`, snapshot)
+  }
+  writeJson(publisherPayloadRoot, 'publication-results.json', publisherBound)
+  const publisherArtifacts = [1, 2].map(revision => ({
+    id: 9100 + revision,
+    name: `publication-progress-translation-${RUN_ID}-2-${revision}`,
+    expired: false,
+    digest: `sha256:${String(revision).repeat(64)}`,
+    created_at: '2026-08-08T02:30:00.000Z',
+    workflow_run: {id: PUBLISHER_RUN_ID, repository_id: 7, head_repository_id: 7},
+  })).concat([{
+    id: 9103,
+    name: `publication-results-translation-${RUN_ID}-2`,
+    expired: false,
+    digest: `sha256:${'4'.repeat(64)}`,
+    created_at: '2026-08-08T02:35:00.000Z',
+    workflow_run: {id: PUBLISHER_RUN_ID, repository_id: 7, head_repository_id: 7},
+  }])
+  const publisherPayloadByArtifactId = new Map([
+    [9101, path.join(publisherPayloadRoot, 'progress-1')],
+    [9102, path.join(publisherPayloadRoot, 'progress-2')],
+    [9103, publisherPayloadRoot],
+  ])
+  const publisherRun = {
+    id: PUBLISHER_RUN_ID, status: 'completed', conclusion: 'failure', run_attempt: 1,
+    path: '.github/workflows/publish-translation.yml', repository: {id: 7, full_name: 'zilliztech/zdoc'}, head_sha: RETAINED_WORKFLOW_SHA,
+  }
+  const publisherJobs = [{
+    id: 7003, name: 'publish_ready', run_attempt: 1, status: 'completed', conclusion: 'success',
+    started_at: '2026-08-08T02:00:00.000Z', completed_at: '2026-08-08T02:40:00.000Z',
+  }]
+  const client = {
+    ...base.client,
+    async getRun(runId) { return Number(runId) === PUBLISHER_RUN_ID ? publisherRun : base.client.getRun(runId) },
+    async listArtifacts(runId) { return Number(runId) === PUBLISHER_RUN_ID ? publisherArtifacts : base.client.listArtifacts(runId) },
+    async listJobs(runId, attempt) { return Number(runId) === PUBLISHER_RUN_ID ? publisherJobs : base.client.listJobs(runId, attempt) },
+    async downloadArtifact(record, destination) {
+      const source = publisherPayloadByArtifactId.get(record.id)
+      if (source) {
+        fs.cpSync(source, destination, {recursive: true})
+        return
+      }
+      return base.client.downloadArtifact(record, destination)
+    },
+  }
+
+  const planned = await planTranslationRecovery({
+    repository: 'zilliztech/zdoc',
+    previousRunId: RUN_ID,
+    outputRoot: path.join(base.root, 'split-progress-plan'),
+    targetBaselineSha: SHA('9'),
+    client,
+  })
+
+  const provenance = planned.plan.provenance
+  assert.ok(provenance)
+  assert.equal(provenance.publicationEvidence.publisherRunId, PUBLISHER_RUN_ID)
+  assert.deepEqual(provenance.publicationEvidence.progress.map(value => value.revision), [1, 2])
+  assert.equal(provenance.publicationEvidence.results.overallStatus, 'failure')
+  assert.ok('zh-CN-reference/java' in planned.plan.recoveryMap)
+  assert.ok(!('ja-JP/java' in planned.plan.recoveryMap))
 })
 
 test('rejects split-publication evidence whose results are not bound to the discovered publisher run', async t => {
