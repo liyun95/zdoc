@@ -303,6 +303,9 @@ function validateSharedDocsWorkflow(workflow, source, file, errors) {
       JSON.stringify(workflow.on?.pull_request?.types) !== JSON.stringify(['opened', 'synchronize', 'reopened', 'ready_for_review'])) {
     fail('must keep the explicit PR-only lock / PR-and-dispatch validation triggers')
   }
+  if (JSON.stringify(workflow.on?.pull_request?.branches) !== JSON.stringify(['master'])) {
+    fail('PR triggers must target only master')
+  }
   if (workflow.env?.GH_TOKEN !== undefined || /secrets\./.test(JSON.stringify(workflow.env || {})) ||
       Object.values(jobs).some(job => job.env?.GH_TOKEN !== undefined || /secrets\./.test(JSON.stringify(job.env || {}))) ||
       allSteps.some(item => /\$\{\{/.test(item.run || ''))) fail('must isolate credentials and pass expressions only through step inputs or env')

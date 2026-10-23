@@ -115,10 +115,11 @@ without writes. Exit codes are 0 for success, 1 for input/configuration errors,
 and 2 for operational Git/filesystem failures. Lock files created outside CI
 are still checked by all-page generation.
 
-`shared-docs-lock.yml` handles PR changes under `shared-docs/pages/**`. Its
-writer runs only for PRs from a branch in the same repository. A fork receives
-an Actions warning and summary: `LOCK_FORK_PR: Please submit this onboarding PR
-from a branch in this repository`. It performs no fork checkout or write.
+`shared-docs-lock.yml` handles changes under `shared-docs/pages/**` in PRs
+targeting `master`. Its writer runs only for PRs from a branch in the same
+repository. A fork receives an Actions warning and summary: `LOCK_FORK_PR:
+Please submit this onboarding PR from a branch in this repository`. It
+performs no fork checkout or write.
 The writer parses the existing source configuration, restricts the source URL
 to credential-free GitHub HTTPS, and clones only the tracking branch with its
 complete history. It creates missing locks, stages only new regular lock files,
@@ -141,8 +142,9 @@ complete onboarding demonstration; changing fork defaults or settings is not
 part of this workflow.
 
 `shared-docs-validate.yml` always creates the stable `shared-docs-validate`
-check for a PR. It has no trigger path filter, uses read-only permissions and
-no secrets, and checks out the exact PR head without persisted credentials.
+check for a PR targeting `master`. It has no trigger path filter, uses
+read-only permissions and no secrets, and checks out the exact PR head without
+persisted credentials.
 A fail-closed merge-base comparison and NUL-delimited, no-renames diff cover
 added, modified, renamed and deleted `shared-docs/` inputs. With no changed
 shared inputs, it succeeds before installing packages or reading external
@@ -152,7 +154,9 @@ Guides/BYOC and the Guides snapshot, and runs `shared-docs build` for all pages.
 Generation diagnostics retain file/line locations in logs and in a bounded
 job summary. It generates a temporary candidate; it does not publish pages.
 Maintainers must configure the stable check as required in branch protection;
-the repository workflows do not change that setting.
+the repository workflows do not change that setting. Both PR triggers are
+limited to `master`; explicit validation dispatch remains available on the
+requested branch.
 
 For an explicit validation run, dispatch on the branch whose head equals
 `source_sha` (SHA identities must be complete lowercase SHA-1 values):

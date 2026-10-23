@@ -3354,7 +3354,7 @@ test('translation workers authenticate exact source checkpoint inputs without bi
   assert.doesNotMatch(source, /generated\/en\/manifests\/reference\.json[\s\S]*sourceCommit/)
 })
 
-test('shared-docs workflow policy rejects permission, input, writer and exact-validation boundary mutations', () => {
+test('shared-docs workflow policy rejects trigger, permission, input, writer and exact-validation boundary mutations', () => {
   const directory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'shared-docs-policy-'))
   const validateFile = 'shared-docs-validate.yml', lockFile = 'shared-docs-lock.yml'
   const validation = fs.readFileSync(path.join('.github/workflows', validateFile), 'utf8')
@@ -3362,6 +3362,9 @@ test('shared-docs workflow policy rejects permission, input, writer and exact-va
   const objectMutation = mutate => source => { const workflow = yaml.load(source); mutate(workflow); return yaml.dump(workflow, {lineWidth: -1, noRefs: true}) }
   const step = (workflow, job, name) => workflow.jobs[job].steps.find(item => item.name === name)
   const fixtures = [
+    [validateFile, objectMutation(w => { delete w.on.pull_request.branches }), 'PR triggers must target only master'],
+    [validateFile, objectMutation(w => { w.on.pull_request.branches = ['dev'] }), 'PR triggers must target only master'],
+    [validateFile, objectMutation(w => { w.on.pull_request.branches = ['master', 'dev'] }), 'PR triggers must target only master'],
     [validateFile, objectMutation(w => { w.permissions.contents = 'write' }), 'validation must be read-only'],
     [validateFile, objectMutation(w => { w.jobs.validate.permissions = {contents: 'write'} }), 'validation must be read-only'],
     [validateFile, objectMutation(w => { w.jobs.validate.env = {TOKEN: '${{ secrets.APP_SECRET }}'} }), 'isolate credentials'],
@@ -3386,6 +3389,9 @@ test('shared-docs workflow policy rejects permission, input, writer and exact-va
     [validateFile, s => s.replace('exit "$status"', 'exit 0'), 'complete shared-page candidate'],
     [validateFile, s => s.replace('git clone --single-branch', 'git clone --depth 1 --single-branch'), 'complete single-branch tracking history'],
     [validateFile, s => s.replace('^https:\\/\\/github\\.com\\/', '^https?:\\/\\/.*\\/'), 'public GitHub source URL'],
+    [lockFile, objectMutation(w => { delete w.on.pull_request.branches }), 'PR triggers must target only master'],
+    [lockFile, objectMutation(w => { w.on.pull_request.branches = ['dev'] }), 'PR triggers must target only master'],
+    [lockFile, objectMutation(w => { w.on.pull_request.branches = ['master', 'dev'] }), 'PR triggers must target only master'],
     [lockFile, objectMutation(w => { w.jobs.lock.if = 'true' }), 'same-repository lock job'],
     [lockFile, objectMutation(w => { delete w.jobs.infrastructure_report.permissions }), 'only the same-repository lock job'],
     [lockFile, objectMutation(w => { w.jobs.fork_notice.permissions.actions = 'write' }), 'only the same-repository lock job'],
