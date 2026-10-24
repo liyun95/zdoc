@@ -7,7 +7,9 @@ import { parsePageConfig, parseSourceConfig } from '../core/config'
 import { planLock } from '../core/lock'
 import type { SharedDocsError } from '../core/types'
 
-export interface LockOptions { sharedDocs: string; repo: string; page?: string; fromFork?: boolean }
+export type LockOptions =
+  | { fromFork: true; sharedDocs?: string; repo?: string; page?: string }
+  | { fromFork?: false; sharedDocs: string; repo: string; page?: string }
 class InputError extends Error {}
 
 /** Inspect the entire supplied tree before reading configuration or creating locks. */
@@ -69,7 +71,7 @@ export async function runLock(options: LockOptions, write: (text: string) => voi
     if (pages.some(page => !page.exists)) {
       const reader = new GitMilvusDocsReader(resolve(options.repo))
       const head = await reader.trackedHead(source.config.track)
-      if (!await reader.isAncestor(head, head)) throw new Error('Tracked head is not in complete local history')
+      await reader.requireNonShallowHistory()
       const planned = planLock({ trackedHead: head, fromFork: false })
       if ('errors' in planned) { print(planned.errors); return 1 }
       contents = `schema_version: 1\ncurrent: ${planned.lock.current}\nnext: ${planned.lock.next}\n`

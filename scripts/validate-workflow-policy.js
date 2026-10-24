@@ -294,10 +294,13 @@ function validateSharedDocsWorkflow(workflow, source, file, errors) {
   const primary = lock ? 'lock' : 'validate'
   const requiredConcurrency = lock
     ? 'shared-docs-lock-${{ github.event.pull_request.number }}'
-    : 'shared-docs-validate-${{ github.event.pull_request.number || inputs.pr_number }}'
+    : 'shared-docs-validate-${{ github.event.pull_request.number || inputs.pr_number }}-${{ github.event_name }}'
   if (workflow.concurrency?.group !== requiredConcurrency || workflow.concurrency?.['cancel-in-progress'] !== !lock ||
       workflow.concurrency?.queue !== undefined || Object.values(jobs).some(job => job.concurrency !== undefined)) {
-    fail('must use its separate per-PR concurrency and cancellation rule')
+    fail('must use its separate per-PR concurrency and cancellation rule, with validation isolated by event')
+  }
+  if (jobs[primary]?.['timeout-minutes'] !== (lock ? 45 : 30)) {
+    fail(lock ? 'lock timeout must remain 45 minutes to cover child validation and setup' : 'validation timeout must remain 30 minutes')
   }
   if (Object.keys(workflow.on || {}).sort().join(',') !== (lock ? 'pull_request' : 'pull_request,workflow_dispatch') ||
       JSON.stringify(workflow.on?.pull_request?.types) !== JSON.stringify(['opened', 'synchronize', 'reopened', 'ready_for_review'])) {
@@ -388,6 +391,10 @@ function validateSharedDocsWorkflow(workflow, source, file, errors) {
   if (dispatchStep?.if !== "steps.push.outputs.pushed == 'true'" || dispatchStep?.env?.SOURCE_SHA !== '${{ steps.push.outputs.pushed_sha }}' ||
       dispatchRequirements.some(text => !dispatch.includes(text)) || /\|\| true|continue-on-error/.test(dispatch) || dispatchStep?.['continue-on-error'] === true) fail('must dispatch only actual pushes and authenticate/wait for the exact SHA, branch and unique request ID')
   if (dispatch.split('\n').filter(line => /\bgh (?:workflow|run)\b/.test(line)).some(line => !line.includes('--repo \"$GITHUB_REPOSITORY\"'))) fail('every GitHub CLI operation must explicitly select the current repository')
+  if (!dispatch.includes("echo 'failure_class=infrastructure' >> \"$GITHUB_OUTPUT\"") ||
+      !dispatch.includes("result.status === 'completed' && result.conclusion && result.conclusion !== 'success' && result.conclusion !== 'cancelled'")) {
+    fail('must keep cancelled or unconfirmed child runs classified as infrastructure')
+  }
   const command = run('lock', 'Create missing initial locks')
   if (!command.includes('pnpm docs-tooling shared-docs lock') || !command.includes('1) echo \'failure_class=content\'') ||
       !command.includes('*) echo \'failure_class=infrastructure\'') || !command.includes('exit "$status"') ||

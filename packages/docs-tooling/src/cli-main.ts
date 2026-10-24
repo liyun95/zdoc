@@ -274,8 +274,12 @@ async function executeExplicitCommand(argv: string[], repositoryRoot: string): P
       }
       if (options.fromFork !== undefined && options.fromFork !== true) throw new Error('--from-fork must be a flag');
       const {runLock} = await import('./shared-docs/commands/lock.ts');
+      if (options.fromFork === true) {
+        process.exitCode = await runLock({fromFork: true});
+        return true;
+      }
       process.exitCode = await runLock({sharedDocs: requiredOption(options, 'sharedDocs'), repo: requiredOption(options, 'repo'),
-        page: options.page === undefined ? undefined : requiredOption(options, 'page'), fromFork: options.fromFork === true});
+        page: options.page === undefined ? undefined : requiredOption(options, 'page')});
       return true;
     }
     if (argv[1] === 'links-seed') {

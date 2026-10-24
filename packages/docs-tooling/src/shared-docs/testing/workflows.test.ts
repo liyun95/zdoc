@@ -11,7 +11,10 @@ import { load } from 'js-yaml'
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 })
 
 type Step = { name: string; run?: string; if?: string; with?: Record<string, unknown>; env?: Record<string, string> }
-type Workflow = { jobs: Record<string, { steps: Step[]; if?: string; permissions?: Record<string, string> }> }
+type Workflow = {
+  concurrency: { group: string; 'cancel-in-progress': boolean }
+  jobs: Record<string, { steps: Step[]; if?: string; permissions?: Record<string, string>; 'timeout-minutes': number }>
+}
 const root = process.cwd()
 const lock = load(readFileSync('.github/workflows/shared-docs-lock.yml', 'utf8')) as Workflow
 const validate = load(readFileSync('.github/workflows/shared-docs-validate.yml', 'utf8')) as Workflow
@@ -75,7 +78,8 @@ if (args[1] === 'list') {
   if (mode !== 'success') { console.error('fixture watch failure'); process.exit(1); }
 } else if (args[1] === 'view') {
   if (mode === 'view-error') { console.error('fixture GitHub API outage'); process.exit(2); }
-  console.log(JSON.stringify(mode === 'watch-infrastructure' ? {status:'in_progress', conclusion:null} : {status:'completed', conclusion:'failure'}));
+  console.log(JSON.stringify(mode === 'watch-infrastructure' ? {status:'in_progress', conclusion:null}
+    : {status:'completed', conclusion:mode === 'cancelled' ? 'cancelled' : 'failure'}));
 } else process.exit(91);
 `)
   stub(setup, 'sleep', '#!/bin/sh\nexit 0\n')
@@ -83,6 +87,12 @@ if (args[1] === 'list') {
 const pushName = 'Push only new regular lock files', dispatchName = 'Dispatch and wait for exact pushed validation'
 
 describe('read-only validation shell contracts', () => {
+  it('separates PR and dispatch concurrency while allowing cancellation within each event', () => {
+    expect(validate.concurrency.group).toBe('shared-docs-validate-${{ github.event.pull_request.number || inputs.pr_number }}-${{ github.event_name }}')
+    expect(validate.concurrency['cancel-in-progress']).toBe(true)
+    expect(lock.concurrency.group).toBe('shared-docs-lock-${{ github.event.pull_request.number }}')
+    expect(lock.concurrency['cancel-in-progress']).toBe(false)
+  })
   it.each(['pull_request', 'workflow_dispatch'])('accepts valid exact identities for %s', event => {
     const setup = fixture(), result = execute(validate, 'validate', 'Validate immutable PR identities', setup, { GITHUB_EVENT_NAME: event })
     expect(result.status).toBe(0); expect(result.outputs).toEqual({ source_sha: setup.sha, base_sha: setup.sha })
@@ -244,6 +254,20 @@ describe('initial-lock writer shell contracts', () => {
 })
 
 describe('validation dispatch and failure reporting shell contracts', () => {
+  it('gives the lock job headroom beyond the validation child timeout', () => {
+    expect(validate.jobs.validate['timeout-minutes']).toBe(30)
+    expect(lock.jobs.lock['timeout-minutes']).toBe(45)
+    expect(lock.jobs.lock['timeout-minutes']).toBeGreaterThan(validate.jobs.validate['timeout-minutes'])
+  })
+  it('classifies a completed cancelled child as infrastructure through reporting', () => {
+    const setup = fixture(); githubStub(setup)
+    const result = execute(lock, 'lock', dispatchName, setup, { GH_STUB_MODE: 'cancelled' })
+    expect(result.status).toBe(1); expect(result.outputs.run_id).toBe('2345')
+    expect(result.outputs.failure_class).toBe('infrastructure')
+    const classified = execute(lock, 'lock', 'Classify failure for isolated reporting', setup,
+      { JOB_STATUS: 'failure', VALIDATION_FAILURE: result.outputs.failure_class })
+    expect(classified.status).toBe(0); expect(classified.outputs.failure_class).toBe('infrastructure')
+  })
   it.each(['failed', 'watch-infrastructure', 'view-error', 'dispatch-error', 'wrong-sha', 'ambiguous'])('propagates %s without accepting an unrelated child run', mode => {
     const setup = fixture(); githubStub(setup)
     const result = execute(lock, 'lock', dispatchName, setup, { GH_STUB_MODE: mode })

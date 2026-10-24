@@ -133,9 +133,12 @@ After an actual push, the writer explicitly dispatches
 comparison base, and discovers the child using the branch, dispatch event,
 exact SHA and unique `lock-<run-id>-<attempt>` request ID. It records the pushed
 SHA and child run URL in its summary, waits for the child, and propagates its
-failure. This dispatch is necessary because pushes using `GITHUB_TOKEN` do not
-trigger another ordinary PR workflow. GitHub may reject dispatch until the
-validation workflow has been registered on the default branch; that rejection
+failure. Dispatched validation runs the PR head's copy of
+`shared-docs-validate.yml`, which relies on same-repository branches being
+limited to people with write access. This dispatch is necessary because
+pushes using `GITHUB_TOKEN` do not trigger another ordinary PR workflow.
+GitHub may reject dispatch until the validation workflow has been registered
+on the default branch; that rejection
 is an operational failure with its original CLI error retained. Installing
 this change through a reviewed master PR is the prerequisite for the first
 complete onboarding demonstration; changing fork defaults or settings is not
@@ -167,15 +170,17 @@ gh workflow run shared-docs-validate.yml --repo OWNER/zdoc --ref PR_BRANCH \
   -f request_id=manual-review-123
 ```
 
-`request_id` is optional for manual callers. Validation uses its own per-PR
-concurrency group with cancellation enabled. Dispatch rejects a branch that
-moved away from `source_sha`, so the check always binds to the actual validated
-head. A later lock run can safely retry after branch drift is resolved.
+`request_id` is optional for manual callers. Validation uses a separate
+concurrency group per PR and event, with cancellation enabled within each
+group so a PR event cannot cancel a watched dispatch. Dispatch rejects a branch
+that moved away from `source_sha`, so the check always binds to the actual
+validated head. A later lock run can safely retry after branch drift is resolved.
 
 Content errors and failed child validation fail the check without Feishu
-notification. Operational lock/clone/push/dispatch failures select a separate
-read-only reporting job checked out from the trusted PR base SHA. Only its
-best-effort card create/note/finish steps receive Feishu credentials; each
+notification. Operational lock/clone/push/dispatch failures, including a
+cancelled validation child, select a separate read-only reporting job checked
+out from the trusted PR base SHA. Only its best-effort card create/note/finish
+steps receive Feishu credentials; each
 honors `FEISHU_NOTIFICATIONS_DISABLED`. No reporting internals or production
 publication workflows are changed.
 

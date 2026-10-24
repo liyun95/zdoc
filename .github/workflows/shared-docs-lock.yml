@@ -31,7 +31,8 @@ jobs:
   lock:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Must exceed validation's 30 minutes plus install, clone and child discovery.
+    timeout-minutes: 45
     outputs:
       failure_class: ${{ steps.classify.outputs.failure_class }}
       pushed_sha: ${{ steps.push.outputs.pushed_sha }}
@@ -210,7 +211,7 @@ jobs:
             node <<'NODE'
           const fs = require('node:fs');
           const result = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/shared-docs-result.json', 'utf8'));
-          if (result.status === 'completed' && result.conclusion && result.conclusion !== 'success') {
+          if (result.status === 'completed' && result.conclusion && result.conclusion !== 'success' && result.conclusion !== 'cancelled') {
             fs.appendFileSync(process.env.GITHUB_OUTPUT, 'failure_class=validation\n');
           }
           NODE

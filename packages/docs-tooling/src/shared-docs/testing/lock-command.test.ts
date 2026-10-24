@@ -82,7 +82,9 @@ it('classifies missing tracking branches, shallow history and unavailable filesy
   git(f.repo, 'branch', 'v3.0.x', f.commits['02-paragraph'])
   const shallow = join(f.root, 'shallow')
   execFileSync('git', ['clone', '--quiet', '--depth=1', '--branch=v3.0.x', `file://${f.repo}`, shallow])
-  expect(await runLock({ ...f, repo: shallow }, () => {})).toBe(2)
+  const output: string[] = []
+  expect(await runLock({ ...f, repo: shallow }, text => output.push(text))).toBe(2)
+  expect(output.join('')).toContain('Shallow Git history is not supported')
   expect(await runLock({ ...f, sharedDocs: join(f.root, 'absent') }, () => {})).toBe(2)
   await expect(readFile(f.lock)).rejects.toMatchObject({ code: 'ENOENT' })
 })
@@ -109,6 +111,13 @@ it('discovers pages deterministically and honors page selection', async () => {
   expect(output[0]).toContain('another-page')
   expect(await runLock({ ...f, page: '../escape' }, () => {})).toBe(1)
   expect(await runLock({ ...f, page: 'missing-page' }, () => {})).toBe(1)
+})
+
+it.each([{ args: [] }, { args: ['--shared-docs', '/unavailable'] }, { args: ['--repo', '/unavailable'] }])('prints the canonical fork refusal before requiring checkout options: %j', ({ args }) => {
+  const result = cli('--from-fork', ...args)
+  expect(result.status).toBe(1)
+  expect(result.stdout).toContain('LOCK_FORK_PR')
+  expect(result.stdout + result.stderr).not.toContain('is required')
 })
 
 it('exposes CLI options and exit classes', async () => {
