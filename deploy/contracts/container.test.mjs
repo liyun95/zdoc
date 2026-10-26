@@ -190,9 +190,15 @@ for (const site of ['en', 'zh-CN']) {
     assert.equal(runtime.filter(instruction => instruction.startsWith('COPY --from=build ')).length, 1);
     assert.ok(runtime.includes(`COPY --from=build /app/build/${site}/ /usr/share/nginx/html/`));
     assert.ok(runtime.includes(`COPY deploy/${site}/nginx.conf /etc/nginx/conf.d/default.conf`));
+    assert.ok(runtime.includes('COPY deploy/runtime/nginx.main.conf /etc/nginx/nginx.conf'));
     assert.ok(runtime.includes('COPY deploy/runtime/40-zdoc-env.sh /docker-entrypoint.d/40-zdoc-env.sh'));
+    assert.ok(runtime.includes('COPY deploy/njs/cloud.js /etc/nginx/njs/cloud.js'));
+    for (const module of ['adapter.js', 'render.js', 'strings.js', 'vocab.js']) {
+      assert.ok(runtime.includes(`COPY packages/docs-ui/src/shared/cloud-data/${module} /etc/nginx/njs/${module}`),
+        `runtime image must ship the njs cloud-data module: ${module}`);
+    }
     assert.ok(runtime.includes('RUN chmod 755 /docker-entrypoint.d/40-zdoc-env.sh'));
-    assert.equal(runtime.filter(instruction => instruction.startsWith('COPY ')).length, 3);
+    assert.equal(runtime.filter(instruction => instruction.startsWith('COPY ')).length, 9);
     assert.doesNotMatch(runtime.join('\n'), /(?:node|pnpm|npm|yarn|node_modules|package\.json|pnpm-lock|COPY \.)/i);
     assert.doesNotMatch(runtime.join('\n'), /localization-inputs\.inventory\.json/);
   });
@@ -363,8 +369,62 @@ test('English nginx redirect targets resolve to published routes, redirect chain
   ].join('\n'));
 });
 
-test('both site-owned images route chat directly to the private agent runtime', () => {
-  const entrypoint = read('deploy/runtime/40-zdoc-env.sh');
+const CLOUD_DATA_CMS_HOSTS = {en: 'cms.zilliz.cc', 'zh-CN': 'cms-cn.zilliz.cc'};
+
+for (const site of ['en', 'zh-CN']) {
+  test(`${site} nginx wires the cloud-data SSI chain with the correct CMS instance`, () => {
+    const nginx = read(`deploy/${site}/nginx.conf`);
+    const cmsHost = CLOUD_DATA_CMS_HOSTS[site];
+    const otherHost = CLOUD_DATA_CMS_HOSTS[site === 'en' ? 'zh-CN' : 'en'];
+
+    // Main context: the njs module is loaded by the shipped main config (the
+    // stock image has no /etc/nginx/modules include and load_module is
+    // main-context only).
+    const mainConf = read('deploy/runtime/nginx.main.conf');
+    assert.match(mainConf, /^load_module \/etc\/nginx\/modules\/ngx_http_js_module\.so;$/m);
+    assert.match(mainConf, /include \/etc\/nginx\/conf\.d\/\*\.conf;/);
+
+    // http context: renderer import, subrequest buffer, cache zone.
+    assert.match(nginx, /^js_path \/etc\/nginx\/njs;$/m);
+    assert.match(nginx, /^js_import cloudData from \/etc\/nginx\/njs\/cloud\.js;$/m);
+    assert.match(nginx, /^subrequest_output_buffer_size 1m;$/m);
+    assert.match(nginx, /proxy_cache_path \/var\/cache\/nginx\/cloud_data [^;]*keys_zone=cloud_data:/);
+
+    // Server context: SSI for markdown responses only.
+    assert.match(nginx, /    ssi on;\n    ssi_types text\/markdown;/);
+    assert.match(nginx, /types \{\n        text\/markdown md mdx mdwn;\n    \}/);
+
+    // JSON layer: per-instance CMS proxy with 60s cache, stale-on-error, and
+    // intercepted upstream errors (a Strapi 5xx JSON body must never reach njs).
+    for (const endpoint of ['regions', 'features']) {
+      const location = nginx.match(new RegExp(`location = /api/cloud-json/${endpoint} \\{[\\s\\S]*?\\n    \\}`));
+      assert.ok(location, `missing /api/cloud-json/${endpoint} location`);
+      assert.match(location[0], new RegExp(`proxy_pass https://${cmsHost.replaceAll('.', '\\.')}/api/cloud-${endpoint};`));
+      assert.doesNotMatch(location[0], new RegExp(otherHost.replaceAll('.', '\\.')));
+      assert.match(location[0], /proxy_ssl_server_name on;/);
+      assert.match(location[0], /proxy_cache cloud_data;/);
+      assert.match(location[0], /proxy_cache_valid 200 60s;/);
+      assert.match(location[0], /proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;/);
+      assert.match(location[0], /proxy_intercept_errors on;/);
+      assert.match(location[0], /error_page 400 401 403 404 429 500 502 503 504 = @cloud_json_failed;/);
+    }
+    assert.match(nginx, /location @cloud_json_failed \{\s*\n\s*return 503 "";\s*\n\s*\}/);
+
+    // Fragment layer: loopback proxy hop (an njs location cannot be an SSI
+    // include target directly) whose failure mode is an empty 200 so SSI uses
+    // the baked stub block.
+    assert.match(nginx, /location \/api\/cloud-data\/ \{[\s\S]*?proxy_pass http:\/\/127\.0\.0\.1:80\/_njs\/;[\s\S]*?error_page 400 401 403 404 429 500 502 503 504 = @cloud_fragment_failed;/);
+    assert.match(nginx, /location @cloud_fragment_failed \{\s*\n\s*return 200 "";\s*\n\s*\}/);
+    assert.match(nginx, /location = \/_njs\/fragment\.md \{\s*\n\s*js_content cloudData\.fragment;\s*\n\s*\}/);
+
+    // The renderer degrades to the same empty 200 when anything fails.
+    const cloudJs = read('deploy/njs/cloud.js');
+    assert.match(cloudJs, /r\.return\(200, ''\)/);
+    assert.match(cloudJs, /export default \{ ?fragment ?\};/);
+  });
+}
+
+test('both site-owned images route chat directly to the private agent runtime', () => {  const entrypoint = read('deploy/runtime/40-zdoc-env.sh');
   assert.match(entrypoint, /upstream docs_agent\s*\{/);
   assert.ok(entrypoint.includes('hash \\$http_x_conversation_id consistent;'));
   assert.match(entrypoint, /zone docs_agent 64k;/);
