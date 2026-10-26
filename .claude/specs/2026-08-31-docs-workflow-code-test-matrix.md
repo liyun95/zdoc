@@ -139,4 +139,26 @@ For a new behavior, put the narrow assertion at level 1, the cross-module scenar
 
 ### Shared Fetch publication
 
-`shared-fetch-publication` maps `lark/sharedPagePublication*`, `scripts/docs-workflow/guides-shared-publication*`, and `scripts/collect-build-card-notes*` to the shared source and build-card-note focused tests, Fetch replay, typecheck, workflow policy/matrix, and diff checks. Final receipts retain navigation content; effective fallback paths and append-only activation publish atomically with Guides output. Partial runs suppress cache generation.
+`shared-fetch-publication` maps `lark/sharedPagePublication*`, `scripts/docs-workflow/guides-shared-publication*`, and `scripts/collect-build-card-notes*` to the shared source and build-card-note focused tests, Fetch and shared-pages replay, typecheck, workflow policy/matrix, and diff checks. The shared-pages replay exercises unrelated requested continuation through the actual CLI, authenticated artifacts and checkpoint publication, and retained fallback channels/order. Final receipts retain navigation content; effective fallback paths and append-only activation publish atomically with Guides output. Partial runs suppress cache generation.
+
+### Shared-page publication replay
+
+`shared-pages-replay` covers `scripts/docs-workflow/replay-shared-pages*` and
+`shared-docs/testing/handoff/replay.test.ts`. Run `pnpm test:replay:shared-pages`,
+`pnpm test:shared-docs`, `pnpm test:replay:all`, typecheck, workflow policy/matrix,
+and diff checks. The fast suite is part of the existing PR `test:replay` gate.
+It uses production source generation, authenticated artifacts, complete-table
+replacement, final receipt promotion and the real checkpoint transaction on a
+local bare remote. Current-code ordinary Feishu output must match with valid
+and malformed inactive configuration, including legacy anchored Base refs.
+
+Before acceptance, run the README's `replay-shared-pages.js --legacy-baseline
+--site` evidence command. The exact historical comparison is intentionally not
+part of shallow-checkout CI; it must fail if the pinned pre-WP9 commit is
+missing. The explicit `--comparison-baseline-sha` mode additionally consumes an onboarded
+configuration tree from the pinned local baseline and records its file hashes.
+The site mode builds English and Japanese with an ungated CURRENT pilot heading
+initially below the viewport and exercises real browser
+interactions. Neither mode replaces retained production artifact replay.
+Fetch coverage and deferred WP14/WP9b requirements are accounted separately in
+README; do not remove a pending marker for a partially covered requirement.

@@ -1314,7 +1314,8 @@
         "node --test scripts/docs-workflow/guides-shared-sources.test.js scripts/collect-build-card-notes.test.js"
       ],
       "harnesses": [
-        "pnpm test:replay:fetch"
+        "pnpm test:replay:fetch",
+        "pnpm test:replay:shared-pages"
       ],
       "gates": [
         "pnpm typecheck",
@@ -1323,6 +1324,27 @@
         "git diff --check"
       ],
       "reason": "Shared publication validates final bytes and permanent navigation, preserves authenticated fallback navigation and append-only activation, and prevents partial runs from becoming successful cache generations."
+    },
+    {
+      "id": "shared-pages-replay",
+      "paths": [
+        "scripts/docs-workflow/replay-shared-pages*",
+        "packages/docs-tooling/src/shared-docs/testing/handoff/replay.test.ts"
+      ],
+      "focusedTests": [
+        "pnpm test:replay:shared-pages"
+      ],
+      "harnesses": [
+        "pnpm test:replay:all"
+      ],
+      "gates": [
+        "pnpm test:shared-docs",
+        "pnpm typecheck",
+        "pnpm test:workflow-policy",
+        "pnpm test:workflow-matrix",
+        "git diff --check"
+      ],
+      "reason": "Shared Fetch source generation, authenticated source and complete-table artifacts, fresh assembly and local bare checkpoint publication are one replay. Separate local acceptance modes compare exact historical or explicit onboarded-baseline bytes and build/browse an ungated pilot in the assembled English/Japanese site; CI needs no historical Git objects or browser."
     }
   ]
 }

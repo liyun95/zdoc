@@ -168,7 +168,7 @@ class larkDocWriter {
         this.sidebarOutputDir = outputDir
         this.sidebarContentRoot = contentRoot
         const items = await this.__sidebar_items(outputDir, contentRoot, this.root_token)
-        return require('./sharedPagePublication').projectFallbackSidebar(items, this.sharedBundle, String(this.targets).includes('zilliz.paas') ? 'guides-byoc' : 'guides')
+        return require('./sharedPagePublication').projectFallbackSidebar(items, this.sharedBundle, String(this.targets).includes('zilliz.paas') ? 'guides-byoc' : 'guides', this.sharedWorkspace || null)
     }
 
     __sidebar_key(type, currentPath, contentRoot, slug, fallback='') {
@@ -183,7 +183,7 @@ class larkDocWriter {
 
     __has_renderable_page(source) {
         const shared = this.sharedBundle?.bundle.outcomes.find(outcome => outcome.record_id === source?.base_record_id)
-        if (shared) return shared.status === 'success'
+        if (shared) return ['success', 'inherited'].includes(shared.status)
         const page = source?.blocks?.items?.find(block => block.block_type === 1)
         return !!(page?.children && page.children.length > 0)
     }
@@ -282,7 +282,7 @@ class larkDocWriter {
                     continue
                 }
                 const fallback = this.sharedBundle?.bundle.outcomes.find(outcome => outcome.status === 'fallback' && outcome.record_id === targetSource.base_record_id)
-                const targetMeta = fallback ? {publish: fallback.baseline.outputs.some(output => output.path.startsWith(`content/en/${this.targets.toLowerCase() === 'zilliz.paas' ? 'byoc' : 'guides'}/`)), channel: null} : await this.__is_to_publish(
+                const targetMeta = fallback ? {publish: fallback.baseline.outputs.some(output => output.path.startsWith(`content/en/${this.targets.toLowerCase() === 'zilliz.paas' ? 'byoc' : 'guides'}/`)), channel: require('./sharedPagePublication').fallbackChannel(this.sharedBundle, targetSource.base_record_id)} : await this.__is_to_publish(
                     targetSource.title || targetSource.name,
                     targetSource.slug,
                     targetSource.node_token || targetSource.origin_node_token || targetSource.token,
@@ -1209,7 +1209,7 @@ class larkDocWriter {
                 }
                 const shared = this.sharedBundle?.bundle.outcomes.find(outcome => outcome.record_id === baseSource.base_record_id)
                 if (shared) {
-                    return {publish: shared.status === 'success' && this.__base_source_is_publishable(baseSource),
+                    return {publish: ['success', 'inherited'].includes(shared.status) && this.__base_source_is_publishable(baseSource),
                         title: baseSource.title || title, slug, beta: null, channel: guidesRecordChannel(baseSource),
                         labels: this.__plain_value(baseSource.base_labels) || baseSource.title || title}
                 }

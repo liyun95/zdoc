@@ -61,7 +61,7 @@ it('Fetch validates both target paths before image downloads or rendering, and e
   const fetchContext = { ...context(), targets: context().targets.map(target => ({ ...target, path: target.manual === 'guides-byoc' ? 'wrong/path' : target.path })) }
   const code = await runBuild({ ...demo, page: 'build-pipeline' }, value => { text += value }, { fetcher: images, fetchContext })
   expect(code).toBe(1)
-  expect(text).toContain('CONFIG_PATH_UNKNOWN')
+  expect(text).toContain('OWNERSHIP_PATH_MISMATCH')
   expect(images.requests).toEqual([])
   await expect(readFile(join(demo.out, 'images.json'))).rejects.toMatchObject({ code: 'ENOENT' })
 })

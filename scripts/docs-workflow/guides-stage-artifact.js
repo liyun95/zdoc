@@ -395,7 +395,8 @@ async function assertSourceStageCompleteness({ site = 'en', workspace, snapshotC
     buildEnv: 'uat',
     rootToken,
     sourceDir: path.join(workspace, siteIdentity(site).sourceDir),
-    snapshot: handoff ? require('../../packages/docs-tooling/src/lark/sharedPageFetch').pendingSourceSnapshot(snapshot, handoff.routing) : snapshot,
+    snapshot: handoff && !handoff.continuation ? require('../../packages/docs-tooling/src/lark/sharedPageFetch').pendingSourceSnapshot(snapshot, handoff.routing) : snapshot,
+    sharedReceiptsByRecordId: handoff?.receipts,
   })
 }
 
@@ -426,7 +427,10 @@ async function createGuidesStageArtifact({ site = 'en', stage, workspace, baseli
     const mediaReport = parseMediaPrefetchReport(current.get(MEDIA_PREFETCH_REPORT))
     const mediaManifest = parseMediaManifest(current.get(siteIdentity(site).mediaManifest))
     validatePackagedMediaInventory(mediaManifest, mediaReport)
-    if (site === 'en') sharedBundle.fromPayload(current, {masterSha, devBaselineSha})
+    if (site === 'en') {
+      const handoff = sharedBundle.fromPayload(current, {masterSha, devBaselineSha})
+      if (handoff?.continuation) require('../../packages/docs-tooling/src/lark/sharedPagePublication').authenticateContinuation(workspace, handoff, JSON.parse(current.get('packages/docs-tooling/src/lark/meta/reports/guides-source-snapshot-candidate.json')))
+    }
   }
   await fs.rm(output, { recursive: true, force: true })
   await fs.mkdir(path.join(output, 'payload'), { recursive: true })
@@ -503,6 +507,8 @@ async function validateGuidesStageArtifact(directory, expected = {}) {
 
 async function restoreGuidesStageArtifact({ artifact, target, expected = {} }) {
   const { manifest, payloadBytes } = await loadValidatedGuidesStageArtifact(artifact, expected)
+  const handoff = manifest.stage === 'source' && manifest.site === 'en' ? sharedBundle.fromPayload(payloadBytes, {masterSha: manifest.masterSha, devBaselineSha: manifest.devBaselineSha}) : null
+  if (handoff?.continuation) require('../../packages/docs-tooling/src/lark/sharedPagePublication').authenticateContinuation(target, handoff, JSON.parse(payloadBytes.get('packages/docs-tooling/src/lark/meta/reports/guides-source-snapshot-candidate.json')))
   const targetPath = await ensureTargetRoot(target)
   const targetRoot = { path: targetPath, ancestors: [await pinDirectory(targetPath, 'Guides restore target')] }
   for (const relative of manifest.deletions) {

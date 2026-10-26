@@ -82,7 +82,8 @@ export function readHandoffJson(root: string, relative: string): unknown {
   return JSON.parse(readFileSync(target, 'utf8'))
 }
 export function readActiveState(root: string, group = 'guides'): ActiveState | null {
-  const relative = sharedReceiptPath(group, 'active')
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(group)) throw new Error('Invalid shared group')
+  const relative = `generated/en/manifests/shared-pages/${group}/active.json`
   let current = resolve(root)
   if (lstatSync(current).isSymbolicLink()) throw new Error('Handoff root must not be a symlink')
   for (const segment of relative.split('/')) {

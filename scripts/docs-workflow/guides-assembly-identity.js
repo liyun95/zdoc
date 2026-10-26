@@ -50,6 +50,8 @@ const FINGERPRINT_FILES = Object.freeze([
   'packages/docs-tooling/src/shared-docs/commands/build.ts',
   'scripts/docs-workflow/guides-shared-sources.js',
   'scripts/docs-workflow/guides-shared-publication.js',
+  'scripts/docs-workflow/guides-render-readiness.js',
+  'scripts/docs-workflow/guides-source-cache.js',
   'packages/docs-tooling/src/lark/guidesBaseRecordSemantics.js',
   'scripts/docs-workflow/guides-assembly-identity.js',
   'scripts/docs-workflow/generate-guides-sidebars.js',

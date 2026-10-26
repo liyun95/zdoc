@@ -66,7 +66,8 @@ export async function toMdx(adapted: AdaptedPage, context: DiagnosticContext, op
     }
     catch (error) {
       const problem = error as { message: string; line?: number; place?: { line?: number; start?: { line?: number } } }
-      errors.push(failure(problem.message, problem.line ?? problem.place?.line ?? problem.place?.start?.line))
+      const bodyLine = problem.line ?? problem.place?.line ?? problem.place?.start?.line
+      errors.push(failure(problem.message, bodyLine === undefined ? undefined : bodyLine + (front.match(/\n/g)?.length || 0)))
     }
     return errors.length ? { errors } : { mdx }
   } catch (error) {

@@ -227,7 +227,7 @@ export async function buildPage(input: { pageId: string; sharedDocs: SharedDocsI
   const records = await runtime.records()
   if (runtime.fetchContext && (runtime.fetchContext.page !== pageId || config.publish.length !== 2
     || new Set(config.publish.map(target => target.manual)).size !== 2)) {
-    return { errors: [{ ...context, code: 'CONFIG_PATH_UNKNOWN', message: 'Fetch requires exactly Guides and BYOC for the selected page' }], failures }
+    return { errors: [{ ...context, code: 'OWNERSHIP_PATH_MISMATCH', message: 'Fetch requires exactly Guides and BYOC for the selected page' }], failures }
   }
   for (const [index, target] of config.publish.entries()) {
     if (target.manual !== 'guides' && target.manual !== 'guides-byoc') {
@@ -247,7 +247,7 @@ export async function buildPage(input: { pageId: string; sharedDocs: SharedDocsI
     if (runtime.fetchContext) {
       const expected = runtime.fetchContext.targets.find(candidate => candidate.manual === target.manual)
       if (!expected || expected.path !== target.path) {
-        errors.push({ ...context, code: 'CONFIG_PATH_UNKNOWN', line: yamlLine(page.pageYaml, ['publish', index, 'path']),
+        errors.push({ ...context, code: 'OWNERSHIP_PATH_MISMATCH', line: yamlLine(page.pageYaml, ['publish', index, 'path']),
           message: `Current Base path does not match ${target.manual}/${target.path}` })
       } else targets.set(index, { pages, navigation: expected.navigation, fetch: expected })
       continue

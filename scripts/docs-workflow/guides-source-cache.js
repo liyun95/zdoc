@@ -55,7 +55,21 @@ function createSourceCacheManifest({ workspace = process.cwd(), site = 'en', sou
   const authority = path.join(workspace, 'generated/en/manifests/shared-pages/guides/_publication.json')
   if (site === 'en' && fs.existsSync(authority) && JSON.parse(fs.readFileSync(authority)).cache_eligible !== true) throw new Error('Partial shared publication cannot create a source cache')
   const shared = snapshot.records.some(record => record.source_kind === 'shared-page')
-  const evidence = shared ? require('../../packages/docs-tooling/src/lark/sharedPagePublication').publishedEvidence(workspace, snapshot) : null
+  let evidence = null
+  if (shared) {
+    const publication = require('../../packages/docs-tooling/src/lark/sharedPagePublication')
+    const sharedBundle = require('../../packages/docs-tooling/src/lark/sharedPageBundle')
+    const bundlePath = path.join(workspace, sharedBundle.ROOT)
+    if (site === 'en' && !fs.existsSync(authority) && fs.existsSync(bundlePath)) {
+      const handoff = sharedBundle.loadBundle(bundlePath)
+      if (!handoff.continuation) throw new Error('Shared draft bundle cannot create a source cache')
+      // The requested source worker has no final manifests yet. Authenticate retained final
+      // authority in the continuation, including its binding to this changed candidate.
+      evidence = publication.authenticateContinuation(workspace, handoff, snapshot)
+      const retainedAuthority = JSON.parse(handoff.retained.get(`${publication.MANIFEST}/_publication.json`))
+      if (retainedAuthority.cache_eligible !== true) throw new Error('Partial shared publication cannot create a source cache')
+    } else evidence = publication.publishedEvidence(workspace, snapshot)
+  }
   if (evidence?.fallbackIds.size) throw new Error('Partial shared publication cannot create a source cache')
   assertSourceCompleteness({ manual: 'guides', buildEnv: 'uat', rootToken, sourceDir, snapshot, sharedReceiptsByRecordId: evidence?.receipts })
   const manifest = {

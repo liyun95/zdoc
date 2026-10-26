@@ -79,3 +79,8 @@ it('requires primitive strings for handoff slugs, commits, digests and URL field
     shared_page: {...identity, inputs_sha256: [sha]}, source_file: null, source_hash: null, node_metadata: null, outgoing_tokens: []}
   expect(() => validateSharedSnapshotRecord(record)).toThrow()
 })
+
+it('reserves activation metadata at both routing and receipt boundaries', () => {
+  expect(classifySourceRoute(url.replace('example', 'active'), {availablePages: ['guides/active']})).toMatchObject({kind: 'invalid', code: 'OWNERSHIP_PATH_MISMATCH'})
+  expect(() => sharedReceiptPath('guides', 'active')).toThrow(/reserved/)
+})

@@ -127,8 +127,9 @@ async function writeBuild(out: string, pages: readonly BuiltPage[], images: read
 }
 
 export async function runBuild(options: BuildOptions, write: (text: string) => void = text => process.stdout.write(text),
-  dependencies: { fetcher?: ImageFetcher; repositoryRoot?: string; fetchContext?: FetchBuildContext; onBuilt?: (pages: readonly BuiltPage[]) => void | Promise<void> } = {}): Promise<number> {
+  dependencies: { fetcher?: ImageFetcher; repositoryRoot?: string; fetchContext?: FetchBuildContext; onErrors?: (errors: readonly SharedDocsError[]) => void; onBuilt?: (pages: readonly BuiltPage[]) => void | Promise<void> } = {}): Promise<number> {
   const print = (errors: readonly SharedDocsError[]) => {
+    dependencies.onErrors?.(errors)
     for (const error of errors) {
       const detail = error.detail
       const reason = detail && typeof detail === 'object' && 'reason' in detail && typeof detail.reason === 'string' && detail.reason

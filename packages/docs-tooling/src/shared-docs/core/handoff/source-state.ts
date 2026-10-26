@@ -2,7 +2,7 @@
 export type SourceRoute =
   | {kind: 'feishu'; token: string; url: string}
   | {kind: 'shared-page'; group: string; page: string; directory: string; url: string}
-  | {kind: 'invalid'; code: 'OWNERSHIP_CONFIG_MISSING'; message: string}
+  | {kind: 'invalid'; code: 'OWNERSHIP_CONFIG_MISSING' | 'OWNERSHIP_PATH_MISMATCH'; message: string}
 export interface SharedPageIdentity {group: string; page: string; inputs_sha256: string; record: string}
 export interface ActivePage {page: string; record: string; feishu_token: string | null; anchors: Record<string, string>; activated_in: string}
 export interface ActiveState {schema_version: 1; pages: ActivePage[]}
@@ -39,6 +39,7 @@ export function safeHandoffPath(value: unknown): value is string {
 }
 export function sharedReceiptPath(group: string, page: string) {
   assert(matches(group, SLUG) && matches(page, SLUG), 'Invalid shared group/page')
+  assert(page !== 'active', 'Shared page name active is reserved for activation metadata')
   return `generated/en/manifests/shared-pages/${group}/${page}.json`
 }
 export function classifySourceRoute(value: unknown, context: {availablePages?: readonly string[]} = {}): SourceRoute {
@@ -48,6 +49,7 @@ export function classifySourceRoute(value: unknown, context: {availablePages?: r
   const shared = /^https:\/\/github\.com\/zilliztech\/zdoc\/tree\/master\/shared-docs\/([a-z0-9]+(?:-[a-z0-9]+)*)\/pages\/([a-z0-9]+(?:-[a-z0-9]+)*)\/?$/.exec(value)
   if (shared) {
     const [, group, page] = shared
+    if (page === 'active') return {kind: 'invalid', code: 'OWNERSHIP_PATH_MISMATCH', message: 'Shared page name active is reserved for activation metadata'}
     return group === 'guides' && context.availablePages?.includes(`${group}/${page}`)
       ? {kind: 'shared-page', group, page, directory: `shared-docs/${group}/pages/${page}`, url: value} : invalid
   }

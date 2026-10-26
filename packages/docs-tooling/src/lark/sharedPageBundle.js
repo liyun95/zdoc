@@ -16,6 +16,7 @@ function validateBundle(files, expected = {}) {
   if (!files.size) return null
   if (files.size > 8192 || [...files.values()].reduce((sum, bytes) => sum + bytes.length, 0) > LIMIT) fail('payload limit exceeded')
   for (const [file, bytes] of files) if (!safeHandoffPath(file) || bytes.length > FILE_LIMIT) fail('unsafe path or file size')
+  if (files.has('continuation.json')) return require('./sharedPagePublication').validateContinuation(files, expected)
   const used = new Set()
   function read(file, hash) {
     if (!safeHandoffPath(file) || used.has(file) || !files.has(file)) fail(`missing, duplicate or unsafe file ${file}`)
@@ -113,7 +114,10 @@ function fromPayload(payload, expected) {
   const candidateBytes = payload.get('packages/docs-tooling/src/lark/meta/reports/guides-source-snapshot-candidate.json')
   if (!files.size && candidateBytes && JSON.parse(candidateBytes).records?.some(record => record.source_kind === 'shared-page')) fail('shared snapshot requires bundle')
   const handoff = validateBundle(files, expected)
-  if (handoff && candidateBytes) require('./sharedPageFetch').pendingSourceSnapshot(JSON.parse(candidateBytes), handoff.routing)
+  if (handoff && candidateBytes) {
+    if (handoff.continuation) {if (require('./sourceCompleteness').hashSnapshot(JSON.parse(candidateBytes)) !== handoff.continuation.candidate_sha256) fail('requested continuation candidate mismatch')}
+    else require('./sharedPageFetch').pendingSourceSnapshot(JSON.parse(candidateBytes), handoff.routing)
+  }
   return handoff
 }
 function loadBundle(root, expected) {
@@ -140,6 +144,7 @@ function emitPrebuilt(writer, request) {
   const source = writer.__fetch_base_source_meta(request.page_title, request.page_slug, request.page_token)
   const outcome = handoff.bundle.outcomes.find(outcome => outcome.record_id === source?.base_record_id)
   if (!outcome) return false
+  if (outcome.status === 'inherited') fail('requested render touched an inherited shared owner')
   if (outcome.status === 'fallback') return true // Table completion restores exact prior paths, including moves.
   const manual = String(writer.targets).includes('zilliz.paas') ? 'guides-byoc' : 'guides'
   const output = outcome.outputs.find(output => output.manual === manual), target = outcome.targets.find(target => target.manual === manual)

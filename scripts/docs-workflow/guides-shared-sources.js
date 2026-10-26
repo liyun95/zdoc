@@ -144,7 +144,9 @@ async function generateSharedSources(options, dependencies = {}) {
       }
       fetch.assertInventory(repositoryRoot, input.evidence.files); fetch.assertInventory(baselineRoot, input.evidence.dev_files)
       const expectedPaths = ['source.yaml', 'Variables.json', 'links.yaml', 'product-names.yaml', 'presentation/cloud-sdk-tabs.yaml', `pages/${page}/page.yaml`, `pages/${page}/lock.yaml`]
-      for (const file of expectedPaths) if (!input.evidence.files.some(entry => entry.path === `${sharedRoot}/${file}`)) throw new Error(`Missing pinned input: ${file}`)
+      for (const file of expectedPaths) if (!input.evidence.files.some(entry => entry.path === `${sharedRoot}/${file}`)) {
+        throw Object.assign(new Error(`Missing pinned input: ${file}`), file === `pages/${page}/page.yaml` ? {code: 'OWNERSHIP_CONFIG_MISSING'} : {})
+      }
       const shared = await readSharedDocs(path.join(repositoryRoot, sharedRoot), repositoryRoot, [page])
       if ('errors' in shared) throw Object.assign(new Error('Shared config validation failed'), {detail: shared.errors})
       const source = parseSourceConfig(shared.sourceYaml, {page, channel: 'both'})
@@ -159,9 +161,13 @@ async function generateSharedSources(options, dependencies = {}) {
       const fetchContext = {page, targets, records: data.navigation.navigationRecords.map(row => ({record_id: row.record_id, slug: row.slug,
         placement_type: row.placement_type, publish_targets: row.targets, output_paths: {}}))}
       let built, log = ''
+      const buildErrors = []
       const code = await runBuild({sharedDocs: path.join(repositoryRoot, sharedRoot), repo, dev: baselineRoot, out: buildOut, page,
-        imageTimeout: options.imageTimeout ?? 120}, text => { log += text }, {repositoryRoot, fetchContext, fetcher: dependencies.fetcher, onBuilt: pages => { built = pages }})
-      if (code || !built || built.length !== 2) throw Object.assign(new Error(`Paired shared build failed: ${log}`), {code: 'SHARED_BUILD_FAILED'})
+        imageTimeout: options.imageTimeout ?? 120}, text => { log += text }, {repositoryRoot, fetchContext, fetcher: dependencies.fetcher, onErrors: errors => buildErrors.push(...errors), onBuilt: pages => { built = pages }})
+      if (code || !built || built.length !== 2) throw Object.assign(new Error(`Paired shared build failed: ${log}`), {
+        code: buildErrors.some(error => error.code === 'OWNERSHIP_PATH_MISMATCH') ? 'OWNERSHIP_PATH_MISMATCH' : 'SHARED_BUILD_FAILED',
+        detail: buildErrors.length ? buildErrors : null,
+      })
       const imageBaseUrl = (options.imageBaseUrl || 'https://zdoc-images.s3.us-west-2.amazonaws.com').replace(/\/$/, '')
       for (const output of built) for (const address of new Set(output.images.map(image => image.address))) output.mdx = output.mdx.split(address).join(`${imageBaseUrl}/${address}`)
       const activation = await fetch.activationDraft({record, page, active: data.active, previousSnapshot: data.previous_snapshot, currentSources,

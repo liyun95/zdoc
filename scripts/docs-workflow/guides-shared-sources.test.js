@@ -71,7 +71,7 @@ async function fixture(t, {pages = ['sample'], old = true, active = false, image
   const scraper = new Scraper(rootToken, 'base:*', 'wiki', sourceDir)
   scraper.records = records; scraper.base_tables = [{table_id: 'table', name: 'Manage Data'}]; scraper.routingContext = prepared.context
   await scraper.__apply_base_navigation()
-  const candidate = createSourceSnapshot({manualName: 'guides', buildEnv: 'uat', docSourceDir: sourceDir, baseAppToken: 'base', records, routingContext: prepared.context})
+  const candidate = createSourceSnapshot({manualName: 'guides', buildEnv: 'uat', docSourceDir: sourceDir, baseAppToken: 'base', records: records.filter(row => !prepared.context.errors.some(error => error.record_id === row.record_id)), routingContext: prepared.context})
   const options = {preparation: prepared.data, repositoryRoot, baselineRoot, repo, sourceDir, candidate, rootToken,
     out: path.join(root, 'bundle'), scratch: path.join(root, 'scratch'), runId: '123', plan: {mode: 'incremental', affected_tables: [], changed_records: structuredClone(candidate.records)}}
   return {root, ...options, prepared, records, upstreamCommit, masterCommit, devCommit}
@@ -219,7 +219,7 @@ test('paired target rejection retains both baseline files and failed new pages e
     const prepared = adapter.prepareSharedSources({...options, masterCommit})
     const bundle = await generateSharedSources({...options, preparation: prepared.data}, {fetchOld: async () => {throw new Error('not reached')}})
     assert.equal(bundle.outcomes[0].status, 'fallback')
-    assert.match(bundle.outcomes[0].message, /CONFIG_PATH_UNKNOWN/)
+    assert.match(bundle.outcomes[0].message, /OWNERSHIP_PATH_MISMATCH/)
     assert.equal(bundle.outcomes[0].baseline.outputs.length, old ? 2 : 0)
     assert.equal(fs.existsSync(path.join(options.out, 'pages')), false)
     assert.deepEqual(bundle.effective_active.pages, [])
@@ -896,4 +896,69 @@ test('no-shared anchored Base refs retain the exact legacy source projection and
   const files = fs.readdirSync(paths[0], {recursive: true}).filter(file => fs.statSync(path.join(paths[0], file)).isFile()).sort()
   assert.deepEqual(fs.readdirSync(paths[1], {recursive: true}).filter(file => fs.statSync(path.join(paths[1], file)).isFile()).sort(), files)
   for (const file of files) assert.deepEqual(fs.readFileSync(path.join(paths[0], file)), fs.readFileSync(path.join(paths[1], file)), file)
+})
+
+test('fallback navigation retains baseline channel, nested ancestors and order before surviving siblings', () => {
+  const api = require('../../packages/docs-tooling/src/lark/sharedPagePublication')
+  for (const release_channel of ['next', 'retire-in-next']) for (const manual of ['guides', 'guides-byoc']) {
+    const physical = manual === 'guides' ? 'guides' : 'byoc'
+    const rows = [
+      {record_id: 'parent', table_id: 'table', table_name: 'Manage Data', placement_type: 'section', slug: 'parent', title: 'Parent', labels: 'Retained parent', parent_record_ids: [], order: 0},
+      {record_id: 'first', table_id: 'table', table_name: 'Manage Data', placement_type: 'canonical', slug: 'first', title: 'First', labels: 'Retained first', release_channel, parent_record_ids: ['parent'], order: 1},
+      {record_id: 'second', table_id: 'table', table_name: 'Manage Data', placement_type: 'canonical', slug: 'second', title: 'Second', parent_record_ids: ['parent'], order: 2},
+    ]
+    const handoff = {bundle: {preparation: {previous_snapshot: {navigation_records: rows, records: rows}}, outcomes: [{status: 'fallback', record_id: 'first', baseline: {outputs: [{path: `content/en/${physical}/tutorials/manage-data/parent/first.md`}]}}]}}
+    const second = {type: 'doc', id: 'tutorials/manage-data/parent/second', key: 'doc:tutorials/manage-data/parent/second'}
+    const table = {type: 'category', label: 'Manage Data', key: 'category:tutorials/manage-data', items: []}
+    const nested = {type: 'category', label: 'Retained parent', key: 'category:tutorials/manage-data/parent', items: [second]}
+    for (const input of [[{...table, items: [nested]}], [table]]) {
+      const result = api.projectFallbackSidebar(input, handoff, manual)
+      const parent = result[0].items[0]
+      assert.equal(parent.label, 'Retained parent')
+      assert.equal(parent.items[0].label, 'Retained first')
+      assert.equal(parent.items[0].customProps.channel, release_channel)
+      if (input[0].items.length) assert.equal(parent.items[1].key, second.key)
+      assert.equal(api.fallbackChannel(handoff, 'first'), release_channel)
+    }
+  }
+})
+
+test('reserved active page is a local routing failure before generation while its sibling publishes', {timeout: 120000}, async t => {
+  const options = await fixture(t, {pages: ['active', 'sibling'], old: false})
+  assert.equal(options.preparation.errors[0].code, 'OWNERSHIP_PATH_MISMATCH')
+  assert.equal(Object.hasOwn(options.preparation.inputs, 'rec0'), false)
+  const bundle = await generateSharedSources(options, {fetchOld: async () => {throw Error('No previous document')}})
+  assert.equal(bundle.outcomes.find(row => row.record_id === 'rec0').status, 'fallback')
+  assert.equal(bundle.outcomes.find(row => row.record_id === 'rec1').status, 'success')
+  assert.equal(bundle.outcomes.find(row => row.record_id === 'rec0').code, 'OWNERSHIP_PATH_MISMATCH')
+  assert.deepEqual(bundle.effective_active.pages.map(row => row.page), ['sibling'])
+  assert.equal(fs.existsSync(path.join(options.out, 'pages/active/receipt-draft.json')), false)
+})
+
+test('pinned fallback sidebar restores missing nested metadata before surviving siblings and validates both manuals', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wp9-sidebar-'))
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}))
+  const nav = [
+    {record_id: 'parent', placement_type: 'section', slug: 'nested', title: 'Nested', labels: 'Nested baseline', parent_record_ids: [], order: 0},
+    {record_id: 'first', placement_type: 'canonical', slug: 'first', title: 'First', labels: 'First baseline', doc_token: 'first', parent_record_ids: ['parent'], order: 1},
+    {record_id: 'second', placement_type: 'canonical', slug: 'second', title: 'Second', doc_token: 'second', parent_record_ids: [], order: 2},
+  ].map(row => ({...row, table_id: 'table', table_name: 'Manage Data', targets: ['zilliz.saas', 'zilliz.paas'], progress: 'Published'}))
+  const prior = {schema_version: 3, manual: 'guides', navigation_records: nav, records: nav}
+  const first = {type: 'doc', id: 'tutorials/manage-data/nested/first', label: 'First baseline', key: 'doc:tutorials/manage-data/nested/first', customProps: {channel: 'next'}}
+  const second = {type: 'doc', id: 'tutorials/manage-data/second', key: 'doc:tutorials/manage-data/second'}
+  const nested = {type: 'category', label: 'Nested baseline', collapsed: false, key: 'category:tutorials/manage-data/nested', customProps: {retained: true}, items: [first]}
+  const table = {type: 'category', label: 'Manage Data', key: 'category:tutorials/manage-data', items: [nested, second]}
+  for (const manual of ['guides', 'guides-byoc']) await write(root, `generated/en/sidebars/${manual}.sidebar.js`, `module.exports = ${JSON.stringify([table])}\n`)
+  await git(root, 'init', '--quiet', '--initial-branch=dev', '--template='); await git(root, 'add', '.'); await git(root, 'commit', '--quiet', '-m', 'Pinned nested sidebar')
+  const commit = await git(root, 'rev-parse', 'HEAD')
+  for (const [manual, physical, target] of [['guides', 'guides', 'zilliz.saas'], ['guides-byoc', 'byoc', 'zilliz.paas']]) {
+    const handoff = {bundle: {dev_commit: commit, preparation: {previous_snapshot: prior}, outcomes: [{status: 'fallback', record_id: 'first', baseline: {outputs: [{path: `content/en/${physical}/tutorials/manage-data/nested/first.md`}]}}]}}
+    const sidebar = require('../../packages/docs-tooling/src/lark/sharedPagePublication').projectFallbackSidebar([{...table, items: [second]}], handoff, manual, root)
+    assert.deepEqual(sidebar, [table])
+    const outputDir = path.join(root, `content/en/${physical}/tutorials`)
+    await write(outputDir, 'manage-data/nested/first.md', '---\ntoken: first\n---\nRetained first.\n')
+    await write(outputDir, 'manage-data/second.md', '---\ntoken: second\n---\nSecond.\n')
+    require('../validate-guides-source-contract').validateGuidesSourceContract({snapshot: prior, target, outputDir, sidebar})
+    require('../validate-guides-coverage').validateGuidesCoverage({outputDir, sidebar})
+  }
 })
