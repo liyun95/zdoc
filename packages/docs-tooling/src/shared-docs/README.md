@@ -111,7 +111,8 @@ before any input/output or Git access. `lock --from-fork` always reports
 
 Custom parents such as `inputs/guides` and absolute group paths are supported.
 Diagnostics use the selected directory's path relative to the repository root
-(the CLI working directory). Source Markdown and fragment diagnostics keep
+(the CLI working directory) when it is inside that root, and its absolute path
+otherwise. Source Markdown and fragment diagnostics keep
 their upstream `site/en/...` paths.
 
 ```sh

@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, relative, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { readSharedDocs, runBuild } from '../commands/build'
 import { runInspect } from '../commands/inspect'
@@ -70,7 +70,7 @@ it('requires the grouped option for inspect and links-seed and preserves uncondi
   expect(fork.stdout + fork.stderr).not.toContain('Only the guides')
 })
 
-it('derives every build configuration location from an absolute custom guides directory', async () => {
+it('uses absolute build configuration locations for a guides directory outside the repository', async () => {
   const root = await temp(), demo = await createBuildDemo(root)
   const group = join(root, 'custom', 'guides')
   await fs.mkdir(join(root, 'custom'))
@@ -81,8 +81,7 @@ it('derives every build configuration location from an absolute custom guides di
   for (const [file, text] of Object.entries(fixtures)) await fs.writeFile(join(group, file), text)
   const result = await readSharedDocs(group)
   if (!('errors' in result)) throw new Error('Expected invalid configuration')
-  const prefix = relative(process.cwd(), group)
-  expect(new Set(result.errors.map(error => error.file))).toEqual(new Set(Object.keys(fixtures).map(file => `${prefix}/${file}`)))
+  expect(new Set(result.errors.map(error => error.file))).toEqual(new Set(Object.keys(fixtures).map(file => `${group}/${file}`)))
   expect(result.errors.every(error => error.line === undefined || error.line >= 1)).toBe(true)
 })
 
@@ -144,6 +143,23 @@ it.each(['lock', 'links-seed'])('keeps missing source diagnostics relative throu
   await expect(fs.stat(demo.out)).rejects.toMatchObject({ code: 'ENOENT' })
 })
 
+
+it('keeps diagnostic paths repository-relative for a group inside the repository', () => {
+  for (const directory of ['shared-docs/guides', '/repository/shared-docs/guides', '..drafts/guides']) {
+    const group = groupContext(directory, '/repository')
+    if ('errors' in group) throw new Error('Expected the guides group')
+    const prefix = directory.startsWith('/repository/') ? directory.slice('/repository/'.length) : directory
+    expect(group.file('source.yaml')).toBe(`${prefix}/source.yaml`)
+  }
+})
+
+it('uses absolute diagnostic paths for a group outside the repository', () => {
+  for (const directory of ['../guides', '../repository-copy/guides', '/temporary/shared-docs/guides']) {
+    const group = groupContext(directory, '/repository')
+    if ('errors' in group) throw new Error('Expected the guides group')
+    expect(group.file('pages/example/page.yaml')).toBe(`${resolve('/repository', directory)}/pages/example/page.yaml`)
+  }
+})
 
 it('keeps paths relative when the repository root itself is the selected guides directory', () => {
   const group = groupContext('/repository/guides', '/repository/guides')
