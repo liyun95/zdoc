@@ -1,3 +1,4 @@
+import { groupFile } from './group-context'
 import { parsePageConfig, parseSourceConfig } from '../core/config'
 import { parseLock, validateLockHistory } from '../core/lock'
 import { diagnostic, yamlLine } from '../core/yaml'
@@ -20,9 +21,9 @@ export type ReadPageResult = {
 
 /** Parse every config before reading Git; report page errors together, but propagate infrastructure failures. */
 export async function readPageSources(input: ReadPageInput, reader: MilvusDocsReader): Promise<ReadPageResult> {
-  const pageFile = input.context.file ?? `${input.sharedDocsPath ?? 'shared-docs/guides'}/pages/${input.pageId}/page.yaml`
+  const pageFile = input.context.file ?? groupFile(input.sharedDocsPath, `pages/${input.pageId}/page.yaml`)
   const lockContext = { file: pageFile.replace(/[^/]*$/, 'lock.yaml'), page: input.pageId }
-  const source = parseSourceConfig(input.sourceYaml, { file: input.sourceName ?? `${input.sharedDocsPath ?? 'shared-docs/guides'}/source.yaml`, page: input.pageId })
+  const source = parseSourceConfig(input.sourceYaml, { file: input.sourceName ?? groupFile(input.sharedDocsPath, 'source.yaml'), page: input.pageId })
   const config = parsePageConfig(input.pageId, input.pageYaml, { ...input.context, file: pageFile })
   const lock = parseLock(input.lockYaml, lockContext)
   const errors: SharedDocsError[] = []

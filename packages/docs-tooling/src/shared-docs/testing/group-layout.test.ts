@@ -10,6 +10,7 @@ import { runLinksSeed } from '../commands/links-seed'
 import { runLock } from '../commands/lock'
 import { createBuildDemo } from './build/demo'
 import { groupContext } from '../adapters/group-context'
+import { readPageSources } from '../adapters/read-page'
 import { inspectPage } from '../adapters/inspect-page'
 import { GitMilvusDocsReader } from '../adapters/git-milvus-docs-reader'
 import { RealMd2md } from '../adapters/md2md'
@@ -148,4 +149,35 @@ it('keeps paths relative when the repository root itself is the selected guides 
   const group = groupContext('/repository/guides', '/repository/guides')
   if ('errors' in group) throw new Error('Expected the guides group')
   expect(group.file('source.yaml')).toBe('source.yaml')
+})
+
+
+it.each(['inspect', 'read'])('preserves empty group prefixes through the %s adapter', async action => {
+  const reader = new GitMilvusDocsReader('/unavailable')
+  const head = vi.spyOn(reader, 'trackedHead')
+  const input = { pageId: 'example', sourceYaml: 'schema_version: 2\n', pageYaml: 'schema_version: 2\n',
+    lockYaml: 'schema_version: 2\n', variablesJson: '[]', sharedDocsPath: '', context: inspectionContext }
+  const result = action === 'inspect' ? await inspectPage(input, reader, new RealMd2md()) : await readPageSources(input, reader)
+  if (!('errors' in result)) throw new Error('Expected invalid configuration')
+  const expected = ['source.yaml', 'pages/example/page.yaml', 'pages/example/lock.yaml']
+  if (action === 'inspect') expected.push('Variables.json')
+  expect(new Set(result.errors.map(error => error.file))).toEqual(new Set(expected))
+  expect(result.errors.every(error => error.line === 1)).toBe(true)
+  expect(head).not.toHaveBeenCalled()
+})
+
+it('propagates an empty group prefix through real inspect with --shared-docs .', async () => {
+  const root = await temp(), demo = await createBuildDemo(root), group = join(root, 'guides')
+  await fs.rename(demo.sharedDocs, group)
+  for (const [file, text] of Object.entries({ 'source.yaml': 'schema_version: 2\n', 'Variables.json': '[]',
+    'pages/build-pipeline/page.yaml': 'schema_version: 2\n', 'pages/build-pipeline/lock.yaml': 'schema_version: 2\n' })) {
+    await fs.writeFile(join(group, file), text)
+  }
+  const result = spawnSync(process.execPath, [resolve('scripts/docs-tooling.js'), 'shared-docs', 'inspect', '--shared-docs', '.',
+    '--page', 'build-pipeline', '--repo', demo.repo], { encoding: 'utf8', cwd: group })
+  expect(result.status).toBe(1)
+  for (const file of ['source.yaml', 'Variables.json', 'pages/build-pipeline/page.yaml', 'pages/build-pipeline/lock.yaml']) {
+    expect(result.stdout).toContain(`\n${file}:1 `)
+  }
+  expect(result.stdout).not.toMatch(/^\//m)
 })
