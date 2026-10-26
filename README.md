@@ -562,3 +562,33 @@ pnpm test:containers
 pnpm build:en
 pnpm build:zh-CN
 ```
+
+#### Shared Guides final publication evidence
+
+English Guides source artifacts retain the observed candidate and authenticated
+paired outcomes. Assembly derives a separate effective snapshot: successful
+shared records use the emitted output paths; failed transitions retain their exact
+pinned dev record and historical outputs; failed new records remain absent.
+Combined sidebars include those authenticated old paths even when a stable table
+ID has been renamed. Coverage and source-contract validation remain required.
+
+After complete table restore and canonical publication, assembly verifies the
+actual output hashes and tokens, writes final page receipts with the full immutable
+Base navigation projection, and appends only successful first activations to
+`generated/en/manifests/shared-pages/guides/active.json`. Existing activation
+entries and anchors remain unchanged. The same checkpoint owns MDX, receipts,
+active state, and `_publication.json`; its underscore prefix cannot collide with
+a valid page slug. This last file binds the observed/effective snapshot hashes,
+active state, and exact prior snapshot bytes and output digests for fallback.
+Checkpoint validation reads the original local dev Git commit to authenticate that
+fallback evidence, so source-job scratch is not required. Missing pinned objects
+or mismatched bytes fail validation. Legacy checkpoints without shared state
+remain accepted without creating empty shared manifests.
+
+A source-stage receipt draft cannot authorize a saved source cache. Final cache
+manifests carry validated final receipts, and any shared page failure suppresses
+cache generation so the next Fetch retries it. Build notes report page failures
+and unknown post-activation anchors with the referring page and source URL. Old
+Feishu token links resolve to the shared page; known heading blocks use the
+activation anchor map, while unknown blocks resolve to the page top. WP9 does not
+change Translation/recovery cache identities or adopt recorded images.

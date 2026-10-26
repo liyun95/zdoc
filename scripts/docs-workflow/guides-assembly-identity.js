@@ -40,6 +40,16 @@ const FINGERPRINT_FILES = Object.freeze([
   'packages/docs-tooling/src/lark/index.js',
   'packages/docs-tooling/src/lark/larkDocWriter.js',
   'packages/docs-tooling/src/lark/larkSourceIndex.js',
+  'packages/docs-tooling/src/lark/sharedPagePublication.js',
+  'packages/docs-tooling/src/lark/sharedPageFetch.js',
+  'packages/docs-tooling/src/lark/sharedPageBundle.js',
+  'packages/docs-tooling/src/shared-docs/core/handoff/source-state.ts',
+  'packages/docs-tooling/src/shared-docs/core/site/front-matter.ts',
+  'packages/docs-tooling/src/shared-docs/adapters/build-page.ts',
+  'packages/docs-tooling/src/shared-docs/adapters/mdx.ts',
+  'packages/docs-tooling/src/shared-docs/commands/build.ts',
+  'scripts/docs-workflow/guides-shared-sources.js',
+  'scripts/docs-workflow/guides-shared-publication.js',
   'packages/docs-tooling/src/lark/guidesBaseRecordSemantics.js',
   'scripts/docs-workflow/guides-assembly-identity.js',
   'scripts/docs-workflow/generate-guides-sidebars.js',
@@ -363,15 +373,21 @@ function decideAssembly(options) {
   const sourceDelta = incrementalPlanHasDelta(incrementalPlan)
   if (!candidateSnapshot || typeof candidateSnapshot !== 'object' || Array.isArray(candidateSnapshot)) throw new Error('Guides candidate snapshot must be an object')
   if (candidateSnapshot.manual !== 'guides') throw new Error('Guides candidate snapshot manual must be guides')
-  const unsupportedSnapshotSchema = candidateSnapshot.schema_version === 2
+  let effective = candidateSnapshot
+  const bundlePath = path.join(repositoryRoot, 'tmp/docs-tooling/en/shared-pages/guides')
+  if (fsImpl.existsSync(bundlePath)) {
+    const handoff = require('../../packages/docs-tooling/src/lark/sharedPageBundle').loadBundle(bundlePath, {masterSha, devBaselineSha})
+    effective = require('../../packages/docs-tooling/src/lark/sharedPagePublication').effectiveSnapshot(candidateSnapshot, handoff)
+  }
+  const unsupportedSnapshotSchema = effective.schema_version === 2
   let semanticSourceGraphSha256
   let navigationOwnershipSha256
   if (unsupportedSnapshotSchema) {
     semanticSourceGraphSha256 = unsupportedSemanticMarkerHash()
     navigationOwnershipSha256 = unsupportedNavigationMarkerHash()
   } else {
-    semanticSourceGraphSha256 = hashCanonical(semanticSourceProjection(candidateSnapshot))
-    navigationOwnershipSha256 = hashCanonical(navigationOwnershipProjection(candidateSnapshot))
+    semanticSourceGraphSha256 = hashCanonical(semanticSourceProjection(effective))
+    navigationOwnershipSha256 = hashCanonical(navigationOwnershipProjection(effective))
   }
   const masterRootIdentity = recordDirectoryIdentity(repositoryRoot, fsImpl)
   const generatorFingerprintSha256 = generatorFingerprint({ repositoryRoot, masterSha, fsImpl, rootIdentity: masterRootIdentity })

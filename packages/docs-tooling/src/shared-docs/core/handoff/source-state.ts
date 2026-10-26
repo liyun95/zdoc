@@ -12,7 +12,7 @@ export interface SharedReceipt {
     milvus_docs: {repository: string; current: string; next: string; files: {path: string; current: string | null; next: string | null}[]}
     zdoc: {repository: string; commit: string; files: {path: string; sha256: string}[]}
     dev: {commit: string; files: {path: string; sha256: string}[]}
-    'fetch': {navigation: string; image_base_url: string}
+    'fetch': {navigation: string | {navigationRecords: Record<string, any>[]; tableDigests: Record<string, string>}; image_base_url: string}
     tools: {zdoc: string; md2md: string}
     images: {source: string; sha256: string; object: string}[]
   }
@@ -140,7 +140,17 @@ export function validateSharedReceipt(value: unknown, expected: {group: string; 
   files(zdoc.files, ['sha256'], 'Shared zdoc files')
   keys(dev, ['commit', 'files'], 'Shared dev input'); assert(matches(dev.commit, COMMIT), 'Invalid dev commit'); files(dev.files, ['sha256'], 'Shared dev files')
   keys(fetchInputs, ['navigation', 'image_base_url'], 'Shared Fetch inputs')
-  assert(matches(fetchInputs.navigation, SHA), 'Invalid Fetch navigation digest')
+  if (typeof fetchInputs.navigation === 'string') assert(matches(fetchInputs.navigation, SHA), 'Invalid Fetch navigation digest')
+  else {
+    keys(fetchInputs.navigation, ['navigationRecords', 'tableDigests'], 'Shared permanent navigation')
+    assert(Array.isArray(fetchInputs.navigation.navigationRecords), 'Invalid permanent navigation records')
+    object(fetchInputs.navigation.tableDigests, 'Shared permanent table digests')
+    const records = new Set()
+    for (const row of fetchInputs.navigation.navigationRecords) {
+      text(row.record_id, 'Navigation record'); text(row.table_id, 'Navigation table')
+      assert(!records.has(row.record_id), 'Duplicate permanent navigation record'); records.add(row.record_id)
+    }
+  }
   assert(matches(fetchInputs.image_base_url, /^https?:\/\/[^\s]+$/), 'Invalid image base URL')
   keys(tools, ['zdoc', 'md2md'], 'Shared tools'); assert(matches(tools.zdoc, COMMIT), 'Invalid tooling commit'); text(tools.md2md, 'md2md version')
   assert(Array.isArray(images), 'Shared images must be an array')

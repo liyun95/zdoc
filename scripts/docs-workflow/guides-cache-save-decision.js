@@ -73,6 +73,8 @@ function cacheSaveRequired({ cacheVersion, prefetchMode, candidateSnapshotPath, 
   if (!['incremental', 'recovery'].includes(prefetchMode)) throw new Error('Invalid Guides media prefetch mode')
   if (!['automatic', 'requested'].includes(selectionMode)) throw new Error('Invalid Guides selection mode')
   if (selectionMode === 'requested') return false
+  const bundleApi = require('../../packages/docs-tooling/src/lark/sharedPageBundle')
+  if (fs.existsSync(bundleApi.ROOT) && bundleApi.loadBundle(bundleApi.ROOT).bundle.outcomes.some(row => row.status === 'fallback')) return false
   const candidateHash = semanticGuidesSnapshotHash(candidateSnapshotPath)
   if (cacheVersion !== 'v5' || prefetchMode === 'recovery' || !fs.existsSync(baselineSnapshotPath)) return true
   try { return candidateHash !== semanticGuidesSnapshotHash(baselineSnapshotPath) } catch { return true }

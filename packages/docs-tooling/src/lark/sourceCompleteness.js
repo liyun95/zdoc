@@ -32,7 +32,7 @@ function isRenderableCanonicalSource(source) {
   return blocks.some(block => block.block_type !== 1)
 }
 
-function validateSourceCompleteness({ manual, buildEnv, rootToken, sourceDir, snapshot, sharedReceiptsByRecordId = new Map() }) {
+function validateSourceCompleteness({ manual, buildEnv, rootToken, sourceDir, snapshot, sharedReceiptsByRecordId = new Map(), authenticatedFallbackIds = new Set() }) {
   const result = {
     complete: false,
     snapshotHash: hashSnapshot(snapshot || {}),
@@ -64,12 +64,13 @@ function validateSourceCompleteness({ manual, buildEnv, rootToken, sourceDir, sn
   const records = (snapshot?.records || []).filter(record => ['canonical', 'section'].includes(record.placement_type) && (record.source_file || record.source_kind !== undefined))
   result.expectedCanonicalSources = records.length
   for (const record of records) {
+    if (authenticatedFallbackIds.has(record.record_id)) { result.validCanonicalSources++; continue }
     if (record.source_kind !== undefined) {
       try {
         validateSharedSnapshotRecord(record)
         const receipt = sharedReceiptsByRecordId.get(record.record_id)
         if (!receipt) throw new Error('missing shared receipt')
-        validateSharedReceipt(receipt, record.shared_page)
+        require('./sharedPagePublication').validatePublishedReceipt(receipt, record, {snapshot})
         result.validCanonicalSources++
       } catch (error) { result.identityErrors.push(`shared receipt ${record.record_id}: ${error.message}`) }
       continue

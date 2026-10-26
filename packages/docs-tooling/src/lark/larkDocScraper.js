@@ -418,6 +418,9 @@ class larkDocScraper {
         if (!raw) return null
         const linkMatch = raw.match(/https?:\/\/\S+/)
         const link = linkMatch ? linkMatch[0] : raw.trim()
+        // Only the authenticated shared alias path changes legacy ref parsing.
+        const sharedTarget = contentLinkTarget(link)
+        if (sharedTarget && this.routingContext?.aliasesByToken.has(sharedTarget.token)) return sharedTarget.token
         if (link.includes('#')) return link.split('#').pop()
         try {
             const url = new URL(link)

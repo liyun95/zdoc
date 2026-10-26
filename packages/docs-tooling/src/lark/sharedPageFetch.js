@@ -75,8 +75,7 @@ function prepareSharedSources({records, repositoryRoot, baselineRoot, masterComm
   const inputs = {}
   for (const record of selected) {
     const route = context.routesByRecordId.get(record.record_id)
-    const files = gitInventory(repositoryRoot, masterCommit, ['shared-docs/guides/source.yaml', 'shared-docs/guides/Variables.json',
-      'shared-docs/guides/links.yaml', 'shared-docs/guides/product-names.yaml', 'shared-docs/guides/presentation', route.directory])
+    const files = gitInventory(repositoryRoot, masterCommit, ['shared-docs/guides'])
     assertInventory(repositoryRoot, files)
     const evidence = {master_commit: masterCommit, dev_commit: devCommit, files, dev_files: devFiles, navigation}
     const identity = {group: 'guides', page: route.page, inputs_sha256: digest(JSON.stringify(evidence)), record: routing.sharedReceiptPath('guides', route.page)}
@@ -163,12 +162,17 @@ async function fetchActivationHeadings(scraper, token, oldLink = null) {
   return {blocks: {items: result.blocks.items.filter(block => /^heading\d+$/.test(scraperHeadingType(block)))}}
 }
 function scraperHeadingType(block) { return Writer.prototype.__block_types()[block.block_type - 1] }
-async function activationDraft({record, page, active, previousSnapshot, currentSources, pages, sourceDir, rootToken, fetchOld, runId}) {
+async function activationDraft({record, page, active, previousSnapshot, currentSources, navigation, pages, sourceDir, rootToken, fetchOld, runId}) {
   const existing = active.pages.find(entry => entry.record === record.record_id)
   if (existing) return {entry: existing, firstActivation: false, references: []}
   const old = previousSnapshot?.records?.find(entry => entry.record_id === record.record_id)
   const token = old?.doc_token || old?.node_token || null
-  const references = token ? currentSources.flatMap(extractContentLinks).filter(link => link.token === token) : []
+  const references = token ? [
+    ...currentSources.flatMap(extractContentLinks).filter(link => link.token === token),
+    ...(navigation?.navigationRecords || []).filter(row => row.placement_type === 'ref' && row.ref_target_token === token)
+      .map(row => ({token, anchor: row.ref_target_anchor, source_record_id: row.record_id, source_table_id: row.table_id,
+        source_slug: row.slug, url: row.ref_target, location: 'Ref Target Doc'})),
+  ] : []
   try {
     const headings = token ? await fetchOld(token) : null
     const anchors = {}

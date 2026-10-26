@@ -167,7 +167,10 @@ async function executeRevisionInventoryBuild(argv: string[], repositoryRoot: str
       typeof import('./shared-docs/core/handoff/source-state.ts') & typeof import('./shared-docs/adapters/handoff/routing.ts');
     validateSharedSnapshotRecord(record);
     try {
-      sharedReceiptsByRecordId.set(record.record_id!, readSharedReceipt(repositoryRoot, record.shared_page!));
+      const receipt = readSharedReceipt(repositoryRoot, record.shared_page!);
+      const {validatePublishedReceipt} = requireFromDocsTooling('./lark/sharedPagePublication.js');
+      validatePublishedReceipt(receipt, record, {workspace: repositoryRoot});
+      sharedReceiptsByRecordId.set(record.record_id!, receipt);
     } catch (error) { throw new Error(`Invalid shared receipt for ${record.record_id}: ${error instanceof Error ? error.message : String(error)}`); }
   }
   const candidate = buildRevisionInventory({
@@ -183,7 +186,7 @@ async function executeRevisionInventoryBuild(argv: string[], repositoryRoot: str
     const outputPaths = receipt.outputs.map(output => {
       const publication = manualRegistry.find(manual => manual.id === output.manual && manual.kind === 'guides')?.publications.en;
       if (!publication) throw new Error(`Unknown shared receipt manual: ${output.manual}`);
-      return `${publication.contentRoot}/${output.path}`;
+      return output.path.startsWith(`${publication.contentRoot}/`) ? output.path : `${publication.contentRoot}/${output.path}`;
     }).sort();
     if ((record.output_paths || []).length && JSON.stringify([...record.output_paths!].sort()) !== JSON.stringify(outputPaths)) {
       throw new Error(`Shared receipt output paths do not match snapshot record: ${record.record_id}`);

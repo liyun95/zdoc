@@ -53,6 +53,10 @@ async function fixture(t, {pages = ['sample'], old = true, active = false, image
   if (metadataMarker) for (const record of records) record.fields.Labels = 'Before --- After'
   const previous = {schema_version: 3, manual: 'guides', build_env: 'uat', records: old ? pages.map((page, index) => ({record_id: `rec${index}`, slug: page,
     placement_type: 'canonical', doc_token: index ? `old${index}` : 'old', output_paths: [`content/en/guides/tutorials/manage-data/${page}.md`, ...(singleTarget ? [] : [`content/en/byoc/tutorials/manage-data/${page}.mdx`])]})) : []}
+  const oldRecords = records.map((record, index) => ({...record, fields: {...record.fields, Docs: {text: record.fields.Docs.text, link: `https://example.feishu.cn/wiki/${index ? `old${index}` : 'old'}`}}}))
+  const oldNavigation = require('../../packages/docs-tooling/src/lark/sourceSnapshot').createGuidesNavigationState(oldRecords)
+  previous.navigation_records = old ? oldNavigation.navigationRecords : []
+  previous.table_digests = old ? oldNavigation.tableDigests : {}
   await write(baselineRoot, adapter.snapshotPath, JSON.stringify(previous))
   for (const physical of ['guides', 'byoc']) {
     await write(baselineRoot, `content/en/${physical}/existing.md`, '---\nslug: /existing\ntitle: Existing\n---\nExisting.\n')
@@ -524,4 +528,372 @@ test('actual shared-upload workflow shell fails before source artifacts and pres
   const validate = async translations => {if (translations) await validateReconciliationProducers(selectionFile, {listJobs: async () => {reads++; return []}})}
   await assert.rejects(validate(true), /Reconciliation producers are not ready/)
   await validate(false); assert.equal(reads, 1)
+})
+
+test('final publication binds actual output bytes and permanent navigation; drafts never authorize a cache', {timeout: 120000}, async t => {
+  const options = await fixture(t, {old: false})
+  const bundle = await generateSharedSources(options, {fetchOld: async () => {throw new Error('new')}})
+  const handoff = require('../../packages/docs-tooling/src/lark/sharedPageBundle').loadBundle(options.out)
+  const api = require('../../packages/docs-tooling/src/lark/sharedPagePublication')
+  const observed = JSON.stringify(options.candidate)
+  for (const output of bundle.outcomes[0].outputs) await write(options.repositoryRoot, output.path, handoff.files.get(output.file))
+  const effective = api.effectiveSnapshot(options.candidate, handoff)
+  const draft = JSON.parse(handoff.files.get(bundle.outcomes[0].receipt))
+  assert.throws(() => api.validatePublishedReceipt(draft, effective.records[0]), /draft navigation/)
+  await git(options.repositoryRoot, 'fetch', options.baselineRoot, options.devCommit)
+  const result = api.finalizePublication({workspace: options.repositoryRoot, handoff, candidate: options.candidate})
+  assert.equal(JSON.stringify(options.candidate), observed)
+  assert.equal(result.publication.cache_eligible, true)
+  const receipt = JSON.parse(fs.readFileSync(path.join(options.repositoryRoot, effective.records[0].shared_page.record)))
+  assert.deepEqual(receipt.inputs.fetch.navigation, bundle.navigation)
+  const Writer = require('../../packages/docs-tooling/src/lark/larkDocWriter')
+  const sidebarWriter = new Writer(rootToken, 'base:*', 'default', options.sourceDir, null, 'zilliz.saas', true, false)
+  sidebarWriter.sharedBundle = handoff
+  const sidebar = await sidebarWriter.generate_sidebar('content/en/guides/tutorials', 'content/en/guides')
+  sidebarWriter.destroy()
+  require('../validate-guides-source-contract').validateGuidesSourceContract({snapshot: result.snapshot, target: 'zilliz.saas',
+    outputDir: path.join(options.repositoryRoot, 'content/en/guides/tutorials'), sidebar, activeState: bundle.effective_active})
+
+  assert.equal(api.publishedEvidence(options.repositoryRoot, result.snapshot).receipts.size, 1)
+  const cacheSource = path.join(options.repositoryRoot, 'packages/docs-tooling/src/lark/meta/sources/guides')
+  fs.cpSync(options.sourceDir, cacheSource, {recursive: true})
+  await write(options.repositoryRoot, adapter.snapshotPath, JSON.stringify(result.snapshot))
+  const media = 'packages/docs-tooling/src/lark/meta/media-cache/guides.json'
+  await write(options.repositoryRoot, media, JSON.stringify({schemaVersion: 1, entries: []}))
+  require('./guides-source-cache').createSourceCacheManifest({workspace: options.repositoryRoot, sourceDir: cacheSource,
+    snapshotPath: path.join(options.repositoryRoot, adapter.snapshotPath), manifestPath: path.join(options.repositoryRoot, 'packages/docs-tooling/src/lark/meta/source-cache/guides-manifest.json'),
+    mediaManifestPath: path.join(options.repositoryRoot, media), rootToken})
+  const payload = path.join(options.root, 'generation')
+  require('./guides-source-cache-generation').createGenerationPayload({workspace: options.repositoryRoot, snapshotPath: path.join(options.repositoryRoot, adapter.snapshotPath), rootToken, outputDir: payload})
+  assert.equal(require('./guides-source-cache-generation').validateGenerationPayload({payloadDir: payload, snapshotPath: path.join(options.repositoryRoot, adapter.snapshotPath), rootToken}).source.complete, true)
+
+  fs.rmSync(options.out, {recursive: true})
+  require('./guides-shared-publication').main(['--operation', 'validate', '--workspace', options.repositoryRoot, '--snapshot', adapter.snapshotPath])
+  const active = JSON.parse(fs.readFileSync(path.join(options.repositoryRoot, api.MANIFEST, 'active.json')))
+  assert.deepEqual(active, bundle.effective_active)
+  const forged = structuredClone(receipt); forged.inputs.fetch.navigation.navigationRecords[0].record_id = 'other'
+  assert.throws(() => api.validatePublishedReceipt(forged, effective.records[0]), /canonical record|input identity/)
+  await write(options.repositoryRoot, bundle.outcomes[0].outputs[0].path, 'changed')
+  assert.throws(() => api.publishedEvidence(options.repositoryRoot, result.snapshot), /output digest/)
+})
+
+test('failed transition retains exact baseline record and sidebar path under stable table rename', {timeout: 120000}, async t => {
+  const options = await fixture(t)
+  const prior = options.preparation.previous_snapshot
+  prior.navigation_records[0].table_name = 'Old Table'
+  prior.navigation_records.push({record_id: 'old-ref', table_id: 'table', table_name: 'Old Table', placement_type: 'ref', slug: 'sample-ref',
+    parent_record_ids: [], ref_target_token: 'old', ref_target_anchor: 'heading'})
+  await write(options.baselineRoot, 'generated/en/sidebars/guides.sidebar.js', 'module.exports = [{type:"link", key:"ref:tutorials/old-table/sample-ref", href:"/docs/sample#current-heading"}]\n')
+
+  prior.records[0].output_paths = ['content/en/guides/tutorials/old-table/sample.md', 'content/en/byoc/tutorials/old-table/sample.mdx']
+  for (const file of prior.records[0].output_paths) await write(options.baselineRoot, file, '---\ntoken: old\n---\nOLD RETAINED\n')
+  await write(options.baselineRoot, adapter.snapshotPath, JSON.stringify(prior))
+  await git(options.baselineRoot, 'add', '.'); await git(options.baselineRoot, 'commit', '--quiet', '-m', 'Rename baseline fixture')
+  options.records[0].base_table_name = 'Renamed Table'
+  const devCommit = await git(options.baselineRoot, 'rev-parse', 'HEAD')
+  const prepared = adapter.prepareSharedSources({...options, devCommit})
+  options.preparation = prepared.data
+  // Keep the current observed route exact; activation fails after build (the configured new path also fails locally).
+  options.candidate = createSourceSnapshot({manualName: 'guides', buildEnv: 'uat', docSourceDir: options.sourceDir, baseAppToken: 'base', records: options.records, routingContext: prepared.context})
+  const bundle = await generateSharedSources(options, {fetchOld: async () => {throw new Error('missing old heading')}})
+  assert.equal(bundle.outcomes[0].status, 'fallback')
+  const handoff = require('../../packages/docs-tooling/src/lark/sharedPageBundle').loadBundle(options.out)
+  const api = require('../../packages/docs-tooling/src/lark/sharedPagePublication')
+  const effective = api.effectiveSnapshot(options.candidate, handoff)
+  assert.deepEqual(effective.records[0], prior.records[0])
+  const sidebar = api.projectFallbackSidebar([{type: 'doc', id: 'tutorials/renamed-table/sibling'}], handoff, 'guides')
+  assert.equal(sidebar[1].key, 'category:tutorials/old-table')
+  const outputRoot = path.join(options.root, 'coverage')
+  await write(outputRoot, 'old-table/sample.md', 'OLD RETAINED\n')
+  await write(outputRoot, 'renamed-table/sibling.md', 'Sibling\n')
+  require('../validate-guides-coverage').validateGuidesCoverage({outputDir: outputRoot, sidebar})
+  await git(options.repositoryRoot, 'fetch', options.baselineRoot, devCommit)
+  assert.equal(api.baselineRefHref(handoff, {base_record_id: 'old-ref', base_nav_ref_target_token: 'old', base_nav_ref_target_anchor: 'heading'}, 'sample', 'guides', options.repositoryRoot), '/docs/sample#current-heading')
+  assert.equal(api.baselineRefHref(handoff, {base_record_id: 'old-ref', base_nav_ref_target_token: 'different', base_nav_ref_target_anchor: 'heading'}, 'sample', 'guides', options.repositoryRoot), null)
+
+  for (const output of bundle.outcomes[0].baseline.outputs) await write(options.repositoryRoot, output.path, handoff.files.get(output.file))
+  const result = api.finalizePublication({workspace: options.repositoryRoot, handoff, candidate: options.candidate})
+  assert.equal(result.publication.cache_eligible, false)
+  assert.deepEqual([...api.publishedEvidence(options.repositoryRoot, effective).fallbackIds], ['rec0'])
+  assert.equal(fs.existsSync(path.join(options.repositoryRoot, api.MANIFEST, 'active.json')), false)
+  await write(options.repositoryRoot, prior.records[0].output_paths[0], 'tampered')
+  assert.throws(() => api.publishedEvidence(options.repositoryRoot, effective), /fallback bytes mismatch/)
+})
+
+test('run-effective aliases produce rendered hrefs and unknown-anchor notices before raw-source fallback', async () => {
+  const Writer = require('../../packages/docs-tooling/src/lark/larkDocWriter')
+  const writer = Object.create(Writer.prototype)
+  writer.sharedBundle = {bundle: {effective_active: {pages: [{page: 'sample', feishu_token: 'old', anchors: {'known-block': 'known-heading'}}]}}}
+  writer.currentPageSlug = 'reader'
+  writer.targets = 'zilliz.saas'
+  for (const [suffix, href] of [['', './sample'], ['#known-block', './sample#known-heading'], ['#unknown', './sample']]) {
+    const element = {mention_doc: {url: `https://zilliverse.feishu.cn/wiki/old${suffix}`, title: 'Read more', token: 'old'}}
+    assert.match(await writer.__mention_doc(element), new RegExp(`\\[Read more\\]\\(${href.replace('.', '\\.')}\\)`))
+  }
+  assert.equal(writer.sharedLinkNotices.length, 1)
+  assert.equal(writer.sharedLinkNotices[0].page, 'reader')
+  assert.equal(writer.sharedLinkNotices[0].url, 'https://zilliverse.feishu.cn/wiki/old#unknown')
+})
+
+test('failed new selection leaves no page authority while a successful sibling activates; no selection creates no manifests', {timeout: 120000}, async t => {
+  const options = await fixture(t, {old: false, pages: ['sample', 'sibling']})
+  await write(options.repositoryRoot, 'shared-docs/guides/pages/sample/page.yaml', 'broken: [')
+  await git(options.repositoryRoot, 'add', '.'); await git(options.repositoryRoot, 'commit', '--quiet', '-m', 'Broken selected page')
+  options.masterCommit = await git(options.repositoryRoot, 'rev-parse', 'HEAD')
+  const prepared = adapter.prepareSharedSources(options)
+  options.preparation = prepared.data
+  options.candidate = createSourceSnapshot({manualName: 'guides', buildEnv: 'uat', docSourceDir: options.sourceDir, baseAppToken: 'base', records: options.records, routingContext: prepared.context})
+  const bundle = await generateSharedSources(options, {fetchOld: async () => {throw new Error('new records')}})
+  const handoff = require('../../packages/docs-tooling/src/lark/sharedPageBundle').loadBundle(options.out)
+  const api = require('../../packages/docs-tooling/src/lark/sharedPagePublication')
+  for (const outcome of bundle.outcomes) for (const output of outcome.outputs || []) await write(options.repositoryRoot, output.path, handoff.files.get(output.file))
+  const result = api.finalizePublication({workspace: options.repositoryRoot, handoff, candidate: options.candidate})
+  assert.equal(result.publication.cache_eligible, false)
+  await write(options.repositoryRoot, adapter.snapshotPath, JSON.stringify(result.snapshot))
+  assert.throws(() => require('./guides-source-cache').createSourceCacheManifest({workspace: options.repositoryRoot, snapshotPath: path.join(options.repositoryRoot, adapter.snapshotPath)}), /Partial shared publication/)
+  assert.throws(() => require('./guides-source-cache-generation').createGenerationPayload({workspace: options.repositoryRoot}), /Partial shared publication/)
+  assert.deepEqual(result.snapshot.records.map(row => row.record_id), ['rec1'])
+  assert.equal(fs.existsSync(path.join(options.repositoryRoot, api.MANIFEST, 'sample.json')), false)
+  assert.equal(fs.existsSync(path.join(options.repositoryRoot, 'content/en/guides/tutorials/manage-data/sample.mdx')), false)
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(options.repositoryRoot, api.MANIFEST, 'active.json'))).pages.map(row => row.record), ['rec1'])
+  const noSharedRoot = path.join(options.root, 'no-shared'); fs.mkdirSync(noSharedRoot)
+  assert.equal(api.finalizePublication({workspace: noSharedRoot, handoff: null, candidate: options.candidate}), null)
+  assert.deepEqual(fs.readdirSync(noSharedRoot), [])
+})
+
+test('Cloud-only and lock-only Git changes affect shared input identity with identical Base fields', {timeout: 120000}, async t => {
+  const options = await fixture(t, {old: false})
+  const fields = JSON.stringify(options.records)
+  let prior = options.preparation.inputs.rec0.identity
+  for (const [file, bytes] of [
+    ['shared-docs/guides/Variables.json', '{"example_endpoint":"https://changed.example.test","example_token":"TOKEN"}'],
+    ['shared-docs/guides/pages/sample/lock.yaml', JSON.stringify({schema_version: 1, current: options.upstreamCommit, next: 'f'.repeat(40)})],
+  ]) {
+    await write(options.repositoryRoot, file, bytes)
+    await git(options.repositoryRoot, 'add', '.'); await git(options.repositoryRoot, 'commit', '--quiet', '-m', 'Changed shared input')
+    const masterCommit = await git(options.repositoryRoot, 'rev-parse', 'HEAD')
+    const prepared = adapter.prepareSharedSources({...options, masterCommit})
+    const next = prepared.data.inputs.rec0.identity
+    assert.notEqual(next.inputs_sha256, prior.inputs_sha256)
+    const current = {...options.candidate.records[0], shared_page: next}
+    const before = {...options.candidate.records[0], shared_page: prior}
+    assert.ok(require('../../packages/docs-tooling/src/lark/incrementalFetchPlanner').compareRecord(current, before, new Map()).includes('shared inputs changed'))
+    assert.equal(JSON.stringify(options.records), fields)
+    prior = next
+  }
+})
+
+test('a sole failed new page promotes an authenticated empty effective snapshot without activation', {timeout: 120000}, async t => {
+  const options = await fixture(t, {old: false})
+  const bundle = await generateSharedSources({...options, upstreamStatus: {status: 'unavailable', code: 'SHARED_UPSTREAM_REF_MISSING', message: 'missing'}}, {})
+  assert.equal(bundle.outcomes[0].status, 'fallback')
+  const {ROOT, loadBundle} = require('../../packages/docs-tooling/src/lark/sharedPageBundle')
+  const api = require('../../packages/docs-tooling/src/lark/sharedPagePublication')
+  await git(options.repositoryRoot, 'fetch', options.baselineRoot, options.devCommit)
+  const handoff = loadBundle(options.out)
+  api.finalizePublication({workspace: options.repositoryRoot, handoff, candidate: options.candidate})
+  fs.cpSync(options.out, path.join(options.repositoryRoot, ROOT), {recursive: true})
+  require('./guides-shared-publication').main(['--operation', 'promote', '--workspace', options.repositoryRoot, '--output', adapter.snapshotPath, '--source-dir', options.sourceDir, '--source-branch', 'dev'])
+  const snapshot = JSON.parse(fs.readFileSync(path.join(options.repositoryRoot, adapter.snapshotPath)))
+  assert.deepEqual(snapshot.records, [])
+  assert.deepEqual(snapshot.navigation_records, [])
+  assert.equal(fs.existsSync(path.join(options.repositoryRoot, api.MANIFEST, 'active.json')), false)
+  assert.equal(fs.existsSync(path.join(options.repositoryRoot, api.MANIFEST, 'sample.json')), false)
+  require('./guides-shared-publication').main(['--operation', 'validate', '--workspace', options.repositoryRoot, '--snapshot', adapter.snapshotPath])
+})
+
+async function sourceArtifact(options, workspace, artifact) {
+  const {ROOT} = require('../../packages/docs-tooling/src/lark/sharedPageBundle')
+  const {createGuidesStageArtifact} = require('./guides-stage-artifact')
+  const put = (file, value) => {const full = path.join(workspace, file); fs.mkdirSync(path.dirname(full), {recursive: true}); fs.writeFileSync(full, JSON.stringify(value))}
+  const reports = 'packages/docs-tooling/src/lark/meta/reports/'
+  fs.mkdirSync(path.join(workspace, 'packages/docs-tooling/src/lark/meta/sources'), {recursive: true})
+  fs.cpSync(options.sourceDir, path.join(workspace, 'packages/docs-tooling/src/lark/meta/sources/guides'), {recursive: true})
+  fs.mkdirSync(path.dirname(path.join(workspace, ROOT)), {recursive: true}); fs.cpSync(options.out, path.join(workspace, ROOT), {recursive: true})
+  put(reports + 'guides-source-snapshot-candidate.json', options.candidate)
+  put('packages/docs-tooling/src/lark/meta/media-cache/guides.json', {schemaVersion: 1, entries: []})
+  put(reports + 'guides-media-prefetch.json', {schemaVersion: 1, generated_at: '2026-10-26T00:00:00.000Z', mode: 'recovery', cacheState: 'missing', metrics: {
+    canonicalReferencesRequired: 0, selectedReferences: 0, validatedManifestReuse: 0, committedDocsReconstruction: 0, resolvedByNetwork: 0, staleEntriesDropped: 0, finalManifestEntries: 0}})
+  put(reports + 'guides-assembly-decision.json', {schemaVersion: 1, generated_at: '2026-10-26T00:00:00.000Z', masterSha: options.masterCommit,
+    devBaselineSha: options.devCommit, baselineSourceSha: options.devCommit, mode: 'reuse', reasons: [], tableCount: 0,
+    semanticSourceGraphSha256: '1'.repeat(64), navigationOwnershipSha256: '2'.repeat(64), generatorFingerprintSha256: '3'.repeat(64),
+    baselineDescriptorPresent: true, baselineDescriptorValid: true, baselineDescriptorSha256: '4'.repeat(64),
+    baselineSaasSidebarPresent: true, baselineSaasSidebarValid: true, baselineSaasSidebarSha256: '5'.repeat(64),
+    baselineByocSidebarPresent: true, baselineByocSidebarValid: true, baselineByocSidebarSha256: '6'.repeat(64)})
+  return await createGuidesStageArtifact({stage: 'source', workspace, baselineDir: options.baselineRoot, output: artifact,
+    masterSha: options.masterCommit, devBaselineSha: options.devCommit, rootToken})
+}
+
+test('clean source-to-table-to-assembly handoff restores an active fallback receipt with a successful sibling', {timeout: 120000}, async t => {
+  const options = await fixture(t, {pages: ['sample', 'sibling']})
+  const {ROOT, loadBundle, restoreTableFallbacks} = require('../../packages/docs-tooling/src/lark/sharedPageBundle')
+  const api = require('../../packages/docs-tooling/src/lark/sharedPagePublication')
+  const first = await generateSharedSources(options, {fetchOld: async () => ({blocks: {items: []}})})
+  const initial = loadBundle(options.out)
+  for (const outcome of first.outcomes) for (const output of outcome.outputs) await write(options.baselineRoot, output.path, initial.files.get(output.file))
+  const prior = api.finalizePublication({workspace: options.baselineRoot, handoff: initial, candidate: options.candidate}).snapshot
+  await write(options.baselineRoot, adapter.snapshotPath, JSON.stringify(prior))
+  await git(options.baselineRoot, 'add', '.'); await git(options.baselineRoot, 'commit', '--quiet', '-m', 'Previously published shared pages')
+  options.devCommit = await git(options.baselineRoot, 'rev-parse', 'HEAD')
+  const receiptPath = prior.records.find(row => row.record_id === 'rec0').shared_page.record
+  const oldReceipt = fs.readFileSync(path.join(options.baselineRoot, receiptPath))
+  const oldActive = JSON.parse(fs.readFileSync(path.join(options.baselineRoot, api.MANIFEST, 'active.json')))
+  await write(options.repositoryRoot, 'shared-docs/guides/pages/sample/page.yaml', 'broken: [')
+  await git(options.repositoryRoot, 'add', '.'); await git(options.repositoryRoot, 'commit', '--quiet', '-m', 'Selected page fails')
+  options.masterCommit = await git(options.repositoryRoot, 'rev-parse', 'HEAD')
+  const prepared = adapter.prepareSharedSources(options)
+  options.preparation = prepared.data
+  options.candidate = createSourceSnapshot({manualName: 'guides', buildEnv: 'uat', docSourceDir: options.sourceDir, baseAppToken: 'base', records: options.records, routingContext: prepared.context})
+  options.out = path.join(options.root, 'second-bundle')
+  const bundle = await generateSharedSources(options, {fetchOld: async () => {throw new Error('Active pages never refetch old documents')}})
+  assert.deepEqual(bundle.outcomes.map(row => row.status), ['fallback', 'success'])
+  const artifact = path.join(options.root, 'source-artifact'), tableWorker = path.join(options.root, 'clean-table-worker')
+  await sourceArtifact(options, path.join(options.root, 'source-worker'), artifact)
+  const {restoreGuidesStageArtifact} = require('./guides-stage-artifact')
+  await restoreGuidesStageArtifact({artifact, target: tableWorker, expected: {masterSha: options.masterCommit, devBaselineSha: options.devCommit}})
+  const handoff = loadBundle(path.join(tableWorker, ROOT))
+  const Writer = require('../../packages/docs-tooling/src/lark/larkDocWriter')
+  const {createGuidesTableArtifact} = require('./guides-table-artifact')
+  const {tableOutputPath} = require('./render-guides-table')
+  const entries = [], artifacts = []
+  for (const [manual, target, physical] of [['guides', 'zilliz.saas', 'guides'], ['guides-byoc', 'zilliz.paas', 'byoc']]) {
+    const writer = new Writer(rootToken, 'base:*', 'default', path.join(tableWorker, 'packages/docs-tooling/src/lark/meta/sources/guides'), null, target, true, false)
+    writer.sharedBundle = handoff; writer.sharedWorkspace = tableWorker
+    fs.cpSync(path.join(options.repositoryRoot, 'shared-docs'), path.join(tableWorker, 'shared-docs'), {recursive: true})
+    fs.mkdirSync(path.join(tableWorker, `tmp/docs-tooling/en/${manual}/content/en/${physical}/tutorials`), {recursive: true})
+    await writer.write_docs(path.join(tableWorker, `tmp/docs-tooling/en/${manual}/content/en/${physical}/tutorials`), rootToken)
+    writer.destroy()
+    const entry = {site: 'en', table_id: 'table', table_slug: 'manage-data', table_name: 'Manage Data', target, cleanup: false}
+    restoreTableFallbacks(handoff, tableWorker, tableOutputPath(entry))
+    const output = path.join(options.root, `table-artifact-${manual}`)
+    await createGuidesTableArtifact({workspace: tableWorker, output, entry, masterSha: options.masterCommit, devBaselineSha: options.devCommit, sourceArtifactSha256: 'a'.repeat(64)})
+    entries.push(entry); artifacts.push(output)
+  }
+  const assembly = path.join(options.root, 'clean-assembly')
+  await git(options.root, 'clone', '--quiet', options.repositoryRoot, assembly)
+  await git(assembly, 'fetch', options.baselineRoot, options.devCommit)
+  await restoreGuidesStageArtifact({artifact, target: assembly, expected: {masterSha: options.masterCommit, devBaselineSha: options.devCommit}})
+  await require('./restore-guides-table-artifacts').restoreGuidesTableArtifacts({matrix: entries, artifactDirs: artifacts, target: assembly, sourceArtifactSha256: 'a'.repeat(64)})
+  for (const [manual, physical] of [['guides', 'guides'], ['guides-byoc', 'byoc']]) {
+    fs.mkdirSync(path.join(assembly, 'content/en', physical), {recursive: true})
+    fs.cpSync(path.join(assembly, `tmp/docs-tooling/en/${manual}/content/en/${physical}/tutorials`), path.join(assembly, 'content/en', physical, 'tutorials'), {recursive: true})
+  }
+  assert.equal(fs.existsSync(path.join(assembly, receiptPath)), false)
+  const result = api.finalizePublication({workspace: assembly, handoff: loadBundle(path.join(assembly, ROOT)), candidate: options.candidate})
+  assert.deepEqual(fs.readFileSync(path.join(assembly, receiptPath)), oldReceipt)
+  assert.deepEqual(result.snapshot.records.find(row => row.record_id === 'rec0'), prior.records.find(row => row.record_id === 'rec0'))
+  assert.deepEqual(result.publication.active, oldActive)
+  assert.equal(result.publication.cache_eligible, false)
+  for (const output of bundle.outcomes[0].baseline.outputs) assert.equal(adapter.digest(fs.readFileSync(path.join(assembly, output.path))), output.sha256)
+  for (const output of bundle.outcomes[1].outputs) assert.equal(adapter.digest(fs.readFileSync(path.join(assembly, output.path))), output.sha256)
+  fs.rmSync(path.join(assembly, ROOT), {recursive: true})
+  assert.deepEqual([...api.publishedEvidence(assembly, result.snapshot).fallbackIds], ['rec0'])
+})
+
+test('Base ref-only anchors gate first activation and survive actual sidebar plus final source validation', {timeout: 120000}, async t => {
+  const options = await fixture(t)
+  const ref = {record_id: 'ref-only', base_table_id: 'ref-table', base_table_name: 'References', base_record_index: 0,
+    fields: {Labels: 'Reference label', Slug: 'sample-reference', Targets: ['Zilliz.SaaS', 'Zilliz.PaaS'], 'Placement Type': 'ref',
+      'Ref Target Doc': {text: 'Sample', link: 'https://example.feishu.cn/wiki/old#old-heading'}}}
+  options.records.push(ref)
+  const prepared = adapter.prepareSharedSources(options)
+  options.preparation = prepared.data
+  const scraper = new Scraper(rootToken, 'base:*', 'wiki', options.sourceDir)
+  scraper.records = options.records; scraper.base_tables = [{table_id: 'table', name: 'Manage Data'}, {table_id: 'ref-table', name: 'References'}]; scraper.routingContext = prepared.context
+  await scraper.__apply_base_navigation()
+  options.candidate = createSourceSnapshot({manualName: 'guides', buildEnv: 'uat', docSourceDir: options.sourceDir, baseAppToken: 'base', records: options.records, routingContext: prepared.context})
+  const refHeading = structuredClone(heading)
+  refHeading.heading2.elements[0].text_run.content = 'Current heading'
+  const bundle = await generateSharedSources(options, {fetchOld: async () => ({blocks: {items: [refHeading]}})})
+  assert.equal(bundle.outcomes[0].status, 'success', JSON.stringify(bundle.outcomes))
+  assert.deepEqual(bundle.effective_active.pages[0].anchors, {'old-heading': 'current-heading'})
+  assert.ok(options.plan.affected_tables.includes('ref-table'))
+  assert.equal(bundle.outcomes[0].activation.references[0].source_record_id, 'ref-only')
+  const handoff = require('../../packages/docs-tooling/src/lark/sharedPageBundle').loadBundle(options.out)
+  const api = require('../../packages/docs-tooling/src/lark/sharedPagePublication')
+  for (const output of bundle.outcomes[0].outputs) await write(options.repositoryRoot, output.path, handoff.files.get(output.file))
+  const result = api.finalizePublication({workspace: options.repositoryRoot, handoff, candidate: options.candidate})
+  const Writer = require('../../packages/docs-tooling/src/lark/larkDocWriter')
+  const {validateGuidesSourceContract} = require('../validate-guides-source-contract')
+  for (const [target, physical, prefix] of [['zilliz.saas', 'guides', '/docs'], ['zilliz.paas', 'byoc', '/docs/byoc']]) {
+    const writer = new Writer(rootToken, 'base:*', 'default', options.sourceDir, null, target, true, false)
+    writer.sharedBundle = handoff
+    writer.sourceIndex = require('../../packages/docs-tooling/src/lark/larkSourceIndex').load(options.sourceDir)
+    const sidebar = await writer.generate_sidebar(`content/en/${physical}/tutorials`, `content/en/${physical}`)
+    const link = sidebar.flatMap(row => row.items || []).find(row => row.key === 'ref:tutorials/references/sample-reference')
+    assert.equal(link.label, 'Reference label'); assert.equal(link.href, `${prefix}/sample#current-heading`)
+    const contract = {snapshot: result.snapshot, target, outputDir: path.join(options.repositoryRoot, 'content/en', physical, 'tutorials'), sidebar, activeState: bundle.effective_active}
+    validateGuidesSourceContract(contract)
+    link.href = `${prefix}/sample#wrong`
+    assert.throws(() => validateGuidesSourceContract(contract), /ref ref-only target mismatch/)
+    const unknownSnapshot = structuredClone(result.snapshot)
+    unknownSnapshot.navigation_records.find(row => row.record_id === 'ref-only').ref_target_anchor = 'new-block'
+    const canonical = writer.sourceIndex.find('base_record_id', 'rec0')
+    link.href = await writer.__ref_target_href(canonical, 'new-block')
+    assert.equal(link.href, `${prefix}/sample`)
+    assert.equal(writer.sharedLinkNotices.at(-1).code, 'SHARED_ANCHOR_UNKNOWN')
+    validateGuidesSourceContract({...contract, snapshot: unknownSnapshot})
+    writer.destroy()
+  }
+  // A later Base-only anchor must not extend the immutable activation map.
+  for (const output of bundle.outcomes[0].outputs) await write(options.baselineRoot, output.path, handoff.files.get(output.file))
+  fs.cpSync(path.join(options.repositoryRoot, api.MANIFEST), path.join(options.baselineRoot, api.MANIFEST), {recursive: true})
+  await write(options.baselineRoot, adapter.snapshotPath, JSON.stringify(result.snapshot))
+  await git(options.baselineRoot, 'add', '.'); await git(options.baselineRoot, 'commit', '--quiet', '-m', 'Activated ref fixture')
+  options.devCommit = await git(options.baselineRoot, 'rev-parse', 'HEAD')
+  ref.fields['Ref Target Doc'].link = 'https://example.feishu.cn/wiki/old#later-block'
+  const later = adapter.prepareSharedSources(options)
+  options.preparation = later.data; scraper.routingContext = later.context
+  await scraper.__apply_base_navigation()
+  options.candidate = createSourceSnapshot({manualName: 'guides', buildEnv: 'uat', docSourceDir: options.sourceDir, baseAppToken: 'base', records: options.records, routingContext: later.context})
+  options.out = path.join(options.root, 'later-ref-bundle')
+  const next = await generateSharedSources(options, {fetchOld: async () => {throw new Error('Do not refetch an active page')}})
+  assert.equal(next.outcomes[0].status, 'success', JSON.stringify(next.outcomes))
+  assert.deepEqual(next.effective_active, bundle.effective_active)
+  assert.ok(next.notices.some(notice => notice.source_record_id === 'ref-only' && notice.url === ref.fields['Ref Target Doc'].link))
+  const nextHandoff = require('../../packages/docs-tooling/src/lark/sharedPageBundle').loadBundle(options.out)
+  for (const output of next.outcomes[0].outputs) await write(options.repositoryRoot, output.path, nextHandoff.files.get(output.file))
+  const nextFinal = api.finalizePublication({workspace: options.repositoryRoot, handoff: nextHandoff, candidate: options.candidate})
+  const cardNote = require('../collect-build-card-notes').sharedPublicationNote({
+    directory: path.join(options.repositoryRoot, 'packages/docs-tooling/src/lark/meta/reports'),
+  })
+  assert.equal(cardNote, `# Guides shared pages\n\n- SHARED_ANCHOR_UNKNOWN: sample-reference: ${ref.fields['Ref Target Doc'].link} → sample`)
+  for (const [target, physical, prefix] of [['zilliz.saas', 'guides', '/docs'], ['zilliz.paas', 'byoc', '/docs/byoc']]) {
+    const writer = new Writer(rootToken, 'base:*', 'default', options.sourceDir, null, target, true, false)
+    writer.sharedBundle = nextHandoff
+    writer.sourceIndex = require('../../packages/docs-tooling/src/lark/larkSourceIndex').load(options.sourceDir)
+    const sidebar = await writer.generate_sidebar(`content/en/${physical}/tutorials`, `content/en/${physical}`)
+    const link = sidebar.flatMap(row => row.items || []).find(row => row.key === 'ref:tutorials/references/sample-reference')
+    assert.equal(link.label, 'Reference label'); assert.equal(link.href, `${prefix}/sample`)
+    assert.equal(writer.sharedLinkNotices.at(-1).url, ref.fields['Ref Target Doc'].link)
+    validateGuidesSourceContract({snapshot: nextFinal.snapshot, target, outputDir: path.join(options.repositoryRoot, 'content/en', physical, 'tutorials'), sidebar, activeState: next.effective_active})
+    writer.destroy()
+  }
+  const base = {record: options.records[0], page: 'sample', active: prepared.data.active, previousSnapshot: prepared.data.previous_snapshot,
+    currentSources: [], navigation: prepared.data.navigation, sourceDir: options.sourceDir, rootToken, runId: '123', fetchOld: async () => ({blocks: {items: [refHeading]}})}
+  for (const missing of ['guides', 'guides-byoc']) await assert.rejects(adapter.activationDraft({...base,
+    pages: ['guides', 'guides-byoc'].map(manual => ({manual, mdx: manual === missing ? '## Other\n' : '## Current heading\n'}))}), error => {
+    assert.equal(error.code, 'ACTIVATE_CHECK_FAILED'); assert.equal(error.detail.links[0].source_record_id, 'ref-only'); return true
+  })
+})
+
+test('no-shared anchored Base refs retain the exact legacy source projection and parser behavior', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wp9-legacy-ref-'))
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}))
+  const records = [{record_id: 'legacy-ref', base_table_id: 'table', base_table_name: 'Legacy', base_record_index: 0,
+    fields: {Labels: 'Legacy reference', Slug: 'legacy-ref', 'Placement Type': 'ref', 'Ref Target Doc': {link: 'https://example.feishu.cn/wiki/ordinary#block'}}}]
+  const paths = ['without-context', 'empty-shared-context'].map(name => path.join(root, name))
+  for (const [index, directory] of paths.entries()) {
+    fs.mkdirSync(directory)
+    const scraper = new Scraper(rootToken, 'base:*', 'wiki', directory)
+    scraper.records = records; scraper.base_tables = [{table_id: 'table', name: 'Legacy'}]
+    if (index) scraper.routingContext = require('../../packages/docs-tooling/src/lark/sharedPageRouting').createRoutingContext({records})
+    await scraper.__apply_base_navigation()
+    assert.equal(scraper.__field_token(records[0].fields['Ref Target Doc']), 'block')
+    scraper.routingContext = {aliasesByToken: new Map([['different-shared-token', 'rec']])}
+    assert.equal(scraper.__field_token(records[0].fields['Ref Target Doc']), 'block')
+  }
+  const files = fs.readdirSync(paths[0], {recursive: true}).filter(file => fs.statSync(path.join(paths[0], file)).isFile()).sort()
+  assert.deepEqual(fs.readdirSync(paths[1], {recursive: true}).filter(file => fs.statSync(path.join(paths[1], file)).isFile()).sort(), files)
+  for (const file of files) assert.deepEqual(fs.readFileSync(path.join(paths[0], file)), fs.readFileSync(path.join(paths[1], file)), file)
 })

@@ -1302,6 +1302,27 @@
         "git diff --check"
       ],
       "reason": "Immutable source-job image uploads must send conditional HTTP creates and read back exact bytes; bounded authenticated bundles preserve both outcomes, complete raw routing evidence and exact baseline fallbacks within existing table ownership before offline artifact creation."
+    },
+    {
+      "id": "shared-fetch-publication",
+      "paths": [
+        "packages/docs-tooling/src/lark/sharedPagePublication*",
+        "scripts/docs-workflow/guides-shared-publication*",
+        "scripts/collect-build-card-notes*"
+      ],
+      "focusedTests": [
+        "node --test scripts/docs-workflow/guides-shared-sources.test.js scripts/collect-build-card-notes.test.js"
+      ],
+      "harnesses": [
+        "pnpm test:replay:fetch"
+      ],
+      "gates": [
+        "pnpm typecheck",
+        "pnpm test:workflow-policy",
+        "pnpm test:workflow-matrix",
+        "git diff --check"
+      ],
+      "reason": "Shared publication validates final bytes and permanent navigation, preserves authenticated fallback navigation and append-only activation, and prevents partial runs from becoming successful cache generations."
     }
   ]
 }

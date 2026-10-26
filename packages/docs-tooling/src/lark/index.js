@@ -1187,7 +1187,7 @@ function larkDocsPlugin(context, options) {
                                 incrementalPlanOnly: false,
                                 linkShim: opts.linkShim,
                                 mediaResolver,
-                                writerFactory: (...args) => new docWriter(...args),
+                                writerFactory: (...args) => {const writer = new docWriter(...args); if (sharedHandoff) writer.sharedBundle = sharedHandoff; return writer},
                                 writeSidebarPair: async outputs => {
                                     writeSidebarPairTransactional({ outputs })
                                     for (const output of outputs) console.log(`Sidebar written to ${output.sidebarPath}`)

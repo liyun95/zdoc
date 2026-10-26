@@ -136,3 +136,7 @@ For a new behavior, put the narrow assertion at level 1, the cross-module scenar
 ### Shared Fetch offline handoff
 
 `shared-fetch-offline-handoff` covers `lark/sharedImageUploader*`, `lark/sharedPageBundle*`, `shared-docs/adapters/image-store.ts`, and `scripts/docs-workflow/guides-shared-images*`. Run `node --test packages/docs-tooling/src/lark/sharedImageUploader.test.js scripts/docs-workflow/guides-shared-sources.test.js scripts/docs-workflow/guides-stage-artifact.test.js scripts/docs-workflow/render-guides-table.test.js scripts/docs-workflow/guides-table-artifact.test.js`, then `pnpm test:replay:fetch`, typecheck, workflow policy/matrix, and diff checks. Tests exercise conditional HTTP upload headers, readback/deduplication, full source evidence authentication, physical extensions, frozen navigation hashes and exact fallback placement before complete-table artifact creation. Image bodies remain source-job scratch data. Existing table-by-target ownership is unchanged.
+
+### Shared Fetch publication
+
+`shared-fetch-publication` maps `lark/sharedPagePublication*`, `scripts/docs-workflow/guides-shared-publication*`, and `scripts/collect-build-card-notes*` to the shared source and build-card-note focused tests, Fetch replay, typecheck, workflow policy/matrix, and diff checks. Final receipts retain navigation content; effective fallback paths and append-only activation publish atomically with Guides output. Partial runs suppress cache generation.

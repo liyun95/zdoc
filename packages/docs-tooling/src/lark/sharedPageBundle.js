@@ -68,7 +68,7 @@ function validateBundle(files, expected = {}) {
       const receipt = JSON.parse(read(outcome.receipt)); validateSharedReceipt(receipt, outcome.identity)
       if (receipt.inputs.zdoc.commit !== bundle.master_commit || receipt.inputs.dev.commit !== bundle.dev_commit
         || receipt.inputs.fetch.image_base_url !== outcome.image_base_url || receipt.inputs.fetch.navigation !== digest(JSON.stringify(bundle.navigation))) fail('receipt binding')
-      if (outcome.identity.inputs_sha256 !== digest(JSON.stringify({evidence: input.evidence, upstream: outcome.input_context.upstream, inputs: receipt.inputs}))) fail('input digest')
+      if (outcome.identity.inputs_sha256 !== digest(JSON.stringify(receipt.inputs))) fail('input digest')
       descriptors = outcome.outputs
       if (!Array.isArray(descriptors) || descriptors.length !== 2 || !equal([...descriptors.map(o => o.manual)].sort(), ['guides', 'guides-byoc']) || !Array.isArray(outcome.targets) || outcome.targets.length !== 2) fail('incomplete paired output')
       for (const output of descriptors) {

@@ -58,7 +58,7 @@ function validateCandidateSnapshot(candidate, expected = {}) {
   if (typeof candidate.base_app_token !== 'string' || !candidate.base_app_token) throw new Error('Candidate snapshot Base application token is required')
   if (expected.baseAppToken && candidate.base_app_token !== expected.baseAppToken) throw new Error('Candidate snapshot Base application token mismatch')
   if (!Number.isFinite(Date.parse(candidate.generated_at))) throw new Error('Candidate snapshot generated timestamp is invalid')
-  if (!Array.isArray(candidate.records) || candidate.records.length === 0) throw new Error('Candidate snapshot records must be a non-empty array')
+  if (!Array.isArray(candidate.records) || (candidate.records.length === 0 && !expected.allowEmptySharedEffective)) throw new Error('Candidate snapshot records must be a non-empty array')
   const recordIds = new Set(), docTokens = new Set()
   for (const record of candidate.records) {
     if (!record || typeof record !== 'object' || typeof record.record_id !== 'string' || !record.record_id) throw new Error('Candidate snapshot record ID is required')

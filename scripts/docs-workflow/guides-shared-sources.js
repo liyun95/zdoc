@@ -165,7 +165,7 @@ async function generateSharedSources(options, dependencies = {}) {
       const imageBaseUrl = (options.imageBaseUrl || 'https://zdoc-images.s3.us-west-2.amazonaws.com').replace(/\/$/, '')
       for (const output of built) for (const address of new Set(output.images.map(image => image.address))) output.mdx = output.mdx.split(address).join(`${imageBaseUrl}/${address}`)
       const activation = await fetch.activationDraft({record, page, active: data.active, previousSnapshot: data.previous_snapshot, currentSources,
-        pages: built, sourceDir, rootToken, fetchOld, runId})
+        navigation: data.navigation, pages: built, sourceDir, rootToken, fetchOld, runId})
       const imageMap = new Map(), imageBytes = new Map()
       for (const output of built) {
         for (const image of output.images) {
@@ -186,7 +186,7 @@ async function generateSharedSources(options, dependencies = {}) {
       const receipt = receiptDraft({page, input, upstream, lock, outputs, images, channel: targets[0].channel,
         imageBaseUrl})
       validateSharedReceipt(receipt, input.identity)
-      const identity = {...input.identity, inputs_sha256: fetch.digest(JSON.stringify({evidence: input.evidence, upstream, inputs: receipt.inputs}))}
+      const identity = {...input.identity, inputs_sha256: fetch.digest(JSON.stringify(receipt.inputs))}
       const files = []
       for (const [index, output] of built.entries()) {
         const file = `pages/${page}/${output.manual}${output.extension}`
@@ -197,7 +197,8 @@ async function generateSharedSources(options, dependencies = {}) {
       if (activation.firstActivation) {
         effectiveActive.pages.push(activation.entry)
         for (const link of activation.references) {
-          const linking = candidate.records.find(row => [row.doc_token, row.node_token, row.obj_token].includes(link.source_token))
+          if (link.source_table_id) referringTables.add(link.source_table_id)
+          const linking = link.source_token && candidate.records.find(row => [row.doc_token, row.node_token, row.obj_token].includes(link.source_token))
           if (linking?.table_id) referringTables.add(linking.table_id)
         }
       }
@@ -237,6 +238,18 @@ async function generateSharedSources(options, dependencies = {}) {
   candidate.navigation_records = finalNavigation.navigationRecords; candidate.table_digests = finalNavigation.tableDigests
   if (options.plan) options.plan.affected_tables = [...new Set([...(options.plan.affected_tables || []), ...bundle.referring_tables,
     ...selected.map(record => record.base_table_id)])].filter(Boolean).sort()
+  const notices = []
+  for (const source of currentSources) for (const link of require('../../packages/docs-tooling/src/lark/canonicalLinkAuditor').extractContentLinks(source)) {
+    const active = effectiveActive.pages.find(entry => entry.feishu_token === link.token)
+    if (active && link.anchor && !Object.hasOwn(active.anchors, link.anchor)) notices.push({...link, page: active.page})
+  }
+  for (const row of data.navigation.navigationRecords) if (row.placement_type === 'ref' && row.ref_target_anchor) {
+    const active = effectiveActive.pages.find(entry => entry.feishu_token === row.ref_target_token)
+    if (active && !Object.hasOwn(active.anchors, row.ref_target_anchor)) notices.push({code: 'SHARED_ANCHOR_UNKNOWN',
+      source_record_id: row.record_id, source_table_id: row.table_id, source_slug: row.slug, source_page: row.slug || row.record_id, url: row.ref_target,
+      token: row.ref_target_token, anchor: row.ref_target_anchor, page: active.page})
+  }
+  bundle.notices = notices
   write(out, 'bundle.json', JSON.stringify(bundle, null, 2) + '\n')
   return bundle
 }
