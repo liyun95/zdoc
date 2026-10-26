@@ -13,7 +13,7 @@ function fixture(mode) {
       return {Body: {transformToByteArray: async () => mode.includes('corrupt') ? Buffer.from('wrong') : stored}}
     }
     assert.equal(command.constructor.name, 'PutObjectCommand'); assert.equal(command.input.IfNoneMatch, '*')
-    assert.equal(command.input.ACL, undefined)
+    assert.equal(command.input.ACL, 'public-read')
     if (mode === 'failure') throw Object.assign(new Error('storage unavailable'), {$metadata: {httpStatusCode: 500}})
     stored = bytes
     if (mode === 'race') throw Object.assign(new Error('race'), {$metadata: {httpStatusCode: 412}})
@@ -27,6 +27,8 @@ for (const mode of ['new', 'existing', 'race']) test(`immutable ${mode} storage 
   await uploader.upload({group: 'guides', key, sha256: sha, bytes})
   assert.equal(calls.filter(c => c.constructor.name === 'PutObjectCommand').length, mode === 'existing' ? 0 : 1)
   assert.equal(calls.filter(c => c.constructor.name === 'GetObjectCommand').length, mode === 'existing' ? 1 : 2)
+  assert.deepEqual(calls.map(c => c.constructor.name), mode === 'existing'
+    ? ['GetObjectCommand'] : ['GetObjectCommand', 'PutObjectCommand', 'GetObjectCommand'])
 })
 test('tampering and corrupt readback fail without overwrite or deletion', async () => {
   const {uploader, calls} = fixture('corrupt')
@@ -55,7 +57,8 @@ test('pinned SDK serializes conditional create into the signed HTTP If-None-Matc
     assert.deepEqual(requests.map(request => request.method), ['GET', 'PUT', 'GET'])
     assert.equal(requests[1].headers['if-none-match'], '*')
     assert.match(requests[1].headers.authorization, /SignedHeaders=[^,]*if-none-match/)
-    assert.equal(requests[1].headers['x-amz-acl'], undefined)
+    assert.equal(requests[1].headers['x-amz-acl'], 'public-read')
+    assert.match(requests[1].headers.authorization, /SignedHeaders=[^,]*x-amz-acl/)
   } finally {uploader.destroy()}
 })
 

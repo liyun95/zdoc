@@ -34,7 +34,7 @@ class SharedImageUploader {
         }
         try { await read(); return address } catch (error) { if (!missing(error)) throw error }
         try {
-          await this.store().send(new PutObjectCommand({...input, Body: bytes, IfNoneMatch: '*', ContentType: ({png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp', avif: 'image/avif'})[key.split('.').at(-1)] || 'application/octet-stream'}))
+          await this.store().send(new PutObjectCommand({...input, Body: bytes, IfNoneMatch: '*', ACL: 'public-read', ContentType: ({png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp', avif: 'image/avif'})[key.split('.').at(-1)] || 'application/octet-stream'}))
         } catch (error) {
           if (![409, 412].includes(error.$metadata?.httpStatusCode) && !['PreconditionFailed', 'ConditionalRequestConflict'].includes(error.name)) throw error
         }

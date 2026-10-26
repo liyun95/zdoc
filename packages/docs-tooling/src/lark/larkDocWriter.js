@@ -428,6 +428,7 @@ class larkDocWriter {
         if (fallback) {
             const previous = this.sharedBundle.bundle.preparation.previous_snapshot
             const nav = previous.navigation_records.find(row => row.record_id === fallback.record_id)
+            if (!nav) throw new Error(`Missing previous navigation record for Base record ${fallback.record_id}`)
             return {title: nav.title, slug: nav.slug, node_token: token, base_record_id: nav.record_id, shared_baseline_fallback: true,
                 base_placement_type: 'canonical', base_targets: nav.targets, base_status: nav.progress, base_labels: nav.labels}
         }
