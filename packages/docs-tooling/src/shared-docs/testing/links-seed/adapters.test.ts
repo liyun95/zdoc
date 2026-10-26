@@ -114,6 +114,15 @@ describe('manual reader and CLI', () => {
     expect(result.yaml).toContain('# same-name: 1 (omitted)')
     for (const repo of [result.repo, result.dev]) expect(git(repo, 'status', '--porcelain')).toBe('')
   })
+  it('runs with --commit before the group directory exists, and needs it only for source.yaml', async () => {
+    // The initial link map is seeded before the first page creates shared-docs/guides/ on master.
+    const root = await temp(), options = await createSeedDemo(root)
+    await rm(join(root, 'shared-docs'), { recursive: true })
+    expect(await runLinksSeed(options, vi.fn(), root)).toBe(0)
+    expect(await readFile(options.out, 'utf8')).toContain('# Candidate link map. Review before adopting entries in shared-docs/guides/links.yaml.')
+    await expect(runLinksSeed({ ...options, out: join(root, 'default.yaml'), commit: undefined }, vi.fn(), root))
+      .rejects.toThrow('shared-docs/guides/source.yaml')
+  })
   it('uses source.yaml only without --commit and refuses to overwrite inputs or outputs', async () => {
     const root = await temp(), options = await createSeedDemo(root)
     const write = vi.fn()
@@ -122,10 +131,9 @@ describe('manual reader and CLI', () => {
     await expect(runLinksSeed(options, write, root)).rejects.toThrow('EEXIST')
     await expect(runLinksSeed({ ...options, out: join(root, 'default.yaml'), commit: undefined }, write, root)).rejects.toThrow('ENOENT')
     // This is a temporary test repository, never the zdoc checkout's shared-docs directory.
-    await mkdir(join(root, 'shared-docs'))
-    await writeFile(join(root, 'shared-docs/source.yaml'), 'schema_version: 1\nrepository: example\ntrack: v3.0.x\n')
+    await writeFile(join(root, 'shared-docs/guides/source.yaml'), 'schema_version: 1\nrepository: example\ntrack: v3.0.x\n')
     expect(await runLinksSeed({ ...options, out: join(root, 'default.yaml'), commit: undefined }, write, root)).toBe(0)
-    for (const out of [join(options.repo, 'source.yaml'), join(options.dev, 'x.yaml'), join(root, 'shared-docs/links.yaml')]) {
+    for (const out of [join(options.repo, 'source.yaml'), join(options.dev, 'x.yaml'), join(root, 'shared-docs/guides/links.yaml')]) {
       await expect(runLinksSeed({ ...options, out }, write, root)).rejects.toThrow('--out')
     }
     await symlink(join(options.repo, 'site/en/userGuide/source.md'), join(root, 'output-link.yaml'))
