@@ -43,7 +43,7 @@ function patchedLineMap(before: string[], after: string[], sources: readonly (nu
   return result
 }
 
-export async function toMdx(adapted: AdaptedPage, context: DiagnosticContext): Promise<{ mdx: string } | { errors: SharedDocsError[] }> {
+export async function toMdx(adapted: AdaptedPage, context: DiagnosticContext, options: { preserveFrontMatter?: boolean } = {}): Promise<{ mdx: string } | { errors: SharedDocsError[] }> {
   let mdx = adapted.markdown
   let sources = [...adapted.provenance.outputLines]
   const failure = (message: string, outputLine?: number): SharedDocsError => {
@@ -55,13 +55,14 @@ export async function toMdx(adapted: AdaptedPage, context: DiagnosticContext): P
   const before = (validateMdxStructure(mdx) as string[]).filter(message => /^prose found between|^\d+ (?:unclosed|extra)/.test(message))
   if (before.length) return { errors: before.map(message => failure(message)) }
   try {
-    mdx = await applyMdxPatches(mdx, { repairEndTagMismatch: true })
+    const front = options.preserveFrontMatter ? /^---[ \t]*\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(mdx)?.[0] || '' : ''
+    mdx = front + await applyMdxPatches(mdx.slice(front.length), { repairEndTagMismatch: true })
     sources = patchedLineMap(adapted.markdown.split('\n'), mdx.split('\n'), sources)
     const structure = validateMdxStructure(mdx) as string[]
     const errors = structure.map(message => failure(message))
     try {
       const { compile, remarkMath } = await compiler()
-      await compile(mdx, { development: false, remarkPlugins: [remarkMath] })
+      await compile(options.preserveFrontMatter ? mdx.slice(front.length) : mdx, { development: false, remarkPlugins: [remarkMath] })
     }
     catch (error) {
       const problem = error as { message: string; line?: number; place?: { line?: number; start?: { line?: number } } }

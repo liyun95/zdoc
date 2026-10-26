@@ -1257,6 +1257,29 @@
         "git diff --check"
       ],
       "reason": "Shared source routing keeps canonical Base record identity independent of Feishu tokens, validates pinned Git/active/receipt authority, protects transitions from removal, and keeps revision inventories Feishu-only."
+    },
+    {
+      "id": "shared-fetch-source-generation",
+      "paths": [
+        "packages/docs-tooling/src/lark/sharedPageFetch*",
+        "scripts/docs-workflow/guides-shared-sources*",
+        "packages/docs-tooling/src/shared-docs/testing/build/fetch-build.test.ts"
+      ],
+      "focusedTests": [
+        "node --test scripts/docs-workflow/guides-shared-sources.test.js",
+        "pnpm vitest run packages/docs-tooling/src/shared-docs/testing/build/fetch-build.test.ts"
+      ],
+      "harnesses": [
+        "pnpm test:replay:fetch"
+      ],
+      "gates": [
+        "pnpm test:shared-docs",
+        "pnpm typecheck",
+        "pnpm test:workflow-policy",
+        "pnpm test:workflow-matrix",
+        "git diff --check"
+      ],
+      "reason": "Fetch selected shared generation must preserve the legacy no-selected payload, immutable input evidence, paired manual fallback, current Base writer paths, current-run first-activation anchors and scratch-only accepted image bytes."
     }
   ]
 }

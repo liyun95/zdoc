@@ -610,6 +610,16 @@ function larkDocsPlugin(context, options) {
 
                     // Intialize scraper and writer
                     const scraper = new docScraper(root, base, sourceType, docSourceDir)
+                    // Source-job ownership is bound before metadata/body fetch or cache planning.
+                    if (manualName === 'guides' && path.basename(docSourceDir) === 'guides'
+                        && process.env.DOCS_TOOLING_SHARED_BASELINE && process.env.DOCS_TOOLING_SHARED_MASTER_SHA) {
+                        await require('./sharedPageFetch').initializeSharedScraper(scraper, {
+                            site: 'en', repositoryRoot: process.cwd(), baselineRoot: process.env.DOCS_TOOLING_SHARED_BASELINE,
+                            masterCommit: process.env.DOCS_TOOLING_SHARED_MASTER_SHA, devCommit: process.env.DOCS_TOOLING_SHARED_DEV_SHA,
+                            output: process.env.DOCS_TOOLING_SHARED_PREPARATION,
+                        })
+                    }
+
                     
                     if (!fs.existsSync(docSourceDir)) {
                         fs.mkdirSync(docSourceDir, { recursive: true })
@@ -1062,7 +1072,9 @@ function larkDocsPlugin(context, options) {
                             linkCheckRemote: 'https://docs.zilliz.com',
                             docSourceDir,
                             baseAppToken: scraper.base_app_token,
-                            records: scraper.records,
+                            records: scraper.routingContext && process.env.DOCS_TOOLING_GUIDES_STAGE === 'source'
+                                ? scraper.records.filter(record => !scraper.routingContext.errors.some(error => error.record_id === record.record_id))
+                                : scraper.records,
                             routingContext: scraper.routingContext,
                             nodeMetadataByToken: currentNodeMetadataByToken,
                         })
@@ -1077,7 +1089,9 @@ function larkDocsPlugin(context, options) {
                             buildEnv: opts.buildEnv || 'local',
                             rootToken: root,
                             sourceDir: docSourceDir,
-                            snapshot: candidate,
+                            snapshot: scraper.routingContext && process.env.DOCS_TOOLING_GUIDES_STAGE === 'source'
+                                ? require('./sharedPageFetch').pendingSourceSnapshot(candidate, scraper.routingContext)
+                                : candidate,
                         })
                         writeSnapshot(opts.snapshotCandidatePath, candidate)
                         console.log(`[snapshot] Candidate written to ${opts.snapshotCandidatePath}`)

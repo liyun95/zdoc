@@ -467,6 +467,27 @@ The English image includes Japanese content. The two commands are independent; i
 
 The site-owned Nginx configurations are `deploy/en/nginx.conf` and `deploy/zh-CN/nginx.conf`. Runtime environment rendering is owned by `deploy/runtime/40-zdoc-env.sh`.
 
+### Selected shared Guides source generation
+
+English Fetch prepares shared-page routing against its pinned master configuration
+and exact dev baseline before ordinary Feishu body reads. After source fetching,
+`Generate selected shared Guides sources` builds each selected record's Guides and
+BYOC outputs together. Current Base navigation, publish targets and release channel
+are checked before rendering; an existing `.md` or `.mdx` extension is retained,
+and a new page uses `.mdx`. Unselected page configurations are not loaded by Fetch;
+the default `shared-docs build` command still validates the whole group.
+
+The source job writes its draft bundle to
+`tmp/docs-tooling/en/shared-pages/guides/bundle.json`. It records actual pinned input
+digests, output/receipt drafts and one success or baseline-fallback outcome per
+page. Accepted image bytes remain in the source job's scratch directory for the
+subsequent upload stage. The bundle itself does not publish content or activate a
+page. On first activation, the job reads the old document once at its current
+revision and checks current inbound heading references against both generated
+manuals; `ACTIVATE_CHECK_FAILED` retains both baseline outputs. Existing active
+pages reuse their retained anchor map. A run with no selected shared pages creates
+no shared bundle and keeps the legacy source payload unchanged.
+
 ### Release Channel gating (CURRENT / NEXT / RETIRE-IN-NEXT)
 
 Guides records carry a `Release Channel` field in the Feishu Base. `CURRENT` is the default and the fallback for records without the field; `NEXT` marks documentation for a feature that has not shipped yet; `RETIRE-IN-NEXT` is the mirror — a live page that the upcoming release removes, used to stage a split or restructure without touching production.
