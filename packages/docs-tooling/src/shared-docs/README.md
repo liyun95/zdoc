@@ -143,14 +143,18 @@ without writes. Exit codes are 0 for success, 1 for input/configuration errors,
 and 2 for operational Git/filesystem failures. Lock files created outside CI
 are still checked by all-page generation.
 
-`shared-docs-lock.yml` handles changes under `shared-docs/pages/**` in PRs
+`shared-docs-lock.yml` handles changes under `shared-docs/*/pages/**` in PRs
 targeting `master`. Its writer runs only for PRs from a branch in the same
 repository. A fork receives an Actions warning and summary: `LOCK_FORK_PR:
 Please submit this onboarding PR from a branch in this repository`. It
 performs no fork checkout or write.
-The writer parses the existing source configuration, restricts the source URL
+The writer rejects unsupported or ungrouped changed inputs as content failures
+before cloning source history. Only `guides` is supported. It parses
+`shared-docs/guides/source.yaml`, restricts the source URL
 to credential-free GitHub HTTPS, and clones only the tracking branch with its
-complete history. It creates missing locks, stages only new regular lock files,
+complete history. It passes `shared-docs/guides` to the lock command, creates
+missing locks, and stages only new regular files matching
+`shared-docs/guides/pages/<page-id>/lock.yaml`. It
 rechecks the expected PR head with `git ls-remote`, and performs an ordinary
 fast-forward push. Branch drift or a failed query stops the writer. A no-op
 creates no commit, push or child dispatch. Lock jobs use a separate per-PR
@@ -179,9 +183,15 @@ persisted credentials.
 A fail-closed merge-base comparison and NUL-delimited, no-renames diff cover
 added, modified, renamed and deleted `shared-docs/` inputs. With no changed
 shared inputs, it succeeds before installing packages or reading external
-sources. Otherwise it clones complete single-branch source history, resolves
+sources. Otherwise it deduplicates affected groups from both rename sides and
+deletions, and rejects unsupported groups or directly ungrouped files before
+installation or external reads. Only `guides` is supported. It reads
+`shared-docs/guides/source.yaml`, clones complete single-branch source history, resolves
 an exact upstream `zilliztech/zdoc` dev SHA, sparsely checks out only English
-Guides/BYOC and the Guides snapshot, and runs `shared-docs build` for all pages.
+Guides/BYOC and the Guides snapshot, and runs `shared-docs build` for every page
+in each affected group with `--shared-docs shared-docs/<group>` and a separate
+`$RUNNER_TEMP/shared-docs-output/<group>` directory. It never filters to only
+changed pages.
 Generation diagnostics retain file/line locations in logs and in a bounded
 job summary. It generates a temporary candidate; it does not publish pages.
 Maintainers must configure the stable check as required in branch protection;

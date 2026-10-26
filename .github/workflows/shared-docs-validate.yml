@@ -74,8 +74,20 @@ jobs:
           git diff --no-renames --name-only -z "$comparison_base" "$SOURCE_SHA" -- shared-docs/ > "$RUNNER_TEMP/shared-docs-paths"
           node <<'NODE'
           const fs = require('node:fs');
-          const paths = fs.readFileSync(process.env.RUNNER_TEMP + '/shared-docs-paths');
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `changed=${paths.length > 0}\n`);
+          const paths = fs.readFileSync(process.env.RUNNER_TEMP + '/shared-docs-paths', 'utf8').split('\0').filter(Boolean);
+          const groups = new Set();
+          for (const file of paths) {
+            const match = /^shared-docs\/([^/]+)\/([\s\S]+)$/.exec(file);
+            if (!match || match[1] !== 'guides') {
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, 'failure_class=content\n');
+              console.error(`Unsupported shared input ${JSON.stringify(file)}. Only the guides group is supported; use shared-docs/guides/.`);
+              process.exit(1);
+            }
+            groups.add(match[1]);
+          }
+          const affected = [...groups].sort();
+          fs.writeFileSync(process.env.RUNNER_TEMP + '/shared-docs-groups', affected.map(group => `${group}\n`).join(''));
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `changed=${paths.length > 0}\ngroups=${JSON.stringify(affected)}\n`);
           NODE
 
       - name: Report unchanged shared inputs
@@ -105,7 +117,7 @@ jobs:
           const path = require('node:path');
           const { loadTypeScript } = require('./scripts/lib/load-typescript');
           const { parseSourceConfig } = loadTypeScript(path.resolve('packages/docs-tooling/src/shared-docs/core/config.ts'));
-          const result = parseSourceConfig(fs.readFileSync('shared-docs/source.yaml', 'utf8'));
+          const result = parseSourceConfig(fs.readFileSync('shared-docs/guides/source.yaml', 'utf8'));
           if ('errors' in result) throw new Error(JSON.stringify(result.errors));
           const { repository, track } = result.config;
           if (!/^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(repository) || /\/(?:\.|\.\.)(?:\.git)?$/.test(repository)) {
@@ -157,8 +169,11 @@ jobs:
         run: |
           set -euo pipefail
           status=0
-          pnpm docs-tooling shared-docs build --shared-docs shared-docs --repo "$RUNNER_TEMP/milvus-docs" \
-            --dev .shared-docs-dev --out "$RUNNER_TEMP/shared-docs-output" > "$RUNNER_TEMP/shared-docs-validation.log" 2>&1 || status=$?
+          : > "$RUNNER_TEMP/shared-docs-validation.log"
+          while IFS= read -r group; do
+            pnpm docs-tooling shared-docs build --shared-docs "shared-docs/$group" --repo "$RUNNER_TEMP/milvus-docs" \
+              --dev .shared-docs-dev --out "$RUNNER_TEMP/shared-docs-output/$group" >> "$RUNNER_TEMP/shared-docs-validation.log" 2>&1 || status=$?
+          done < "$RUNNER_TEMP/shared-docs-groups"
           cat "$RUNNER_TEMP/shared-docs-validation.log"
           node <<'NODE'
           const fs = require('node:fs');
