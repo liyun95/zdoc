@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process'
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -35,7 +35,7 @@ async function command(options: Parameters<typeof runBuild>[0], images = fetcher
   return { code, text }
 }
 async function inputs(options: Awaited<ReturnType<typeof demo>>) {
-  const sharedDocs = await readSharedDocs(options.sharedDocs)
+  const sharedDocs = await readSharedDocs(options.sharedDocs, dirname(dirname(options.sharedDocs)))
   if ('errors' in sharedDocs) throw new Error(JSON.stringify(sharedDocs.errors))
   const inspection = new GitMilvusDocsReader(options.repo)
   const links = new GitLinkInputReader(options.repo)
@@ -184,6 +184,10 @@ it('rejects nonempty transforms at their key and continues independent pages wit
 
 it('retains source, used-fragment and nested variable attribution independently for each commit and manual', async () => {
   const options = await demo()
+  const custom = join(dirname(dirname(options.sharedDocs)), 'custom', 'guides')
+  await mkdir(dirname(custom))
+  await rename(options.sharedDocs, custom)
+  options.sharedDocs = custom
   const path = 'site/en/build-pipeline.md'
   const first = (await readFile(join(options.repo, path), 'utf8')) + '\nMilvus source current.\n'
   await write(options.repo, path, first)
@@ -202,12 +206,13 @@ it('retains source, used-fragment and nested variable attribution independently 
     if (!('errors' in result)) throw new Error('Expected product errors')
     const currentErrors = result.errors.filter(error => error.channel === 'current')
     const nextErrors = result.errors.filter(error => error.channel === 'next')
-    expect(currentErrors.map(error => error.file)).toEqual([path, 'site/en/fragments/used.md', 'shared-docs/Variables.json', path, 'site/en/fragments/used.md', 'shared-docs/Variables.json'])
-    expect(nextErrors.map(error => error.file)).toEqual(['shared-docs/Variables.json', 'shared-docs/Variables.json'])
+    expect(currentErrors.map(error => error.file)).toEqual([path, 'site/en/fragments/used.md', 'custom/guides/Variables.json', path, 'site/en/fragments/used.md', 'custom/guides/Variables.json'])
+    expect(nextErrors.map(error => error.file)).toEqual(['custom/guides/Variables.json', 'custom/guides/Variables.json'])
     expect(nextErrors.map(error => error.detail)).toEqual([
       expect.objectContaining({ key: 'cloud.product', manual: 'guides' }), expect.objectContaining({ key: 'cloud.product', manual: 'guides-byoc' }),
     ])
     expect(result.errors.some(error => error.file?.includes('unused'))).toBe(false)
+    expect(result.errors.every(error => error.fix?.includes('custom/guides/product-names.yaml'))).toBe(true)
   } finally { await build.reader.dispose() }
 })
 

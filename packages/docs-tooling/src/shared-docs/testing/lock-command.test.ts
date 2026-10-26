@@ -2,7 +2,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { cp, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { runLock } from '../commands/lock'
 import { parseLock } from '../core/lock'
@@ -44,8 +44,8 @@ it('[3-2] onboards both channels at the tracked NEXT snapshot and preserves lock
   git(f.repo, 'update-ref', 'refs/heads/v3.0.x', git(f.repo, 'rev-parse', 'HEAD'))
   expect(await runLock(f, text => output.push(text))).toBe(0)
   expect(await readFile(f.lock, 'utf8')).toBe(bytes)
-  expect(output.join('')).toContain('Created shared-docs/pages/filtered-search/lock.yaml')
-  expect(output.join('')).toContain('Skipped shared-docs/pages/filtered-search/lock.yaml')
+  expect(output.join('')).toContain(`Created ${relative(process.cwd(), f.sharedDocs)}/pages/filtered-search/lock.yaml`)
+  expect(output.join('')).toContain(`Skipped ${relative(process.cwd(), f.sharedDocs)}/pages/filtered-search/lock.yaml`)
 })
 
 it('preserves malformed existing locks byte for byte', async () => {
@@ -85,7 +85,7 @@ it('classifies missing tracking branches, shallow history and unavailable filesy
   const output: string[] = []
   expect(await runLock({ ...f, repo: shallow }, text => output.push(text))).toBe(2)
   expect(output.join('')).toContain('Shallow Git history is not supported')
-  expect(await runLock({ ...f, sharedDocs: join(f.root, 'absent') }, () => {})).toBe(2)
+  expect(await runLock({ ...f, sharedDocs: join(f.root, 'absent/guides') }, () => {})).toBe(2)
   await expect(readFile(f.lock)).rejects.toMatchObject({ code: 'ENOENT' })
 })
 

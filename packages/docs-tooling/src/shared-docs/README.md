@@ -99,16 +99,44 @@ unowned pending IDs, missing entries and already-covered pending IDs fail.
   records. The production snapshot on the WP0 base does not yet expose all
   those normalized fields; production adaptation is left to WP8.
 
+## Group directories and local commands
+
+Each group owns its `source.yaml`, `Variables.json`, `links.yaml`,
+`product-names.yaml`, `presentation/`, and `pages/<page>/` below
+`shared-docs/guides/`. All four commands require `--shared-docs` to select
+that group directory. The directory basename must be `guides`; other names,
+including the old flat `shared-docs` root, fail with `CONFIG_FIELD_MISSING`
+before any input/output or Git access. `lock --from-fork` always reports
+`LOCK_FORK_PR` first.
+
+Custom parents such as `inputs/guides` and absolute group paths are supported.
+Diagnostics use the selected directory's path relative to the repository root
+(the CLI working directory). Source Markdown and fragment diagnostics keep
+their upstream `site/en/...` paths.
+
+```sh
+pnpm docs-tooling shared-docs inspect --shared-docs shared-docs/guides --page delete-entities --repo /path/to/milvus-docs
+pnpm docs-tooling shared-docs links-seed --shared-docs shared-docs/guides --repo /path/to/milvus-docs --dev /path/to/zdoc-dev --out /tmp/candidate-links.yaml
+pnpm docs-tooling shared-docs build --shared-docs shared-docs/guides --repo /path/to/milvus-docs --dev /path/to/zdoc-dev --out /tmp/shared-docs-build
+```
+
+`inspect` selects the group with `--shared-docs` instead of `--pages`.
+`links-seed` reads the selected group's `source.yaml` unless `--commit` supplies
+an exact source commit; the group option is required in both cases. Its
+candidate output must be outside both input checkouts, the selected group,
+and the repository-root `shared-docs/` tree. Build output remains an empty or
+absent directory outside all inputs.
+
 ## Initial locks and PR validation (WP8b)
 
 Create missing initial source locks with a complete local Milvus checkout:
 
 ```sh
-pnpm docs-tooling shared-docs lock --shared-docs shared-docs --repo /path/to/milvus-docs
+pnpm docs-tooling shared-docs lock --shared-docs shared-docs/guides --repo /path/to/milvus-docs
 ```
 
 The command validates page/source configuration before writing. Every new
-`shared-docs/pages/<page>/lock.yaml` pins both `current` and `next` to the
+`shared-docs/guides/pages/<page>/lock.yaml` pins both `current` and `next` to the
 tracking branch head; existing lock bytes, including invalid locks, are
 preserved. `--page <id>` selects one page; `--from-fork` rejects onboarding
 without writes. Exit codes are 0 for success, 1 for input/configuration errors,
