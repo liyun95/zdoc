@@ -181,6 +181,8 @@ class larkDocWriter {
     }
 
     __has_renderable_page(source) {
+        const shared = this.sharedBundle?.bundle.outcomes.find(outcome => outcome.record_id === source?.base_record_id)
+        if (shared) return shared.status === 'success'
         const page = source?.blocks?.items?.find(block => block.block_type === 1)
         return !!(page?.children && page.children.length > 0)
     }
@@ -849,6 +851,7 @@ class larkDocWriter {
         keywords,
         doc_card_list
     }) {
+        if (this.sharedBundle && require('./sharedPageBundle').emitPrebuilt(this, {path, page_title, page_slug, page_token, sidebar_position, sidebar_label, page_channel})) return
         let obj;
         let blocks;
         if (page_token) {
@@ -1162,6 +1165,12 @@ class larkDocWriter {
                         channel: guidesRecordChannel(baseSource),
                         labels: this.__plain_value(baseSource.base_labels) || baseSource.title || title,
                     }
+                }
+                const shared = this.sharedBundle?.bundle.outcomes.find(outcome => outcome.record_id === baseSource.base_record_id)
+                if (shared) {
+                    return {publish: shared.status === 'success' && this.__base_source_is_publishable(baseSource),
+                        title: baseSource.title || title, slug, beta: null, channel: guidesRecordChannel(baseSource),
+                        labels: this.__plain_value(baseSource.base_labels) || baseSource.title || title}
                 }
                 if (baseSource.base_nav_virtual) {
                     return {

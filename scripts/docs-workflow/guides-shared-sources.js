@@ -162,6 +162,8 @@ async function generateSharedSources(options, dependencies = {}) {
       const code = await runBuild({sharedDocs: path.join(repositoryRoot, sharedRoot), repo, dev: baselineRoot, out: buildOut, page,
         imageTimeout: options.imageTimeout ?? 120}, text => { log += text }, {repositoryRoot, fetchContext, fetcher: dependencies.fetcher, onBuilt: pages => { built = pages }})
       if (code || !built || built.length !== 2) throw Object.assign(new Error(`Paired shared build failed: ${log}`), {code: 'SHARED_BUILD_FAILED'})
+      const imageBaseUrl = (options.imageBaseUrl || 'https://zdoc-images.s3.us-west-2.amazonaws.com').replace(/\/$/, '')
+      for (const output of built) for (const address of new Set(output.images.map(image => image.address))) output.mdx = output.mdx.split(address).join(`${imageBaseUrl}/${address}`)
       const activation = await fetch.activationDraft({record, page, active: data.active, previousSnapshot: data.previous_snapshot, currentSources,
         pages: built, sourceDir, rootToken, fetchOld, runId})
       const imageMap = new Map(), imageBytes = new Map()
@@ -182,7 +184,7 @@ async function generateSharedSources(options, dependencies = {}) {
         path: `${resolveManualPublication(output.manual, 'en').publication.contentRoot}/${output.path}${output.extension}`,
         sha256: fetch.digest(Buffer.from(output.mdx))}))
       const receipt = receiptDraft({page, input, upstream, lock, outputs, images, channel: targets[0].channel,
-        imageBaseUrl: options.imageBaseUrl || 'https://zdoc-images.s3.us-west-2.amazonaws.com'})
+        imageBaseUrl})
       validateSharedReceipt(receipt, input.identity)
       const identity = {...input.identity, inputs_sha256: fetch.digest(JSON.stringify({evidence: input.evidence, upstream, inputs: receipt.inputs}))}
       const files = []
@@ -200,7 +202,7 @@ async function generateSharedSources(options, dependencies = {}) {
         }
       }
       outcomes.push({record_id: record.record_id, page, status: 'success', identity, outputs: files, images,
-        receipt: `pages/${page}/receipt-draft.json`, activation, input_context: {...input.evidence, upstream}})
+        receipt: `pages/${page}/receipt-draft.json`, activation, targets, image_base_url: imageBaseUrl, input_context: {...input.evidence, upstream}})
     } catch (error) {
       if (error.hardStop) throw error
       outcomes.push({record_id: record.record_id, page, status: 'fallback', code: error.code || 'SHARED_BUILD_FAILED', message: error.message,
@@ -217,12 +219,15 @@ async function generateSharedSources(options, dependencies = {}) {
     write(out, 'baseline/active.json', bytes)
     baselineActiveFile = {file: 'baseline/active.json', sha256: fetch.digest(bytes)}
   }
-  const bundle = {baseline_active_file: baselineActiveFile, schema_version: 1, master_commit: data.master_commit, dev_commit: data.dev_commit, navigation: data.navigation,
+  const previousSnapshotFile = data.previous_snapshot ? 'baseline/snapshot.json' : null
+  if (previousSnapshotFile) write(out, previousSnapshotFile, fetch.regularBytes(baselineRoot, fetch.snapshotPath))
+  const bundle = {preparation: structuredClone(data), previous_snapshot_file: previousSnapshotFile, baseline_active_file: baselineActiveFile, schema_version: 1, master_commit: data.master_commit, dev_commit: data.dev_commit, navigation: data.navigation,
     baseline_active: data.active, effective_active: effectiveActive, outcomes, referring_tables: [...referringTables].sort()}
   // Refresh the observed source projection before the artifact step freezes it.
   // Effective-success snapshot promotion and cache policy remain the later handoff stage.
   for (const outcome of outcomes) if (outcome.status === 'success') {
     context.sharedInputsByRecordId.set(outcome.record_id, outcome.identity)
+    bundle.preparation.inputs[outcome.record_id].identity = outcome.identity
     const observed = candidate.records.find(record => record.record_id === outcome.record_id)
     if (!observed) throw new Error(`Missing observed shared candidate: ${outcome.record_id}`)
     observed.shared_page = outcome.identity

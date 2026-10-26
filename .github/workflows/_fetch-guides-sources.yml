@@ -354,6 +354,18 @@ jobs:
           IMAGE_BED_URL: ${{ inputs.site == 'zh-CN' && vars.ZH_CN_IMAGE_BED_URL || vars.IMAGE_BED_URL }}
           GUIDES_FIGMA_MAX_CONCURRENT: '1'
           GUIDES_FIGMA_MIN_TIME_MS: '1000'
+      - name: Upload accepted shared Guides images
+        if: ${{ inputs.site == 'en' }}
+        run: |
+          node scripts/docs-workflow/guides-shared-images.js \
+            --bundle tmp/docs-tooling/en/shared-pages/guides \
+            --scratch "$RUNNER_TEMP/guides-shared-images" --mode "${{ inputs.media_upload_mode }}"
+        env:
+          AWS_BUCKET: ${{ vars.AWS_BUCKET }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          IMAGE_BED_URL: ${{ vars.IMAGE_BED_URL }}
       - id: source_cache_result
         name: Finalize Guides cache generation state
         run: |

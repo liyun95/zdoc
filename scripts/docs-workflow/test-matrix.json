@@ -1280,6 +1280,28 @@
         "git diff --check"
       ],
       "reason": "Fetch selected shared generation must preserve the legacy no-selected payload, immutable input evidence, paired manual fallback, current Base writer paths, current-run first-activation anchors and scratch-only accepted image bytes."
+    },
+    {
+      "id": "shared-fetch-offline-handoff",
+      "paths": [
+        "packages/docs-tooling/src/lark/sharedImageUploader*",
+        "packages/docs-tooling/src/lark/sharedPageBundle*",
+        "packages/docs-tooling/src/shared-docs/adapters/image-store.ts",
+        "scripts/docs-workflow/guides-shared-images*"
+      ],
+      "focusedTests": [
+        "node --test packages/docs-tooling/src/lark/sharedImageUploader.test.js scripts/docs-workflow/guides-shared-sources.test.js scripts/docs-workflow/guides-stage-artifact.test.js scripts/docs-workflow/render-guides-table.test.js scripts/docs-workflow/guides-table-artifact.test.js"
+      ],
+      "harnesses": [
+        "pnpm test:replay:fetch"
+      ],
+      "gates": [
+        "pnpm typecheck",
+        "pnpm test:workflow-policy",
+        "pnpm test:workflow-matrix",
+        "git diff --check"
+      ],
+      "reason": "Immutable source-job image uploads must send conditional HTTP creates and read back exact bytes; bounded authenticated bundles preserve both outcomes, complete raw routing evidence and exact baseline fallbacks within existing table ownership before offline artifact creation."
     }
   ]
 }

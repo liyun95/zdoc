@@ -481,8 +481,28 @@ The source job writes its draft bundle to
 `tmp/docs-tooling/en/shared-pages/guides/bundle.json`. It records actual pinned input
 digests, output/receipt drafts and one success or baseline-fallback outcome per
 page. Accepted image bytes remain in the source job's scratch directory for the
-subsequent upload stage. The bundle itself does not publish content or activate a
-page. On first activation, the job reads the old document once at its current
+upload step beside media prefetch. That step validates and deduplicates accepted bytes,
+reads existing objects, conditionally creates absent objects with `If-None-Match: *`,
+and reads them back to verify SHA-256. It never overwrites, resets ACLs or deletes
+shared objects. `media_upload_mode=skip` performs no storage calls and retains full
+image-bed URLs. `PUBLISH_IMAGE_UPLOAD_FAILED` fails the source job through its
+existing artifact gate, preventing new English Guides/BYOC publication from that
+job. The existing translation-enabled reconciliation producer gate remains unchanged.
+
+The source artifact binds the bounded bundle to master/dev SHAs, sizes and hashes,
+including raw Base routing evidence, both successful outputs and exact historical
+fallback bytes. Offline table jobs place prebuilt bytes and repeat writer path and
+front-matter checks; they do not generate shared pages or upload images. Fallbacks
+are restored within their existing table owner even when current traversal omits
+the old record or path. Image bodies are excluded from source and table artifacts.
+Final receipt/activation publication and successful cache promotion remain separate
+publication gates; the draft bundle alone does not authorize them. Before a pilot,
+the owner must verify real-bucket conditional-create support and retain lifecycle
+evidence that `shared/` objects referenced by published or recoverable receipts
+cannot expire or be deleted, including bucket-wide/noncurrent rules and external
+cleanup jobs.
+
+On first activation, the job reads the old document once at its current
 revision and checks current inbound heading references against both generated
 manuals; `ACTIVATE_CHECK_FAILED` retains both baseline outputs. Existing active
 pages reuse their retained anchor map. A run with no selected shared pages creates

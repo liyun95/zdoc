@@ -84,7 +84,7 @@ function prepareSharedSources({records, repositoryRoot, baselineRoot, masterComm
     inputs[record.record_id] = {identity, evidence}
   }
   return {context, data: {schema_version: 1, master_commit: masterCommit, dev_commit: devCommit, records, active, previous_snapshot: previousSnapshot,
-    available_pages: availablePages, navigation, inputs, errors: context.errors}}
+    available_pages: availablePages, navigation, dev_files: devFiles, inputs, errors: context.errors}}
 }
 function pendingSourceSnapshot(candidate, context) {
   const records = candidate.records.filter(record => {

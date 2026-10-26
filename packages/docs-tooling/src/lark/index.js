@@ -557,6 +557,7 @@ function larkDocsPlugin(context, options) {
                 .option('--buildEnv <env>', 'Build environment for snapshot scoping: uat or production', process.env.DOCS_BUILD_ENV || 'local')
                 .option('--forceFullFetch', 'Ignore incremental planning and force a full source fetch')
                 .option('--offline', 'Render only from local source metadata and prefetched media')
+                .option('--sharedBundle <path>', 'Authenticated English shared source bundle for offline emission')
                 .option('--mediaManifest <path>', 'Prefetched media manifest used by --offline')
                 .action(async (opts) => {
                     validateOfflineOptions(opts)
@@ -610,6 +611,13 @@ function larkDocsPlugin(context, options) {
 
                     // Intialize scraper and writer
                     const scraper = new docScraper(root, base, sourceType, docSourceDir)
+                    let sharedHandoff = null
+                    if (opts.sharedBundle) {
+                        if (!opts.offline || !opts.skipSourceDown || manualName !== 'guides' || path.basename(docSourceDir) !== 'guides') throw new Error('Shared bundle requires English offline Guides')
+                        sharedHandoff = require('./sharedPageBundle').loadBundle(opts.sharedBundle, {masterSha: process.env.DOCS_TOOLING_SHARED_MASTER_SHA, devBaselineSha: process.env.DOCS_TOOLING_SHARED_DEV_SHA})
+                        scraper.routingContext = sharedHandoff.routing
+                        scraper.records = structuredClone(sharedHandoff.bundle.preparation.records)
+                    }
                     // Source-job ownership is bound before metadata/body fetch or cache planning.
                     if (manualName === 'guides' && path.basename(docSourceDir) === 'guides'
                         && process.env.DOCS_TOOLING_SHARED_BASELINE && process.env.DOCS_TOOLING_SHARED_MASTER_SHA) {
@@ -1251,7 +1259,7 @@ function larkDocsPlugin(context, options) {
                                 buildEnv: opts.buildEnv || 'uat',
                                 rootToken: root,
                                 sourceDir: docSourceDir,
-                                snapshot: readSnapshot(candidatePath),
+                                snapshot: sharedHandoff ? require('./sharedPageFetch').pendingSourceSnapshot(readSnapshot(candidatePath), sharedHandoff.routing) : readSnapshot(candidatePath),
                             })
                         }
 
@@ -1272,6 +1280,8 @@ function larkDocsPlugin(context, options) {
                         const writer = sourceType === 'wiki' || sourceType === 'onePager' ?
                             new docWriter(root, base, displayedSidebar, docSourceDir, imageDir, opts.pubTarget, opts.skipImageDown, opts.uploadToS3, opts.linkShim, mediaResolver, sourceIndex) :
                             new driveWriter(root, base, displayedSidebar, docSourceDir, imageDir, opts.pubTarget, opts.skipImageDown, opts.uploadToS3, opts.manual)
+
+                        if (sharedHandoff) { writer.sharedBundle = sharedHandoff; writer.sharedWorkspace = process.cwd() }
 
                         // Ensure S3 connections are always closed, even on error or Ctrl+C
                         const writerCleanup = () => { try { writer.destroy() } catch (_) {} }
