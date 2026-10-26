@@ -1233,6 +1233,30 @@
         "git diff --check"
       ],
       "reason": "Shared docs PR checks must preserve the read-only whole-group candidate boundary, NUL-safe affected-group detection and unsupported-layout rejection, same-repository grouped lock-only writer, immutable SHA-bound child validation, fork notice and isolated infrastructure reporting. Actual workflow shell blocks run offline against local Git and GitHub stubs; run actionlint on both workflows."
+    },
+    {
+      "id": "shared-handoff-routing",
+      "paths": [
+        "packages/docs-tooling/src/lark/sharedPageRouting*",
+        "packages/docs-tooling/src/lark/larkSourceIndex*",
+        "packages/docs-tooling/src/lark/sourceCompleteness*",
+        "packages/docs-tooling/src/lark/incrementalReconciliation*",
+        "packages/docs-tooling/src/lark/revisionInventory*"
+      ],
+      "focusedTests": [
+        "node --test packages/docs-tooling/src/lark/sharedPageRouting.test.js packages/docs-tooling/src/lark/larkSourceIndex.test.js packages/docs-tooling/src/lark/sourceCompleteness.test.js packages/docs-tooling/src/lark/incrementalReconciliation.test.js",
+        "pnpm vitest run packages/docs-tooling/src/lark/revisionInventory.test.ts packages/docs-tooling/src/cli-main.integration.test.ts"
+      ],
+      "harnesses": [
+        "pnpm test:replay:fetch"
+      ],
+      "gates": [
+        "pnpm typecheck",
+        "pnpm test:workflow-policy",
+        "pnpm test:workflow-matrix",
+        "git diff --check"
+      ],
+      "reason": "Shared source routing keeps canonical Base record identity independent of Feishu tokens, validates pinned Git/active/receipt authority, protects transitions from removal, and keeps revision inventories Feishu-only."
     }
   ]
 }

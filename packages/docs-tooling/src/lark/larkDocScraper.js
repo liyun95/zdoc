@@ -3,6 +3,7 @@ const { fetchFeishuJsonWithRetry } = require('./feishuFetch.js')
 const { auditCanonicalLinks, canonicalRecordsFrom, contentLinkTarget, sourceOwnedRecordsFrom } = require('./canonicalLinkAuditor')
 const { guidesPlacementType, guidesCanonicalIsPublishable } = require('./guidesBaseRecordSemantics')
 const { guidesTableSlug } = require('./guidesTableSlugs')
+const {routeForRecord, sourceFieldsForRecord} = require('./sharedPageRouting')
 const { isRenderableCanonicalSource } = require('./sourceCompleteness')
 const fs = require('fs')
 const node_path = require('path')
@@ -110,12 +111,13 @@ class larkDocScraper {
         const metadataByToken = new Map()
         const canonicalRecords = sourceOwnedRecordsFrom(records || this.records || [], {
             guidesPublishableOnly: this.use_all_base_tables,
+            routingContext: this.routingContext,
         })
         if (progressLabel) {
             console.log(`${progressLabel}: resolving ${canonicalRecords.length} wiki node(s)`)
         }
         let processed = 0
-        for (const record of canonicalRecords) {
+        for (const record of canonicalRecords.filter(record => record.doc_token)) {
             try {
                 const objType = this.__wiki_obj_type_from_link(record.doc_link)
                 let node = await this.fetch_wiki_node(record.doc_token, objType)
@@ -397,14 +399,8 @@ class larkDocScraper {
     }
 
     __doc_token(docField) {
-        const link = this.__doc_link(docField)
-        if (!link) return null
-        try {
-            const url = new URL(link)
-            return url.pathname.split('/').filter(Boolean).pop()
-        } catch (_) {
-            return link.startsWith('http://') || link.startsWith('https://') ? null : link
-        }
+        const route = routeForRecord({fields: {Docs: docField}})
+        return route.kind === 'feishu' ? route.token : null
     }
 
     __field_link(value) {
@@ -830,6 +826,7 @@ class larkDocScraper {
             const placementType = this.__placement_type(record)
             if (placementType !== 'canonical' && placementType !== 'section') continue
             if (placementType === 'canonical' && this.use_all_base_tables && !guidesCanonicalIsPublishable(record)) continue
+            if (routeForRecord(record, this.routingContext).kind !== 'feishu') continue
             const docField = this.__doc_field(record.fields)
             if (placementType === 'section' && !this.__doc_token(docField)) continue
             const docToken = this.__doc_token(docField)
@@ -1186,14 +1183,17 @@ class larkDocScraper {
             const children = this.__sort_records([...(childrenByParent.get(record.record_id) || [])])
                 .map(child => materializeRecord(child, this.__nav_token(record)))
             const docField = this.__doc_field(record.fields)
-            const docToken = this.__doc_token(docField)
+            const sourceRoute = routeForRecord(record, this.routingContext)
+            const docToken = sourceRoute.kind === 'feishu' ? sourceRoute.token : null
             const placementType = this.__placement_type(record)
             const isStructural = this.__is_structural_record(record)
             const title = this.__record_title(record)
             const slug = this.__record_slug(record)
             const titleMatches = Array.from(new Set(Array.from(sources.values())))
                 .filter(source => !source.base_nav_virtual && (source.title === title || source.name === title))
-            const existingSource = isStructural ? null : (docToken ? sources.get(docToken) : (titleMatches.length === 1 ? titleMatches[0] : null))
+            const sharedSource = sourceRoute.kind === 'shared-page'
+            const invalidSource = placementType === 'canonical' && sourceRoute.kind === 'invalid'
+            const existingSource = sharedSource || invalidSource || isStructural ? null : (docToken ? sources.get(docToken) : (titleMatches.length === 1 ? titleMatches[0] : null))
             let source
 
             if (placementType === 'ref') {
@@ -1247,6 +1247,10 @@ class larkDocScraper {
                 })
             }
 
+            if (sharedSource || invalidSource) {
+                Object.assign(source, sourceFieldsForRecord(record, this.routingContext))
+                source.base_source_record_id = record.record_id
+            }
             this.__source_base_meta(source, record)
             const filename = source.__source_file || this.__nav_file_name(source.node_token || source.token)
             delete source.__source_file
@@ -1552,6 +1556,7 @@ class larkDocScraper {
     }
 
     async __fetch_blocks(node, attempt=1) {
+        if (this.__source_token_aliases(node).some(token => this.routingContext?.aliasesByToken.has(token))) return
         var token;
         const keys = Object.keys(node)
         if (keys.includes('obj_type') && node.obj_type == 'docx') {

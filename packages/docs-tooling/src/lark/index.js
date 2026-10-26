@@ -639,6 +639,7 @@ function larkDocsPlugin(context, options) {
                             manualName,
                             docSourceDir,
                             records: auditScraper.records,
+                            routingContext: scraper.routingContext,
                             target: opts.pubTarget || null,
                             outputPrefix: prefix,
                             failOnBroken,
@@ -685,6 +686,7 @@ function larkDocsPlugin(context, options) {
                             manualName,
                             docSourceDir,
                             records: scraper.records,
+                            routingContext: scraper.routingContext,
                             previousSnapshot,
                             buildEnv: snapshotEnv,
                             maxReferenceDepth: Number(opts.incrementalMaxReferenceDepth || 1),
@@ -739,13 +741,14 @@ function larkDocsPlugin(context, options) {
                         }
                         assertTrustedRequestedBaseline(previousSnapshot)
                         const sourceByToken = sourceFilesByToken(docSourceDir)
-                        const canonicalRecords = canonicalRecordsFrom(scraper.records, { guidesPublishableOnly: true })
+                        const canonicalRecords = canonicalRecordsFrom(scraper.records, { guidesPublishableOnly: true, routingContext: scraper.routingContext })
                         const canonicalTokens = canonicalTokenSet(canonicalRecords, sourceByToken)
                         const { linkedTokens } = expandRequestedClosure({
                             requestedTokens,
                             sourceByToken,
                             previousSnapshot,
                             canonicalTokens,
+                            routingContext: scraper.routingContext,
                             refreshedTokens: new Set(fetchedTokens),
                             maxReferenceDepth: Number(opts.incrementalMaxReferenceDepth || 1),
                             reasonsByToken: {},
@@ -755,6 +758,7 @@ function larkDocsPlugin(context, options) {
                             buildEnv: snapshotEnv,
                             docSourceDir,
                             records: scraper.records,
+                            routingContext: scraper.routingContext,
                             previousSnapshot,
                             currentNodeMetadataByToken,
                             requestedTokens,
@@ -813,6 +817,7 @@ function larkDocsPlugin(context, options) {
                                 rootToken: root,
                                 baseAppToken: scraper.base_app_token,
                                 records: scraper.records,
+                                routingContext: scraper.routingContext,
                                 nodeMetadataByToken: currentNodeMetadataByToken,
                                 previousSnapshot: baselineSnapshot,
                                 plan: consumedPlan,
@@ -884,6 +889,7 @@ function larkDocsPlugin(context, options) {
                             const resolution = resolveRequestedSelectors({
                                 selectors: selectionInput.selectors,
                                 records: scraper.records,
+                                routingContext: scraper.routingContext,
                                 previousSnapshot,
                                 site,
                             })
@@ -892,13 +898,14 @@ function larkDocsPlugin(context, options) {
 
                             await scraper.fetch_source_tokens(requestedTokens)
                             let sourceByToken = sourceFilesByToken(docSourceDir)
-                            const canonicalRecords = canonicalRecordsFrom(scraper.records, { guidesPublishableOnly: true })
+                            const canonicalRecords = canonicalRecordsFrom(scraper.records, { guidesPublishableOnly: true, routingContext: scraper.routingContext })
                             const canonicalTokens = canonicalTokenSet(canonicalRecords, sourceByToken)
                             const { linkedTokens } = expandRequestedClosure({
                                 requestedTokens,
                                 sourceByToken,
                                 previousSnapshot,
                                 canonicalTokens,
+                                routingContext: scraper.routingContext,
                                 refreshedTokens: new Set(requestedTokens),
                                 maxReferenceDepth: Number(opts.incrementalMaxReferenceDepth || 1),
                                 reasonsByToken: {},
@@ -914,6 +921,7 @@ function larkDocsPlugin(context, options) {
                                 buildEnv: snapshotEnv,
                                 docSourceDir,
                                 records: scraper.records,
+                                routingContext: scraper.routingContext,
                                 previousSnapshot,
                                 currentNodeMetadataByToken,
                                 requestedTokens,
@@ -1055,6 +1063,7 @@ function larkDocsPlugin(context, options) {
                             docSourceDir,
                             baseAppToken: scraper.base_app_token,
                             records: scraper.records,
+                            routingContext: scraper.routingContext,
                             nodeMetadataByToken: currentNodeMetadataByToken,
                         })
                         validateCandidateSnapshot(candidate, {
@@ -1081,6 +1090,7 @@ function larkDocsPlugin(context, options) {
                             site: path.basename(docSourceDir) === 'guides-zh-CN' ? 'zh-CN' : 'en',
                             tables: scraper.base_tables,
                             records: scraper.records,
+                            routingContext: scraper.routingContext,
                         })
                         console.log(`[guides-preflight] Validated ${result.tables} table(s) and ${result.records} navigation record(s).`)
                         return
@@ -1293,6 +1303,7 @@ function larkDocsPlugin(context, options) {
                                 if (sourcePlan?.mode === 'incremental') {
                                     cleanupRemovedIncrementalRecords({
                                         plan: sourcePlan,
+                                        currentRecords: scraper.records,
                                         docSourceDir,
                                         targetOutputDir: outputDir,
                                         preservePlacementAncestry: sourceType === 'drive',
