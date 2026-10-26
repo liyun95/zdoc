@@ -1215,6 +1215,7 @@
     {
       "id": "shared-docs-pr-workflows",
       "paths": [
+        "packages/docs-tooling/src/shared-docs/adapters/detect-groups.cjs",
         ".github/workflows/shared-docs-lock.yml",
         ".github/workflows/shared-docs-validate.yml",
         "packages/docs-tooling/src/shared-docs/testing/workflows.test.ts",

@@ -16,6 +16,7 @@ type Workflow = {
   jobs: Record<string, { steps: Step[]; if?: string; permissions?: Record<string, string>; 'timeout-minutes': number }>
 }
 const root = process.cwd()
+const detectorPath = 'packages/docs-tooling/src/shared-docs/adapters/detect-groups.cjs'
 const lock = load(readFileSync('.github/workflows/shared-docs-lock.yml', 'utf8')) as Workflow
 const validate = load(readFileSync('.github/workflows/shared-docs-validate.yml', 'utf8')) as Workflow
 const directories: string[] = []
@@ -33,6 +34,7 @@ function fixture() {
   git(repo, 'init', '-q', '-b', 'onboarding'); git(repo, 'config', 'user.name', 'Workflow Test'); git(repo, 'config', 'user.email', 'test@example.invalid')
   put(repo, 'shared-docs/guides/source.yaml', 'schema_version: 1\nrepository: https://github.com/milvus-io/milvus-docs.git\ntrack: v3.0.x\n')
   put(repo, 'shared-docs/guides/pages/example/page.yaml')
+  put(repo, detectorPath, readFileSync(join(root, detectorPath), 'utf8'))
   const sha = commit(repo)
   git(dir, 'init', '-q', '--bare', remote); git(repo, 'remote', 'add', 'origin', remote); git(repo, 'push', '-q', 'origin', 'HEAD:refs/heads/onboarding')
   git(repo, 'config', `url.${remote}.insteadOf`, 'https://github.com/test-owner/zdoc.git')
@@ -88,6 +90,13 @@ if (args[1] === 'list') {
 const pushName = 'Push only new regular lock files', dispatchName = 'Dispatch and wait for exact pushed validation'
 
 describe('read-only validation shell contracts', () => {
+  it('shares the dependency-free detector before dependency installation', () => {
+    for (const [workflow, job] of [[validate, 'validate'], [lock, 'lock']] as const) {
+      const steps = workflow.jobs[job].steps
+      expect(steps.find(step => step.name === 'Detect shared input changes')?.run?.trim()).toBe(`node ${detectorPath}`)
+      expect(steps.findIndex(step => step.name === 'Detect shared input changes')).toBeLessThan(steps.findIndex(step => step.name === 'Install pnpm'))
+    }
+  })
   it('separates PR and dispatch concurrency while allowing cancellation within each event', () => {
     expect(validate.concurrency.group).toBe('shared-docs-validate-${{ github.event.pull_request.number || inputs.pr_number }}-${{ github.event_name }}')
     expect(validate.concurrency['cancel-in-progress']).toBe(true)
@@ -150,6 +159,32 @@ describe('read-only validation shell contracts', () => {
     const result = execute(validate, 'validate', 'Detect shared input changes', setup)
     expect(result.status).toBe(status); expect(result.outputs.changed).toBeUndefined()
   })
+  it.each([{ SOURCE_SHA: 'main' }, { BASE_SHA: 'a'.repeat(39) }, { BASE_SHA: 'A'.repeat(40) }])('rejects malformed detector identities before any Git command: %j', env => {
+    const setup = fixture(); stub(setup, 'git', '#!/bin/sh\nprintf called > "$RUNNER_TEMP/git-called"\nexit 99\n')
+    const result = execute(validate, 'validate', 'Detect shared input changes', setup, env)
+    expect(result.status).toBe(1); expect(result.outputs).toEqual({})
+    expect(result.stderr).toContain('complete lowercase SHA-1')
+    expect(() => readFileSync(join(setup.dir, 'git-called'))).toThrow()
+  })
+  it.each(['fetch', 'diff'])('preserves infrastructure failure from detector Git %s', command => {
+    const setup = fixture(); stub(setup, 'git', `#!/bin/sh\nif [ "$1" = ${command} ]; then echo 'fixture Git failure' >&2; exit 42; fi\nexec '${gitBinary}' "$@"\n`)
+    const result = execute(lock, 'lock', 'Detect shared input changes', setup)
+    expect(result.status).toBe(42); expect(result.outputs).toEqual({})
+    expect(result.stderr).toContain('fixture Git failure')
+  })
+  it('rejects malformed merge-base output before recording success', () => {
+    const setup = fixture(); stub(setup, 'git', `#!/bin/sh\nif [ "$1" = merge-base ]; then echo main; exit 0; fi\nexec '${gitBinary}' "$@"\n`)
+    const result = execute(validate, 'validate', 'Detect shared input changes', setup)
+    expect(result.status).toBe(1); expect(result.outputs).toEqual({})
+    expect(result.stderr).toContain('Merge base must be a complete lowercase SHA-1')
+  })
+  it('preserves the raw NUL-delimited changed-path artifact without dependencies', () => {
+    const setup = fixture(), file = 'shared-docs/guides/new\ninput.yaml'; put(setup.repo, file); const head = commit(setup.repo)
+    const result = execute(lock, 'lock', 'Detect shared input changes', setup, { SOURCE_SHA: head })
+    expect(result.status).toBe(0); expect(result.outputs).toEqual({ changed: 'true', groups: '["guides"]' })
+    expect(readFileSync(join(setup.dir, 'shared-docs-paths'))).toEqual(Buffer.from(`${file}\0`))
+    expect(readFileSync(join(setup.repo, detectorPath), 'utf8')).toBe(readFileSync(join(root, detectorPath), 'utf8'))
+  })
   it('rejects checkout SHA drift before comparing paths', () => {
     const setup = fixture(), result = execute(validate, 'validate', 'Detect shared input changes', setup, { SOURCE_SHA: 'a'.repeat(40) })
     expect(result.status).not.toBe(0); expect(result.outputs).toEqual({})
@@ -180,7 +215,7 @@ describe('read-only validation shell contracts', () => {
 
 describe('source and snapshot setup shell contracts', () => {
   function sourceSetup() {
-    const setup = fixture(); symlinkSync(join(root, 'scripts'), join(setup.repo, 'scripts')); symlinkSync(join(root, 'packages'), join(setup.repo, 'packages')); return setup
+    const setup = fixture(); symlinkSync(join(root, 'scripts'), join(setup.repo, 'scripts')); symlinkSync(join(root, 'packages/docs-tooling/src/shared-docs/core'), join(setup.repo, 'packages/docs-tooling/src/shared-docs/core')); return setup
   }
   it.each([lock, validate])('parses source configuration through the existing parser', workflow => {
     const setup = sourceSetup(), job = workflow === lock ? 'lock' : 'validate'

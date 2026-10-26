@@ -65,30 +65,7 @@ jobs:
         env:
           SOURCE_SHA: ${{ steps.identity.outputs.source_sha }}
           BASE_SHA: ${{ steps.identity.outputs.base_sha }}
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          git fetch --no-tags origin "$BASE_SHA"
-          comparison_base=$(git merge-base "$BASE_SHA" "$SOURCE_SHA")
-          [[ "$comparison_base" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          git diff --no-renames --name-only -z "$comparison_base" "$SOURCE_SHA" -- shared-docs/ > "$RUNNER_TEMP/shared-docs-paths"
-          node <<'NODE'
-          const fs = require('node:fs');
-          const paths = fs.readFileSync(process.env.RUNNER_TEMP + '/shared-docs-paths', 'utf8').split('\0').filter(Boolean);
-          const groups = new Set();
-          for (const file of paths) {
-            const match = /^shared-docs\/([^/]+)\/([\s\S]+)$/.exec(file);
-            if (!match || match[1] !== 'guides') {
-              fs.appendFileSync(process.env.GITHUB_OUTPUT, 'failure_class=content\n');
-              console.error(`Unsupported shared input ${JSON.stringify(file)}. Only the guides group is supported; use shared-docs/guides/.`);
-              process.exit(1);
-            }
-            groups.add(match[1]);
-          }
-          const affected = [...groups].sort();
-          fs.writeFileSync(process.env.RUNNER_TEMP + '/shared-docs-groups', affected.map(group => `${group}\n`).join(''));
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `changed=${paths.length > 0}\ngroups=${JSON.stringify(affected)}\n`);
-          NODE
+        run: node packages/docs-tooling/src/shared-docs/adapters/detect-groups.cjs
 
       - name: Report unchanged shared inputs
         if: steps.changes.outputs.changed != 'true'

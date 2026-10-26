@@ -335,17 +335,16 @@ function validateSharedDocsWorkflow(workflow, source, file, errors) {
       /--depth|--filter|blob:none|GH_TOKEN|secrets\./.test(clone) ||
       !sourceConfig.includes('parseSourceConfig') || !sourceConfig.includes('^https:\\/\\/github\\.com\\/') ||
       !sourceConfig.includes('credential-free GitHub HTTPS repository URL')) fail('must parse a public GitHub source URL and clone complete single-branch tracking history')
-  const changes = run(primary, 'Detect shared input changes')
-  if (!changes.includes('comparison_base=$(git merge-base "$BASE_SHA" "$SOURCE_SHA")') ||
-      !changes.includes('git diff --no-renames --name-only -z "$comparison_base" "$SOURCE_SHA" -- shared-docs/') ||
-      !changes.includes('set -euo pipefail') || /merge-base[^\n]*\|\||git diff[^\n]*\|\|/.test(changes)) fail('must detect all shared input changes with a fail-closed merge base and NUL-safe no-renames diff')
-  const groupRequirements = [".split('\\0').filter(Boolean)", 'const groups = new Set()', "match[1] !== 'guides'", 'if (!match ||',
-    "groups.add(match[1])", "[...groups].sort()", 'Only the guides group is supported', "'failure_class=content\\n'", "'/shared-docs-groups'"]
-  const groupStepIndex = stepsOf(primary).findIndex(item => item.name === 'Detect shared input changes')
-  if (groupRequirements.some(text => !changes.includes(text)) ||
-      !changes.includes('^shared-docs\\/([^/]+)\\/([\\s\\S]+)$') ||
-      groupStepIndex < 0 || ['Read public source configuration', 'Clone complete tracking history', 'Install tooling'].some(name =>
-        groupStepIndex >= stepsOf(primary).findIndex(item => item.name === name))) fail('must deduplicate affected groups and reject unsupported or ungrouped inputs as content before install or source reads')
+  const changesStep = step(primary, 'Detect shared input changes')
+  const groupStepIndex = stepsOf(primary).indexOf(changesStep)
+  const expectedChangesEnv = lock
+    ? {SOURCE_SHA: '${{ github.event.pull_request.head.sha }}', BASE_SHA: '${{ github.event.pull_request.base.sha }}'}
+    : {SOURCE_SHA: '${{ steps.identity.outputs.source_sha }}', BASE_SHA: '${{ steps.identity.outputs.base_sha }}'}
+  if (changesStep?.run?.trim() !== 'node packages/docs-tooling/src/shared-docs/adapters/detect-groups.cjs' ||
+      changesStep.id !== 'changes' || changesStep.if !== undefined || changesStep['continue-on-error'] !== undefined ||
+      Object.entries(expectedChangesEnv).some(([key, value]) => changesStep.env?.[key] !== value) ||
+      groupStepIndex < 0 || ['Install pnpm', 'Set up Node.js', 'Install tooling', 'Read public source configuration', 'Clone complete tracking history'].some(name =>
+        groupStepIndex >= stepsOf(primary).findIndex(item => item.name === name))) fail('must invoke the shared group detector with immutable identities before install or source reads')
   if (!sourceConfig.includes("fs.readFileSync('shared-docs/guides/source.yaml', 'utf8')")) fail('must read the supported grouped source configuration')
   if (!lock) {
     if (JSON.stringify(workflow.permissions) !== JSON.stringify({contents: 'read'}) || Object.keys(jobs).join(',') !== 'validate' ||
