@@ -65,6 +65,16 @@ function prepareSharedSources({records, repositoryRoot, baselineRoot, masterComm
   const links = records.map(routing.recordLink)
   const availablePages = routing.pinnedSharedPages(repositoryRoot, masterCommit, links)
   const context = routing.createRoutingContext({records, availablePages, active, previousSnapshot})
+  // Removing or demoting an activated row would otherwise drop its output while the
+  // published receipt still expects it. Retirement belongs to WP14; until then fail
+  // the run with a named error, like a revert to Feishu.
+  for (const entry of active.pages) {
+    const record = records.find(row => row.record_id === entry.record)
+    if (!record || !guidesCanonicalIsPublishable(record)) {
+      throw Object.assign(new Error(`OWNERSHIP_REVERTED: activated record ${entry.record} (page ${entry.page}) was removed from Base or is no longer a publishable canonical row; restore it until retirement is supported`),
+        {code: 'OWNERSHIP_REVERTED', record_id: entry.record})
+    }
+  }
   const selected = records.filter(record => guidesCanonicalIsPublishable(record) && context.routesByRecordId.get(record.record_id)?.kind === 'shared-page')
   // No config parser, output file or changed legacy payload for an unselected group.
   if (!selected.length && !context.errors.length) return null

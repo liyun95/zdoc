@@ -552,13 +552,29 @@ cleanup jobs. The owner must also make an unauthenticated GET of
 `IMAGE_BED_URL/shared/<key>` and verify that the downloaded body's SHA256 equals
 the accepted object's digest. Use no credentials or signed URL for this check;
 authenticated SDK readback verifies stored bytes but does not prove public read
-access. Record the HTTP result and digest with the pilot evidence.
+access. Record the HTTP result and digest with the pilot evidence. These checks
+gate the first image-bearing activation; a page without images can be activated
+before them.
 
 On first activation, the job reads the old document once at its current
 revision and checks current inbound heading references against both generated
 manuals; `ACTIVATE_CHECK_FAILED` retains both baseline outputs. Existing active
 pages reuse their retained anchor map. A run with no shared records and no active
 shared state creates no shared bundle and keeps the legacy source payload unchanged.
+
+To activate a page, switch its record's `Docs` to the page directory URL, wait
+for a successful Fetch and confirm its entry in dev's
+`generated/en/manifests/shared-pages/guides/active.json`, then retire the old
+Feishu document. The old document must exist until that activation Fetch
+succeeds; afterwards links are resolved from `active.json` alone, and a retired
+document stops new block-ID links that the frozen anchor map cannot resolve.
+
+Once a page is active, its Base record must stay a publishable canonical row
+whose `Docs` points to the page directory. Switching `Docs` back to Feishu,
+deleting the record, changing its placement type or moving its Progress outside
+the publishable set fails Fetch with `OWNERSHIP_REVERTED` and leaves the Git
+version in place. Restore the record; retirement of shared pages is not supported
+yet.
 
 ### Release Channel gating (CURRENT / NEXT / RETIRE-IN-NEXT)
 

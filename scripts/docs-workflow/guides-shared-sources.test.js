@@ -962,3 +962,19 @@ test('pinned fallback sidebar restores missing nested metadata before surviving 
     require('../validate-guides-coverage').validateGuidesCoverage({outputDir, sidebar})
   }
 })
+test('an activated record removed from Base or demoted from publishable canonical fails the run by name', {timeout: 120000}, async t => {
+  const options = await fixture(t, {active: true})
+  const demote = [
+    ['removed', records => records.filter(row => row.record_id !== 'rec0')],
+    ['placement changed', records => records.map(row => row.record_id === 'rec0' ? {...row, fields: {...row.fields, 'Placement Type': 'Section'}} : row)],
+    ['progress unpublishable', records => records.map(row => row.record_id === 'rec0' ? {...row, fields: {...row.fields, Progress: 'Archived'}} : row)],
+  ]
+  for (const [label, change] of demote) {
+    assert.throws(() => adapter.prepareSharedSources({...options, records: change(options.records)}), error => {
+      assert.equal(error.code, 'OWNERSHIP_REVERTED', label); assert.equal(error.record_id, 'rec0', label)
+      assert.match(error.message, /page sample/, label); return true
+    })
+  }
+  // The unchanged active record still prepares normally.
+  assert.ok(adapter.prepareSharedSources({...options, records: options.records}))
+})
