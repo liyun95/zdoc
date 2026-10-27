@@ -12,6 +12,9 @@
 // njs-compatible ESM (see vocab.js): no optional chaining/nullish/Map/for-of.
 
 import stringsModule from './strings.js';
+import vocabModule from './vocab.js';
+
+const tableFor = vocabModule.vocabFor;
 
 const stringsFor = stringsModule.stringsFor;
 
@@ -35,10 +38,11 @@ function escapeCell(value) {
 
 const p = function (html) { return '<p>' + html + '</p>'; };
 
-function htmlTable(headers, rows) {
+function htmlTable(headers, rows, table) {
   const lines = ['<table>', '   <tr>'];
   for (let index = 0; index < headers.length; index += 1) {
-    lines.push('     <th><p><strong>' + escapeText(headers[index]) + '</strong></p></th>');
+    const label = table && table.headerStrong ? '<strong>' + escapeText(headers[index]) + '</strong>' : escapeText(headers[index]);
+    lines.push('     <th><p>' + label + '</p></th>');
   }
   lines.push('   </tr>');
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
@@ -79,42 +83,88 @@ function groupByContinent(regions) {
   return result;
 }
 
-function renderRegionsTable(provider, strings) {
+// The merged regions table (the live pages' grammar, transcribed verbatim):
+// three header rows — three label columns, a grouped managed-cloud pair over
+// "always-on compute", and BYOC — then one row per region with
+// ✅ / not-available cells. BYOC-only regions are regular rows whose managed
+// cells read "not available". Always HTML (the grouped header cannot be GFM).
+function headerCell(text, table, attributes) {
+  const label = table.headerStrong ? '<strong>' + escapeText(text) + '</strong>' : escapeText(text);
+  return '     <th' + attributes + '><p>' + label + '</p></th>';
+}
+
+function bodyCell(text) {
+  return '     <td><p>' + escapeText(text) + '</p></td>';
+}
+
+function renderRegionsTable(provider, strings, table) {
   if (!provider.regions || provider.regions.length === 0) {
     throw new Error('Provider ' + provider.key + ' has no regions');
   }
-  let hasLocation = false;
-  for (let index = 0; index < provider.regions.length; index += 1) {
-    if (provider.regions[index].location) hasLocation = true;
-  }
-  const headers = hasLocation ? strings.regionColumns : strings.regionColumns.slice(0, 2);
+  const strong = function (text) {
+    return table.headerStrong ? '<strong>' + escapeText(text) + '</strong>' : escapeText(text);
+  };
+  const availability = function (list, value) {
+    return list.indexOf(value) !== -1 ? table.cellYes : table.cellNo;
+  };
+  const lines = ['<table>', '   <tr>'];
+  lines.push(headerCell(table.labelHeaders[0], table, ' rowspan="3"'));
+  lines.push(headerCell(table.labelHeaders[1], table, ' rowspan="3"'));
+  lines.push(headerCell(table.labelHeaders[2], table, ' rowspan="3"'));
+  lines.push(headerCell(table.managedGroupHeader, table, ' colspan="3"'));
+  lines.push(headerCell(table.byocHeader, table, ' rowspan="3"'));
+  lines.push('   </tr>');
+  lines.push('   <tr>');
+  lines.push('     <td colspan="2"><p>' + strong(table.alwaysOnHeader) + '</p></td>');
+  lines.push('     <td rowspan="2"><p>' + strong(table.onDemandHeader) + '</p></td>');
+  lines.push('   </tr>');
+  lines.push('   <tr>');
+  lines.push('     <td><p>' + strong(table.freeServerlessHeader) + '</p></td>');
+  lines.push('     <td><p>' + strong(table.dedicatedHeader) + '</p></td>');
+  lines.push('   </tr>');
   const groups = groupByContinent(provider.regions);
-  let needsRowspan = false;
-  for (let index = 0; index < groups.length; index += 1) {
-    if (groups[index].length > 1) needsRowspan = true;
-  }
-  if (!needsRowspan) {
-    return gfmTable(headers, provider.regions.map(function (region) {
-      const cells = [region.continent, region.name];
-      if (hasLocation) cells.push(region.location || '');
-      return cells.map(escapeCell);
-    }));
-  }
-  const rows = [];
   for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
     const group = groups[groupIndex];
     for (let index = 0; index < group.length; index += 1) {
       const region = group[index];
-      const cells = [];
+      lines.push('   <tr>');
       if (index === 0) {
-        cells.push({html: p(escapeText(region.continent)), rowspan: group.length});
+        lines.push(group.length > 1
+          ? '     <td rowspan="' + group.length + '"><p>' + escapeText(region.continent) + '</p></td>'
+          : bodyCell(region.continent));
       }
-      cells.push({html: p(escapeText(region.name))});
-      if (hasLocation) cells.push({html: p(escapeText(region.location || ''))});
-      rows.push(cells);
+      lines.push(bodyCell(region.id));
+      lines.push(bodyCell(region.name));
+      lines.push(bodyCell(availability(region.deployments, table.freeServerlessHeader)));
+      lines.push(bodyCell(availability(region.deployments, table.dedicatedHeader)));
+      lines.push(bodyCell(availability(region.computeTypes, table.onDemandHeader)));
+      lines.push(bodyCell(availability(region.deployments, table.byocHeader)));
+      lines.push('   </tr>');
     }
   }
-  return htmlTable(headers, rows);
+  lines.push('</table>');
+  return lines.join('\n');
+}
+
+function rowLabelHtml(row) {
+  if (row.labelHtml) return row.labelHtml;
+  const label = escapeText(row.label);
+  if (!row.href) return label;
+  return '<a href="' + escapeAttr(row.href) + '">' + label + '</a>';
+}
+
+function rowLabelMarkdown(row) {
+  const label = escapeCell(row.label);
+  if (!row.href) return label;
+  return '[' + label + '](' + row.href + ')';
+}
+
+function cellFor(row, provider) {
+  const cell = row.cells ? row.cells[provider.key] : null;
+  if (!cell) {
+    throw new Error('Row "' + (row.label || row.labelHtml) + '" has no availability for provider ' + provider.key);
+  }
+  return cell;
 }
 
 function isPlainAvailability(cell) {
@@ -165,28 +215,7 @@ function availabilityHtml(cell, strings) {
   }
 }
 
-function rowLabelHtml(row) {
-  if (row.labelHtml) return row.labelHtml;
-  const label = escapeText(row.label);
-  if (!row.href) return label;
-  return '<a href="' + escapeAttr(row.href) + '">' + label + '</a>';
-}
-
-function rowLabelMarkdown(row) {
-  const label = escapeCell(row.label);
-  if (!row.href) return label;
-  return '[' + label + '](' + row.href + ')';
-}
-
-function cellFor(row, provider) {
-  const cell = row.cells ? row.cells[provider.key] : null;
-  if (!cell) {
-    throw new Error('Row "' + (row.label || row.labelHtml) + '" has no availability for provider ' + provider.key);
-  }
-  return cell;
-}
-
-function renderMatrixTable(matrix, providers, strings) {
+function renderMatrixTable(matrix, providers, strings, table) {
   if (!matrix.rows || matrix.rows.length === 0) {
     throw new Error('Matrix ' + matrix.key + ' has no rows');
   }
@@ -215,7 +244,7 @@ function renderMatrixTable(matrix, providers, strings) {
       cells.push({html: availabilityHtml(cellFor(row, providers[providerIndex]), strings)});
     }
     return cells;
-  }));
+  }), table);
 }
 
 function renderIpTable(rows, strings) {
@@ -236,6 +265,7 @@ function renderIpTable(rows, strings) {
 //   <RegionIps provider="aws" />               -> section=region-ips provider=aws
 function renderFragment(model, request) {
   const strings = stringsFor(model.locale);
+  const table = tableFor(model.site).regionsTable;
   const providers = model.providers;
   const findProvider = function () {
     for (let index = 0; index < providers.length; index += 1) {
@@ -245,13 +275,13 @@ function renderFragment(model, request) {
   };
   switch (request.section) {
     case 'regions':
-      return renderRegionsTable(findProvider(), strings);
+      return renderRegionsTable(findProvider(), strings, table);
     case 'compute-types':
     case 'deployment-options':
     case 'features': {
       const matrix = model.matrices ? model.matrices[request.section] : null;
       if (!matrix) throw new Error('Model has no matrix ' + request.section);
-      return renderMatrixTable(matrix, providers, strings);
+      return renderMatrixTable(matrix, providers, strings, table);
     }
     case 'service-ips':
       return renderIpTable(model.serviceIps, strings);

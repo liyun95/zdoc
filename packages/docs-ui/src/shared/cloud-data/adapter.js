@@ -65,10 +65,10 @@ function normalizeHref(value, context, warnings) {
 
 function parseRegionAttributes(attributes, vocab) {
   return {
-    id: attributes.region_name,
+    id: vocab.regionId(attributes),
     continent: relationName(attributes.continent) || '',
-    // Locale-specific table name: en shows the region ID, zh the Chinese
-    // location name (the live zh tables have no ID column).
+    // Locale-specific table name: en shows the English location name in its
+    // Location column, zh the Chinese name in its 地域名称 column.
     name: vocab.regionName(attributes),
     location: attributes.location || null,
     ip: parseIps(attributes.ip),
@@ -120,7 +120,7 @@ function matrixFrom(rowsDefinition, field, key, rowHeader, providers, byoc) {
         for (let regionIndex = 0; regionIndex < provider._all.length; regionIndex += 1) {
           const region = provider._all[regionIndex];
           if (region.byocOnly && region.deployments.indexOf(byoc) !== -1) {
-            extra.push(region.location ? region.name + ' (' + region.location + ')' : region.name);
+            extra.push(region.location ? region.id + ' (' + region.location + ')' : region.id);
           }
         }
         if (extra.length > 0) cell.extra = extra.join(', ');
@@ -196,14 +196,19 @@ function buildModel(site, regionsJson, featuresJson) {
   for (let index = 0; index < vocab.order.length; index += 1) {
     const key = vocab.order[index];
     const all = byProvider[key];
-    const listed = [];
+    // The merged regions table lists every region in CMS order — BYOC-only
+    // regions are regular rows whose managed columns read "not available".
+    const regions = [];
     for (let regionIndex = 0; regionIndex < all.length; regionIndex += 1) {
       const region = all[regionIndex];
-      if (region.byocOnly) continue;
-      const tableLocation = vocab.regionLocation({location: region.location, region_name: region.id});
-      const entry = {continent: region.continent, name: region.name};
-      if (tableLocation) entry.location = tableLocation;
-      listed.push(entry);
+      regions.push({
+        continent: region.continent,
+        id: region.id,
+        name: region.name,
+        deployments: region.deployments,
+        computeTypes: region.computeTypes,
+        byocOnly: region.byocOnly,
+      });
     }
     const ipRows = [];
     for (let regionIndex = 0; regionIndex < all.length; regionIndex += 1) {
@@ -215,7 +220,7 @@ function buildModel(site, regionsJson, featuresJson) {
       key: key,
       name: vocab.providerNames[key],
       anchor: vocab.anchors[key],
-      regions: listed,
+      regions: regions,
       ipRows: ipRows,
       _all: all,
     });

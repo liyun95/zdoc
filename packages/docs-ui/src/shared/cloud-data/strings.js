@@ -10,8 +10,8 @@
 
 const STRINGS = {
   en: {
-    all: '✅ All regions',
-    none: '❌',
+    all: '✅ All listed regions',
+    none: 'Not available',
     partial: 'ℹ️ Part of the regions:',
     contact: 'ℹ️ Contact us',
     plus: function (text) { return 'Plus ' + text; },
@@ -21,7 +21,7 @@ const STRINGS = {
   },
   'zh-CN': {
     all: '✅ 全部地域',
-    none: '❌',
+    none: '暂不支持',
     partial: 'ℹ️ 部分地域：',
     contact: 'ℹ️ 请联系我们',
     plus: function (text) { return '另加 ' + text; },

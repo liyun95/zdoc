@@ -24,10 +24,22 @@ const VOCAB = {
     providerNames: {aws: 'AWS', gcp: 'Google Cloud', azure: 'Microsoft Azure'},
     order: ['aws', 'gcp', 'azure'],
     anchors: {aws: 'aws', gcp: 'google-cloud', azure: 'azure'},
-    // Table region name / location column source attributes. The en page shows
-    // the region ID plus a Location column; zh shows the Chinese name only.
-    regionName: function (attributes) { return attributes.region_name; },
-    regionLocation: function (attributes) { return attributes.location; },
+    // Merged regions table (live-page wording, en).
+    regionsTable: {
+      labelHeaders: ['Continent', 'Region', 'Location'],
+      managedGroupHeader: 'Zilliz-Managed Cloud',
+      alwaysOnHeader: 'Always-on compute (serving clusters)',
+      freeServerlessHeader: 'Free & Serverless',
+      dedicatedHeader: 'Dedicated',
+      onDemandHeader: 'On-demand compute',
+      byocHeader: 'BYOC',
+      cellYes: '✅',
+      cellNo: 'Not available',
+      headerStrong: true,
+    },
+    // Region row: the region ID plus the English location name.
+    regionId: function (attributes) { return attributes.region_name; },
+    regionName: function (attributes) { return attributes.location; },
     computeRows: [
       {cms: 'Serving cluster', label: 'Always-on compute (Serving cluster)', labelHtml: 'Always-on compute (<a href="./manage-cluster">Serving cluster</a>)'},
       {cms: 'On-demand compute', label: 'On-demand compute', href: './on-demand-cluster'},
@@ -48,8 +60,23 @@ const VOCAB = {
     providerNames: {alibaba: '阿里云', tencent: '腾讯云', 'amazon-cn': '亚马逊云科技'},
     order: ['alibaba', 'tencent', 'amazon-cn'],
     anchors: {alibaba: 'alibaba-cloud', tencent: 'tencent-cloud', 'amazon-cn': 'amazon-cn'},
+    // Merged regions table (live-page wording, zh). Header cells carry no
+    // <strong> on the Chinese page.
+    regionsTable: {
+      labelHeaders: ['大洲', '地域 ID', '地域名称'],
+      managedGroupHeader: 'Zilliz 托管云（SaaS）',
+      alwaysOnHeader: 'Serving 集群',
+      freeServerlessHeader: 'Free 和 Serverless',
+      dedicatedHeader: 'Dedicated',
+      onDemandHeader: '按需计算',
+      byocHeader: 'BYOC',
+      cellYes: '✅',
+      cellNo: '暂不支持',
+      headerStrong: false,
+    },
+    // Region row: the region ID plus the Chinese location name.
+    regionId: function (attributes) { return attributes.region_name; },
     regionName: function (attributes) { return attributes.location; },
-    regionLocation: function () { return null; },
     computeRows: [
       {cms: 'Serving 集群', label: 'Serving 集群'},
       {cms: '按需计算', label: '按需计算'},
@@ -61,8 +88,7 @@ const VOCAB = {
     ],
     byoc: 'BYOC',
     cellAll: ['✅ 全部地域'],
-    // The zh CMS writes `暂不支持` while the current live pages use `❌`; both
-    // are recognised until the wording is settled (§2, §9-5).
+    // The live zh feature table words unavailability `暂不支持`.
     cellNone: ['暂不支持', '❌'],
     contactPattern: '^ℹ️\\s*请联系我们$',
     rowHeaders: {compute: '计算类型', deploy: '部署方式', feature: '功能'},

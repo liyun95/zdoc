@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "site": "zh-CN",
-  "generatedAt": "2026-10-26T12:05:07.311Z",
+  "generatedAt": "2026-10-27T02:49:10.424Z",
   "source": "https://cms-cn.zilliz.cc/api/cloud-regions + https://cms-cn.zilliz.cc/api/cloud-features",
   "model": {
     "site": "zh-CN",
@@ -15,31 +15,102 @@
         "regions": [
           {
             "continent": "中东",
-            "name": "沙特（利雅得-合作伙伴运营）"
+            "id": "me-central-1",
+            "name": "沙特（利雅得-合作伙伴运营）",
+            "deployments": [
+              "Dedicated",
+              "BYOC"
+            ],
+            "computeTypes": [
+              "Serving 集群",
+              "按需计算"
+            ],
+            "byocOnly": false
           },
           {
             "continent": "中国内地",
-            "name": "华东1（杭州）"
+            "id": "cn-hangzhou",
+            "name": "华东1（杭州）",
+            "deployments": [
+              "Free 和 Serverless",
+              "Dedicated",
+              "BYOC"
+            ],
+            "computeTypes": [
+              "Serving 集群",
+              "按需计算"
+            ],
+            "byocOnly": false
           },
           {
             "continent": "中国内地",
-            "name": "华东2（上海）"
+            "id": "cn-shanghai",
+            "name": "华东2（上海）",
+            "deployments": [
+              "Dedicated",
+              "BYOC"
+            ],
+            "computeTypes": [
+              "Serving 集群",
+              "按需计算"
+            ],
+            "byocOnly": false
           },
           {
             "continent": "中国内地",
-            "name": "华北2（北京）"
+            "id": "cn-beijing",
+            "name": "华北2（北京）",
+            "deployments": [
+              "Dedicated",
+              "BYOC"
+            ],
+            "computeTypes": [
+              "Serving 集群",
+              "按需计算"
+            ],
+            "byocOnly": false
           },
           {
             "continent": "中国内地",
-            "name": "华南1（深圳）"
+            "id": "cn-shenzhen",
+            "name": "华南1（深圳）",
+            "deployments": [
+              "Dedicated",
+              "BYOC"
+            ],
+            "computeTypes": [
+              "Serving 集群",
+              "按需计算"
+            ],
+            "byocOnly": false
           },
           {
             "continent": "北美",
-            "name": "美国（弗吉尼亚）"
+            "id": "us-east-1",
+            "name": "美国（弗吉尼亚）",
+            "deployments": [
+              "Dedicated",
+              "BYOC"
+            ],
+            "computeTypes": [
+              "Serving 集群",
+              "按需计算"
+            ],
+            "byocOnly": false
           },
           {
             "continent": "亚太",
-            "name": "新加坡"
+            "id": "ap-southeast-1",
+            "name": "新加坡",
+            "deployments": [
+              "Dedicated",
+              "BYOC"
+            ],
+            "computeTypes": [
+              "Serving 集群",
+              "按需计算"
+            ],
+            "byocOnly": false
           }
         ],
         "ipRows": [
@@ -94,15 +165,43 @@
         "regions": [
           {
             "continent": "中国内地",
-            "name": "华北地区（北京）"
+            "id": "ap-beijing",
+            "name": "华北地区（北京）",
+            "deployments": [
+              "Dedicated",
+              "BYOC"
+            ],
+            "computeTypes": [
+              "Serving 集群",
+              "按需计算"
+            ],
+            "byocOnly": false
           },
           {
             "continent": "中国内地",
-            "name": "华东地区（上海）"
+            "id": "ap-shanghai",
+            "name": "华东地区（上海）",
+            "deployments": [
+              "Dedicated",
+              "BYOC"
+            ],
+            "computeTypes": [
+              "Serving 集群"
+            ],
+            "byocOnly": false
           },
           {
             "continent": "北美",
-            "name": "美国东部（弗吉尼亚）"
+            "id": "na-ashburn",
+            "name": "美国东部（弗吉尼亚）",
+            "deployments": [
+              "Dedicated",
+              "BYOC"
+            ],
+            "computeTypes": [
+              "Serving 集群"
+            ],
+            "byocOnly": false
           }
         ],
         "ipRows": [
@@ -136,7 +235,17 @@
         "regions": [
           {
             "continent": "中国内地",
-            "name": "中国（宁夏）"
+            "id": "cn-northwest-1",
+            "name": "中国（宁夏）",
+            "deployments": [
+              "Dedicated",
+              "BYOC"
+            ],
+            "computeTypes": [
+              "Serving 集群",
+              "按需计算"
+            ],
+            "byocOnly": false
           }
         ],
         "ipRows": [

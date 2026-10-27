@@ -3,8 +3,10 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import Admonition from '@theme/Admonition';
 import stringsModule from './strings.js';
+import renderModule from './render.js';
 
 const stringsFor = stringsModule.stringsFor;
+const renderFragmentHtml = renderModule.renderFragment;
 
 // React twin of render.js: same normalized model, same table grammar, rendered
 // as JSX instead of markdown strings. The `.md` route renders render.js output
@@ -114,43 +116,18 @@ function findProvider(model: CloudDataModel, key: string | undefined): CloudProv
 }
 
 function RegionsTable({model, provider}: {model: CloudDataModel; provider?: string}) {
-  const strings = stringsFor(model.locale);
   const found = findProvider(model, provider);
   if (found.regions.length === 0) {
     throw new Error('[cloud-data] Provider ' + found.key + ' has no regions');
   }
-  const hasLocation = found.regions.some((region) => Boolean(region.location));
-  const headers = hasLocation ? strings.regionColumns : strings.regionColumns.slice(0, 2);
-  const body: React.ReactNode[] = [];
-  let previousContinent: string | null = null;
-  found.regions.forEach((region, index) => {
-    const cells: React.ReactNode[] = [];
-    if (region.continent !== previousContinent) {
-      const groupSize = found.regions.filter((candidate) => candidate.continent === region.continent).length;
-      cells.push(
-        <td key="continent" rowSpan={groupSize > 1 ? groupSize : undefined}>
-          <p>{region.continent}</p>
-        </td>,
-      );
-      previousContinent = region.continent;
-    }
-    cells.push(<td key="name"><p>{region.name}</p></td>);
-    if (hasLocation) {
-      cells.push(<td key="location"><p>{region.location ?? ''}</p></td>);
-    }
-    body.push(<tr key={index}>{cells}</tr>);
-  });
+  // The merged regions table has no markdown content, so the component serves
+  // the exact fragment the `.md` route serves (render.js) — same bytes, same
+  // live-page styling. zd-table-scroll is the build-time table wrapper's class.
   return (
-    <table>
-      <thead>
-        <tr>
-          {headers.map((header) => (
-            <th key={header}><p><strong>{header}</strong></p></th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>{body}</tbody>
-    </table>
+    <div
+      className="zd-table-scroll"
+      dangerouslySetInnerHTML={{__html: renderFragmentHtml(model, {section: 'regions', provider})}}
+    />
   );
 }
 
@@ -160,10 +137,11 @@ function MatrixTable({model, section}: {model: CloudDataModel; section: string})
   if (!matrix) throw new Error('[cloud-data] Model has no matrix ' + section);
   if (matrix.rows.length === 0) throw new Error('[cloud-data] Matrix ' + matrix.key + ' has no rows');
   return (
-    <table>
-      <thead>
-        <tr>
-          <th><p><strong>{matrix.rowHeader}</strong></p></th>
+    <div className="zd-table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th><p><strong>{matrix.rowHeader}</strong></p></th>
           {model.providers.map((provider) => (
             <th key={provider.key}><p><strong>{provider.name}</strong></p></th>
           ))}
@@ -188,15 +166,17 @@ function MatrixTable({model, section}: {model: CloudDataModel; section: string})
             })}
           </tr>
         ))}
-      </tbody>
-    </table>
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 function IpTable({rows, strings}: {rows: CloudProvider['ipRows']; strings: ReturnType<typeof stringsFor>}) {
   if (rows.length === 0) throw new Error('[cloud-data] IP table has no rows');
   return (
-    <table>
+    <div className="zd-table-scroll">
+      <table>
       <thead>
         <tr>
           {strings.ipColumns.map((header: string) => (
@@ -222,7 +202,8 @@ function IpTable({rows, strings}: {rows: CloudProvider['ipRows']; strings: Retur
           </tr>
         ))}
       </tbody>
-    </table>
+      </table>
+    </div>
   );
 }
 
