@@ -424,6 +424,14 @@ for (const site of ['en', 'zh-CN']) {
   });
 }
 
+test('the /free-trials marketing alias redirects to the registration guide on both sites and ja', () => {
+  const en = read('deploy/en/nginx.conf');
+  assert.match(en, /location = \/free-trials \{\s*\n\s*return 301 \/docs\/register-with-zilliz-cloud;\s*\n\s*\}/);
+  assert.match(en, /location = \/ja-JP\/free-trials \{\s*\n\s*return 301 \/ja-JP\/docs\/register-with-zilliz-cloud;\s*\n\s*\}/);
+  const zh = read('deploy/zh-CN/nginx.conf');
+  assert.match(zh, /location = \/free-trials \{\s*\n\s*return 301 \/docs\/register-with-zilliz-cloud;\s*\n\s*\}/);
+});
+
 test('both site-owned images route chat directly to the private agent runtime', () => {  const entrypoint = read('deploy/runtime/40-zdoc-env.sh');
   assert.match(entrypoint, /upstream docs_agent\s*\{/);
   assert.ok(entrypoint.includes('hash \\$http_x_conversation_id consistent;'));
