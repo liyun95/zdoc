@@ -40,11 +40,11 @@ export default function DocRootLayoutMain({
   // a hash, in which case scroll the anchor in instead, retrying while its
   // heading mounts late behind the channel gate.
   useEffect(() => {
-    if (!window.location.hash) {
+    if (!hash) {
       mainRef.current?.scrollTo({top: 0});
       return undefined;
     }
-    const targetId = hashTargetId(window.location.hash);
+    const targetId = hashTargetId(hash);
     if (!targetId) return undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = Date.now() + HASH_TARGET_RETRY_WINDOW_MS;
