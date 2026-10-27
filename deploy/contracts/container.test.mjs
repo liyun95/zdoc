@@ -197,8 +197,10 @@ for (const site of ['en', 'zh-CN']) {
       assert.ok(runtime.includes(`COPY packages/docs-ui/src/shared/cloud-data/${module} /etc/nginx/njs/${module}`),
         `runtime image must ship the njs cloud-data module: ${module}`);
     }
+    assert.ok(runtime.includes(`COPY packages/docs-ui/src/shared/cloud-data/snapshots/${site}.json /etc/nginx/njs/snapshots/${site}.json`),
+      'runtime image must ship the site snapshot for the njs degradation tier');
     assert.ok(runtime.includes('RUN chmod 755 /docker-entrypoint.d/40-zdoc-env.sh'));
-    assert.equal(runtime.filter(instruction => instruction.startsWith('COPY ')).length, 9);
+    assert.equal(runtime.filter(instruction => instruction.startsWith('COPY ')).length, 10);
     assert.doesNotMatch(runtime.join('\n'), /(?:node|pnpm|npm|yarn|node_modules|package\.json|pnpm-lock|COPY \.)/i);
     assert.doesNotMatch(runtime.join('\n'), /localization-inputs\.inventory\.json/);
   });
@@ -466,10 +468,22 @@ for (const site of ['en', 'zh-CN']) {
     assert.match(nginx, /location @cloud_fragment_failed \{\s*\n\s*return 200 "";\s*\n\s*\}/);
     assert.match(nginx, /location = \/_njs\/fragment\.md \{\s*\n\s*js_content cloudData\.fragment;\s*\n\s*\}/);
 
-    // The renderer degrades to the same empty 200 when anything fails.
+    // The renderer degrades in two tiers: first to the committed snapshot
+    // shipped in the image (keeping the include non-empty, because nginx's SSI
+    // stub path has a rare double-emission race on empty include responses),
+    // then to the empty 200 that lets SSI use the baked stub block.
     const cloudJs = read('deploy/njs/cloud.js');
+    assert.match(cloudJs, /import fs from 'fs';/);
+    assert.match(cloudJs, /renderFromSnapshot\(site, section, provider\)/);
+    assert.match(cloudJs, /SNAPSHOT_DIR \+ site \+ '\.json'/);
     assert.match(cloudJs, /r\.return\(200, ''\)/);
     assert.match(cloudJs, /export default \{ ?fragment ?\};/);
+    const dockerfile = read(`deploy/${site}/Dockerfile`);
+    assert.match(
+      dockerfile,
+      new RegExp(`COPY packages/docs-ui/src/shared/cloud-data/snapshots/${site}\\.json /etc/nginx/njs/snapshots/${site}\\.json`),
+      'the image must ship the site snapshot for the njs degradation tier',
+    );
   });
 }
 

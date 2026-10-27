@@ -8,10 +8,12 @@
 //   pnpm test:cloud-data-nginx
 //
 // Scenarios (spec §4.6): live path renders the CMS JSON as a live-page-shaped
-// table; upstream 404 and upstream 503-with-JSON-body both fall back to the
-// baked snapshot stub with the page still 200 text/markdown; a JSON body far
-// beyond the stock subrequest buffer renders completely under the configured
-// 1m buffer.
+// table; upstream 404 and upstream 503-with-JSON-body both degrade to the
+// snapshot renderer inside njs (the image's committed snapshot, substituted
+// here with a synthetic fixture) so the include still returns content with
+// the page 200 text/markdown — the baked SSI stub block only answers when the
+// image's snapshot tier is itself broken; a JSON body far beyond the stock
+// subrequest buffer renders completely under the configured 1m buffer.
 
 import assert from 'node:assert/strict';
 import {execFileSync, spawnSync} from 'node:child_process';
@@ -130,6 +132,30 @@ async function main() {
 
   const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-data-nginx-'));
   const stubModel = buildModel('en', JSON.parse(SNAPSHOT_REGIONS_JSON), JSON.parse(FEATURES_JSON));
+  // The mounted snapshot carries one feature row the baked stub block lacks,
+  // so the assertions can tell the njs snapshot tier (correct degradation)
+  // apart from the SSI stub block (the racy last-resort path).
+  const probeFeatures = JSON.parse(FEATURES_JSON);
+  probeFeatures.data.push({attributes: {
+    name: 'SNAPSHOT-TIER-PROBE', links: null, updatedAt: '2026-10-26T00:00:00Z',
+    region_availability: [
+      {cloud_provider: {data: {attributes: {name: 'AWS'}}}, supported_regions: '✅ All listed regions'},
+      {cloud_provider: {data: {attributes: {name: 'Google Cloud'}}}, supported_regions: 'Not available'},
+      {cloud_provider: {data: {attributes: {name: 'Microsoft Azure'}}}, supported_regions: 'Not available'},
+    ],
+  }});
+  const snapshotModel = buildModel('en', JSON.parse(SNAPSHOT_REGIONS_JSON), probeFeatures);
+  // The image ships the committed snapshot for the njs degradation tier; the
+  // harness mounts this synthetic one in its place so the fallback content
+  // stays distinguishable from the live upstream payload.
+  fs.mkdirSync(path.join(workdir, 'snapshots'), {recursive: true});
+  fs.writeFileSync(path.join(workdir, 'snapshots', 'en.json'), JSON.stringify({
+    schemaVersion: 1,
+    site: 'en',
+    generatedAt: '2026-10-26T00:00:00Z',
+    source: 'cloud-data-nginx harness fixture',
+    model: snapshotModel,
+  }, null, 2) + '\n');
   const page = resolveCloudDataMarkers(
     '## Supported regions\n\n<CloudRegions provider="aws" />\n\n## Features\n\n<CloudFeatures matrix="features" />\n',
     stubModel,
@@ -196,6 +222,7 @@ server {
       '-v', `${path.join(workdir, 'chat-agent-runtime.conf')}:/etc/nginx/chat-agent-runtime.conf:ro`,
       '-v', `${path.join(workdir, 'release-channel-gate')}:/etc/nginx/release-channel-gate:ro`,
       '-v', `${workdir}/html:/usr/share/nginx/html:ro`,
+      '-v', `${path.join(workdir, 'snapshots')}:/etc/nginx/njs/snapshots:ro`,
       ...njsMounts,
       'nginx:1.28-alpine',
     ]);
@@ -265,6 +292,7 @@ server {
       // single-render invariant so the gate catches it if it ever fires.
       assert.equal(response.body.split('us-snap-1').length - 1, 1, 'the stub region row must not be duplicated on the fallback path');
       assert.equal(response.body.split('| Feature |').length - 1, 1, 'the stub features table must not be duplicated on the fallback path');
+      assert.match(response.body, /SNAPSHOT-TIER-PROBE/, 'the fallback is served by the njs snapshot tier, not the SSI stub block');
       assert.doesNotMatch(response.body, /eu-west-9/, 'live-only data must be absent in stub mode');
       assert.doesNotMatch(response.body, /an error occurred while processing/, 'no SSI error text may leak');
     } finally {
@@ -282,6 +310,7 @@ server {
     assert.match(response.body, /<td><p>us-snap-1<\/p><\/td>/, 'stub table is served');
     assert.equal(response.body.split('us-snap-1').length - 1, 1, 'the stub region row must not be duplicated on the fallback path');
     assert.equal(response.body.split('| Feature |').length - 1, 1, 'the stub features table must not be duplicated on the fallback path');
+    assert.match(response.body, /SNAPSHOT-TIER-PROBE/, 'the fallback is served by the njs snapshot tier, not the SSI stub block');
   });
 
   scenario('a 64 KiB CMS JSON renders completely under the 1m subrequest buffer', async () => {

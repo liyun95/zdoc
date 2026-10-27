@@ -17,15 +17,30 @@
 // errors, and the stub block preceding the include.
 
 // njs only supports default imports; the core modules ship matching defaults.
+import fs from 'fs';
+
 import adapter from 'adapter.js';
 import render from 'render.js';
 
+const SNAPSHOT_DIR = '/etc/nginx/njs/snapshots/';
+
+// Degradation tier 1: render the committed snapshot that ships in the image.
+// The include must keep returning real content — an empty 200 would push nginx
+// into the SSI stub path, which has a rare race where the stub block is
+// emitted twice when the empty response completes during the final output
+// flush (observed on CI with the single-render harness assertion).
+function renderFromSnapshot(site, section, provider) {
+  const snapshot = JSON.parse(fs.readFileSync(SNAPSHOT_DIR + site + '.json', 'utf8'));
+  if (snapshot.site !== site) throw new Error('snapshot site mismatch: ' + snapshot.site);
+  return render.renderFragment(snapshot.model, {section: section, provider: provider});
+}
+
 async function fragment(r) {
+  const site = r.args.site === 'zh-CN' ? 'zh-CN' : 'en';
+  const section = r.args.section;
+  const provider = r.args.provider || undefined;
   try {
-    const site = r.args.site === 'zh-CN' ? 'zh-CN' : 'en';
-    const section = r.args.section;
     if (!section) throw new Error('missing section argument');
-    const provider = r.args.provider || undefined;
 
     const regionsResponse = await r.subrequest('/api/cloud-json/regions');
     if (regionsResponse.status !== 200) throw new Error('regions upstream ' + regionsResponse.status);
@@ -42,9 +57,17 @@ async function fragment(r) {
 
     r.headersOut['Content-Type'] = 'text/markdown; charset=utf-8';
     r.return(200, markdown);
-  } catch (error) {
-    r.error('cloud-data fragment failed: ' + error);
-    r.return(200, '');
+  } catch (liveError) {
+    try {
+      const fallback = renderFromSnapshot(site, section, provider);
+      r.headersOut['Content-Type'] = 'text/markdown; charset=utf-8';
+      r.return(200, fallback);
+    } catch (fallbackError) {
+      // Degradation tier 2 (snapshot missing/corrupt): empty 200 so SSI uses
+      // the baked stub block. Reachable only when the image itself is broken.
+      r.error('cloud-data fragment failed: ' + liveError + '; snapshot fallback failed: ' + fallbackError);
+      r.return(200, '');
+    }
   }
 }
 
