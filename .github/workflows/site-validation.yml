@@ -1,9 +1,12 @@
 name: site validation
 
 on:
+  # `dev` is deliberately absent: the only pull requests against dev are
+  # GITHUB_TOKEN sync-bot PRs, whose pull_request runs GitHub holds for manual
+  # approval and discards as failed at merge. The sync workflow validates its
+  # exact candidate via workflow_dispatch instead.
   pull_request:
     branches:
-      - dev
       - master
   push:
     branches:
@@ -319,6 +322,23 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:rest-publication-contract
 
+  cloud_data_nginx:
+    name: Verify cloud-data nginx SSI chain live
+    needs: classify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.classify.outputs.source_sha }}
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Exercise the real nginx chain with Docker
+        run: node --test deploy/contracts/cloud-data-nginx.test.mjs
+
   site_validation:
     name: Site validation gate
     needs:
@@ -333,6 +353,7 @@ jobs:
       - tools_coverage
       - retirement
       - rest_publication_contract
+      - cloud_data_nginx
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -348,6 +369,7 @@ jobs:
       TOOLS_RESULT: ${{ needs.tools_coverage.result }}
       RETIREMENT_RESULT: ${{ needs.retirement.result }}
       REST_PUBLICATION_RESULT: ${{ needs.rest_publication_contract.result }}
+      CLOUD_DATA_NGINX_RESULT: ${{ needs.cloud_data_nginx.result }}
     steps:
       - name: Require every selected validation to pass
         run: |
@@ -356,6 +378,7 @@ jobs:
           test "$WORKFLOW_LINT_RESULT" = success
           test "$RETIREMENT_RESULT" = success
           test "$REST_PUBLICATION_RESULT" = success
+          test "$CLOUD_DATA_NGINX_RESULT" = success
           for result in "$OWNERSHIP_RESULT" "$PRESERVED_RESULT" "$EN_RESULT" "$ZH_CN_RESULT" "$REFERENCE_RESULT" "$TOOLS_RESULT"; do
             test "$result" = success || test "$result" = skipped
           done
