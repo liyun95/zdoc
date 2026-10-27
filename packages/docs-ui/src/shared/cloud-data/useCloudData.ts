@@ -47,7 +47,14 @@ function getLiveModel(site: string, cmsBaseUrl: string): Promise<CloudDataModel 
   });
   liveModelPromises.set(key, promise);
   // Drop failed attempts so a later mount can retry; successful models stay cached.
-  promise.catch(() => liveModelPromises.delete(key));
+  // A non-ok HTTP status resolves to null instead of rejecting, so the null
+  // result must be evicted too or the page would never retry until a reload.
+  promise.then(
+    (model) => {
+      if (!model) liveModelPromises.delete(key);
+    },
+    () => liveModelPromises.delete(key),
+  );
   return promise;
 }
 

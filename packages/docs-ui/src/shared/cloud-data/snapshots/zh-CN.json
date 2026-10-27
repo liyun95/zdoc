@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "site": "zh-CN",
-  "generatedAt": "2026-10-27T03:31:51.257Z",
+  "generatedAt": "2026-10-27T05:23:41.280Z",
   "source": "https://cms-cn.zilliz.cc/api/cloud-regions + https://cms-cn.zilliz.cc/api/cloud-features",
   "model": {
     "site": "zh-CN",
     "locale": "zh-CN",
-    "updatedAt": "2026-10-26T11:03:24.251Z",
+    "updatedAt": "2026-10-27T03:41:50.162Z",
     "providers": [
       {
         "key": "alibaba",
@@ -373,7 +373,8 @@
               "amazon-cn": {
                 "kind": "all"
               }
-            }
+            },
+            "href": "/docs/managed-volume"
           },
           {
             "label": "External Volume",
@@ -387,7 +388,8 @@
               "amazon-cn": {
                 "kind": "all"
               }
-            }
+            },
+            "href": "/docs/external-volume"
           },
           {
             "label": "External Collection",
@@ -401,7 +403,8 @@
               "amazon-cn": {
                 "kind": "none"
               }
-            }
+            },
+            "href": "/docs/create-external-collection"
           },
           {
             "label": "Global Cluster（全球集群）",
@@ -415,7 +418,8 @@
               "amazon-cn": {
                 "kind": "contact"
               }
-            }
+            },
+            "href": "/docs/global-cluster-explained"
           },
           {
             "label": "Cross-region backup（跨地域备份）",
@@ -429,22 +433,8 @@
               "amazon-cn": {
                 "kind": "all"
               }
-            }
-          },
-          {
-            "label": "托管模型",
-            "cells": {
-              "alibaba": {
-                "kind": "text",
-                "text": "ℹ️ 部分地域：\n\n- 华北2（北京）"
-              },
-              "tencent": {
-                "kind": "none"
-              },
-              "amazon-cn": {
-                "kind": "none"
-              }
-            }
+            },
+            "href": "/docs/backup-to-other-regions"
           },
           {
             "label": "导出备份文件",
@@ -458,7 +448,8 @@
               "amazon-cn": {
                 "kind": "all"
               }
-            }
+            },
+            "href": "/docs/export-backup-files"
           },
           {
             "label": "Spark 批量任务",
@@ -475,7 +466,8 @@
                 "kind": "text",
                 "text": "✅ 全部地域（[联系我们开通](http://support.zilliz.com.cn)）"
               }
-            }
+            },
+            "href": "/docs/spark-batch-jobs"
           }
         ]
       }

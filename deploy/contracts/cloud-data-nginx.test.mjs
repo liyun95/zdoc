@@ -1,9 +1,9 @@
-// Live nginx verification for the cloud-data SSI chain (skipped automatically
-// when Docker is unavailable; the PR gate asserts the static contract in
-// container.test.mjs — this harness proves the real nginx:1.28-alpine
-// behavior with the real deploy/runtime/nginx.main.conf, the real
-// deploy/en/nginx.conf (CMS origin substituted to a stub) and the real
-// deploy/njs renderer modules).
+// Live nginx verification for the cloud-data SSI chain, wired into the
+// site-validation workflow's cloud_data_nginx job (it skips itself when
+// Docker is unavailable; the static contract lives in container.test.mjs).
+// This harness proves the real nginx:1.28-alpine behavior with the real
+// deploy/runtime/nginx.main.conf, the real deploy/en/nginx.conf (CMS origin
+// substituted to a stub) and the real deploy/njs renderer modules.
 //
 //   pnpm test:cloud-data-nginx
 //
@@ -247,7 +247,7 @@ server {
     assert.match(response.body, /rowspan="2"/, 'continent grouping keeps the live rowspan grammar');
     assert.equal(response.body.split('us-west-2').length - 1, 1, 'the stub table must not be duplicated below the live fragment');
     assert.doesNotMatch(response.body, /us-snap-1/, 'the snapshot stub stays suppressed on the live path');
-    assert.doesNotMatch(response.body, /ap-east-1/, 'BYOC-only regions stay out of the region table');
+    assert.match(response.body, /<td><p>ap-east-1<\/p><\/td>/, 'BYOC-only regions are ordinary rows in the merged region table');
   });
 
   scenario('upstream 404 falls back to the snapshot stub, page stays 200 markdown', async () => {
@@ -259,7 +259,12 @@ server {
       const response = waitFor(`${port}|/docs/page.md`, (candidate) =>
         candidate.head.includes('200') && candidate.body.includes('us-snap-1'));
       assert.match(response.head, /content-type: text\/markdown/i);
-      assert.match(response.body, /\| North America \| us-snap-1 \|/, 'stub table is served');
+      assert.match(response.body, /<td><p>us-snap-1<\/p><\/td>/, 'stub table is served');
+      // nginx SSI has a rare race where a stub block is emitted twice when the
+      // empty-200 include completes during the final output flush; pin the
+      // single-render invariant so the gate catches it if it ever fires.
+      assert.equal(response.body.split('us-snap-1').length - 1, 1, 'the stub region row must not be duplicated on the fallback path');
+      assert.equal(response.body.split('| Feature |').length - 1, 1, 'the stub features table must not be duplicated on the fallback path');
       assert.doesNotMatch(response.body, /eu-west-9/, 'live-only data must be absent in stub mode');
       assert.doesNotMatch(response.body, /an error occurred while processing/, 'no SSI error text may leak');
     } finally {
@@ -274,7 +279,9 @@ server {
     assert.match(response.head, /HTTP\/1\.1 200/);
     assert.doesNotMatch(response.body, /boom/, 'upstream error body must not be spliced into markdown');
     assert.doesNotMatch(response.body, /an error occurred while processing/, 'no SSI error text may leak');
-    assert.match(response.body, /\| North America \| us-snap-1 \|/, 'stub table is served');
+    assert.match(response.body, /<td><p>us-snap-1<\/p><\/td>/, 'stub table is served');
+    assert.equal(response.body.split('us-snap-1').length - 1, 1, 'the stub region row must not be duplicated on the fallback path');
+    assert.equal(response.body.split('| Feature |').length - 1, 1, 'the stub features table must not be duplicated on the fallback path');
   });
 
   scenario('a 64 KiB CMS JSON renders completely under the 1m subrequest buffer', async () => {

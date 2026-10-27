@@ -79,7 +79,9 @@ async function fetchJsonFiles(site, fromBase) {
 
 function describeModel(model) {
   // Compact, human-diffable identity of a model: one line per table cell.
-  const lines = [`updatedAt=${model.updatedAt}`];
+  // `updatedAt` is CMS write metadata, not content — any Strapi touch bumps
+  // it — so it is surfaced in the command messages but never compared here.
+  const lines = [];
   for (const provider of model.providers) {
     lines.push(`regions/${provider.key}=${provider.regions.map((region) => region.name).join(',')}`);
     lines.push(`region-ips/${provider.key}=${provider.ipRows.map((row) => `${row.region}:${row.cidrs.length}`).join(',')}`);

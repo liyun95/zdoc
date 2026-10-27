@@ -183,8 +183,11 @@ function availabilityText(cell, strings) {
 }
 
 function availabilityHtml(cell, strings) {
+  // The note carries markdown (renderReact renders it through MarkdownCell),
+  // so it gets the same cell-grade escaping as free-text cells: markdown
+  // syntax survives, raw `<`/`>`/`{`/`}` cannot leak into the MDX artifact.
   const note = cell.note
-    ? ' <Admonition type="info" icon="📘" title="' + escapeAttr(strings.noteTitle) + '"> ' + cell.note + ' </Admonition>'
+    ? ' <Admonition type="info" icon="📘" title="' + escapeAttr(strings.noteTitle) + '"> ' + escapeCell(cell.note) + ' </Admonition>'
     : '';
   switch (cell.kind) {
     case 'all':
