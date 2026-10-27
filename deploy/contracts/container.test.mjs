@@ -369,6 +369,55 @@ test('English nginx redirect targets resolve to published routes, redirect chain
   ].join('\n'));
 });
 
+test('Chinese nginx redirect targets resolve to published routes, redirect chains, or the reviewed allowlist', () => {
+  // Same contract as the English lint, against the Chinese production
+  // sitemap. The Chinese configuration carries legacy targets that predate
+  // this lint; they are allowlisted in the snapshot with their reason and
+  // must be removed from the allowlist as soon as the page reappears on
+  // production. Targets are percent-decoded before comparison because the
+  // sitemap percent-encodes characters such as parentheses.
+  const snapshot = JSON.parse(read('deploy/contracts/zh-CN-redirect-target-routes.json'));
+  assert.equal(snapshot.schemaVersion, 1);
+  assert.match(snapshot.source, /^https:\/\/docs\.zilliz\.com\.cn\/sitemap\.xml$/u);
+  assert.match(snapshot.capturedAt, /^\d{4}-\d{2}-\d{2}$/u);
+  assert.ok(snapshot.refresh.includes('docs.zilliz.com.cn/sitemap.xml'), 'snapshot must document its refresh command');
+  const routes = new Set(snapshot.routes);
+  assert.ok(snapshot.routes.length > 1000, 'route snapshot looks truncated');
+  for (const route of snapshot.routes) assert.match(route, /^\//u, `route snapshot entry is not an absolute path: ${route}`);
+  const allowlist = new Map(Object.entries(snapshot.allowlist ?? {}));
+  for (const [allowed, reason] of allowlist) {
+    assert.match(allowed, /^\//u, `allowlist entry is not an absolute path: ${allowed}`);
+    assert.ok(reason.length > 0, `allowlist entry ${allowed} must document why it cannot appear in the sitemap`);
+    assert.ok(!routes.has(allowed), `allowlist entry ${allowed} already exists in the route snapshot; remove the allowlist entry`);
+  }
+
+  const decode = (value) => {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  };
+  const nginx = read('deploy/zh-CN/nginx.conf');
+  const exactSources = new Set([...nginx.matchAll(/location = ([^ {]+) \{/gu)].map(match => decode(match[1])));
+  const unresolved = [];
+  let checked = 0;
+  for (const match of nginx.matchAll(/return 301\s+([^;\s]+);/gu)) {
+    let target = match[1].split('#', 1)[0];
+    if (/^https?:\/\//u.test(target) || target.includes('$')) continue;
+    target = decode(target);
+    checked += 1;
+    if (routes.has(target) || exactSources.has(target) || allowlist.has(target)) continue;
+    unresolved.push(target);
+  }
+  assert.ok(checked > 700, `only ${checked} redirect targets were parsed; the location/return extraction is broken`);
+  assert.deepEqual(unresolved, [], [
+    'dead nginx redirect targets (fix the redirect, refresh the snapshot after a release,',
+    `or verify the path returns 200 on production before allowlisting): ${[...new Set(unresolved)].sort().join(', ')}`,
+    `snapshot refresh: ${snapshot.refresh}`,
+  ].join('\n'));
+});
+
 const CLOUD_DATA_CMS_HOSTS = {en: 'cms.zilliz.cc', 'zh-CN': 'cms-cn.zilliz.cc'};
 
 for (const site of ['en', 'zh-CN']) {
@@ -424,12 +473,12 @@ for (const site of ['en', 'zh-CN']) {
   });
 }
 
-test('the /free-trials marketing alias redirects to the registration guide on both sites and ja', () => {
+test('the retired /docs/free-trials page redirects to the registration guide on both sites and ja', () => {
   const en = read('deploy/en/nginx.conf');
-  assert.match(en, /location = \/free-trials \{\s*\n\s*return 301 \/docs\/register-with-zilliz-cloud;\s*\n\s*\}/);
-  assert.match(en, /location = \/ja-JP\/free-trials \{\s*\n\s*return 301 \/ja-JP\/docs\/register-with-zilliz-cloud;\s*\n\s*\}/);
+  assert.match(en, /location = \/docs\/free-trials \{ return 301 \/docs\/register-with-zilliz-cloud; \}/);
+  assert.match(en, /location = \/ja-JP\/docs\/free-trials \{ return 301 \/ja-JP\/docs\/register-with-zilliz-cloud; \}/);
   const zh = read('deploy/zh-CN/nginx.conf');
-  assert.match(zh, /location = \/free-trials \{\s*\n\s*return 301 \/docs\/register-with-zilliz-cloud;\s*\n\s*\}/);
+  assert.match(zh, /location = \/docs\/free-trials \{ return 301 \/docs\/register-with-zilliz-cloud; \}/);
 });
 
 test('both site-owned images route chat directly to the private agent runtime', () => {  const entrypoint = read('deploy/runtime/40-zdoc-env.sh');

@@ -1110,6 +1110,7 @@
         "deploy/zh-CN/nginx.conf",
         "deploy/contracts/container.test.mjs",
         "deploy/contracts/en-redirect-target-routes.json",
+        "deploy/contracts/zh-CN-redirect-target-routes.json",
         "scripts/chat-agent-nginx.test.js",
         "scripts/architecture/verify-retired-layout.test.mjs",
         "apps/docs/plugins/release-channel-routes*",
