@@ -1586,6 +1586,202 @@ async function testDriveIncrementalEnforcesMaterializedRenderBoundary() {
   }
 }
 
+async function testDriveBaseFolderRoutesReachTheRealWriter() {
+  const Scraper = require('./larkDocScraper');
+  const Writer = require('./larkDriveWriter');
+  const TokenFetcher = require('./larkTokenFetcher');
+  const originalFetchToken = TokenFetcher.prototype.fetchToken;
+  const originalToken = TokenFetcher.prototype.token;
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-drive-base-writer-'));
+  TokenFetcher.prototype.fetchToken = async () => {};
+  TokenFetcher.prototype.token = async () => 'fixture-token';
+  try {
+    for (const manual of ['go', 'python', 'java', 'node', 'cli', 'cpp']) {
+      const sourceDir = path.join(tempDir, manual, 'sources');
+      const outputDir = path.join(tempDir, manual, 'output');
+      fs.mkdirSync(sourceDir, { recursive: true });
+      fs.mkdirSync(outputDir, { recursive: true });
+      const records = [
+        { record_id: 'root-record', fields: { Docs: { text: 'Root', link: 'https://zilliverse.feishu.cn/drive/folder/root' }, Slug: 'root', Progress: 'Published', Targets: ['Zilliz'] } },
+        { record_id: 'folder-record', fields: { Docs: { text: 'Collections', link: 'https://zilliverse.feishu.cn/drive/folder/collection-folder' }, Slug: 'collections', Parent: [{ record_ids: ['root-record'] }], Progress: 'Published', Targets: ['Zilliz'] } },
+        { record_id: 'doc-record', fields: { Docs: { text: 'Create', link: 'https://zilliverse.feishu.cn/docx/create-doc' }, Slug: 'create', Parent: [{ record_ids: ['folder-record'] }], Progress: 'Published', Targets: ['Zilliz'] } },
+      ];
+      const scraper = new Scraper('root', 'base:table', 'drive', sourceDir);
+      scraper.__base_tables = async () => [{ table_id: 'table', name: 'Reference' }];
+      scraper.__base_records = async () => structuredClone(records);
+      scraper.docs = { token: 'root', name: 'Root', type: 'folder' };
+      scraper.__fetchFeishuJson = async url => {
+        const folder = new URLSearchParams(url.split('?')[1]).get('folder_token');
+        assert.ok(['root', 'collection-folder'].includes(folder), url);
+        return { code: 0, data: { files: folder === 'root'
+          ? [{ token: 'collection-folder', name: 'Collections', type: 'folder', parent_token: 'root' }]
+          : [{ token: 'create-doc', name: 'Create', type: 'docx', parent_token: 'collection-folder' }] } };
+      };
+      scraper.__fetch_blocks = async node => {
+        node.blocks = { items: [
+          { block_id: 'page', block_type: 1, children: ['text'], page: { elements: [{ text_run: { content: 'Create', text_element_style: {} } }] } },
+          { block_id: 'text', block_type: 2, parent_id: 'page', text: { elements: [{ text_run: { content: 'Reference fixture body.', text_element_style: {} } }] } },
+        ] };
+      };
+      await scraper.__base();
+      await scraper.__fetch_drive_children('root', null, true);
+      const writer = new Writer('root', 'base:table', `${manual}Sidebar`, sourceDir, path.join(tempDir, 'images'), 'zilliz', true, false, manual);
+      writer.records = records;
+      try {
+        // Keep real traversal/path construction: mocked slugs or a mocked writer missed WP9's regression.
+        await writer.write_docs(outputDir, 'root');
+      } finally {
+        writer.destroy();
+      }
+      assert.equal(scraper.slugs['collection-folder'].parent_token, 'root');
+      assert.equal(scraper.slugs['create-doc'].parent_token, 'collection-folder');
+      assert.match(fs.readFileSync(path.join(outputDir, 'collections', 'create.md'), 'utf8'), /Reference fixture body\./);
+    }
+  } finally {
+    TokenFetcher.prototype.fetchToken = originalFetchToken;
+    TokenFetcher.prototype.token = originalToken;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function testGuidesSourceReplacementOutsideWikiFailsClosed() {
+  const Scraper = require('./larkDocScraper');
+  const TokenFetcher = require('./larkTokenFetcher');
+  const { createSourceSnapshot } = require('./sourceSnapshot');
+  const { assertSourceCompleteness } = require('./sourceCompleteness');
+  const originalFetchToken = TokenFetcher.prototype.fetchToken;
+  const originalToken = TokenFetcher.prototype.token;
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-guides-source-replacement-'));
+  TokenFetcher.prototype.fetchToken = async () => {};
+  TokenFetcher.prototype.token = async () => 'fixture-token';
+  try {
+    // A missing wiki URL must not be reinterpreted as a direct docx URL, and a
+    // cached copy of the old page must not satisfy the replacement source.
+    fs.writeFileSync(path.join(tempDir, 'previous-wiki-token.json'), JSON.stringify({
+      node_token: 'previous-wiki-token', obj_token: 'previous-docx-token', obj_type: 'docx',
+      title: 'Register', blocks: { items: [{ block_type: 1 }, { block_type: 2 }] },
+    }));
+    const record = { record_id: 'register-record', base_table_id: 'table', base_table_name: 'Get Started', fields: {
+      Docs: { text: 'Create an account', link: 'https://zilliverse.feishu.cn/wiki/standalone-docx-token?from=from_copylink' },
+      Slug: 'register-with-zilliz-cloud', Progress: 'Draft', 'Placement Type': 'canonical', Targets: ['Zilliz.SaaS'],
+    } };
+    const scraper = new Scraper('root', 'base:*', 'wiki', tempDir);
+    scraper.__base_tables = async () => [{ table_id: 'table', name: 'Get Started' }];
+    scraper.__base_records = async () => [record];
+    const requests = [];
+    scraper.__fetchFeishuJson = async url => {
+      assert.match(url, /\/open-apis\/wiki\/v2\/spaces\/get_node\?/);
+      const params = new URLSearchParams(url.split('?')[1]);
+      assert.equal(params.get('token'), 'standalone-docx-token');
+      requests.push(params);
+      return { code: 131005, msg: 'not found: document is not in wiki' };
+    };
+    await scraper.__base();
+    const metadata = await scraper.fetch_wiki_node_metadata(scraper.records);
+    assert.equal(requests[0].get('obj_type'), null);
+    assert.match(metadata.get('standalone-docx-token').fetch_error, /131005.*document is not in wiki/);
+    await scraper.fetch_source_tokens(['standalone-docx-token']);
+    const snapshot = createSourceSnapshot({
+      manualName: 'guides', buildEnv: 'uat', docSourceDir: tempDir,
+      records: scraper.records, nodeMetadataByToken: metadata,
+    });
+    assert.equal(snapshot.records[0].doc_token, 'standalone-docx-token');
+    assert.equal(snapshot.records[0].source_file, 'standalone-docx-token.json');
+    assert.throws(() => assertSourceCompleteness({
+      manual: 'guides', buildEnv: 'uat', rootToken: 'root', sourceDir: tempDir, snapshot,
+    }), /Lark source graph is incomplete: 0\/1 canonical sources valid; sample: standalone-docx-token\.json/);
+  } finally {
+    TokenFetcher.prototype.fetchToken = originalFetchToken;
+    TokenFetcher.prototype.token = originalToken;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function testGuidesDirectDocxSourceReplacement() {
+  const Scraper = require('./larkDocScraper');
+  const TokenFetcher = require('./larkTokenFetcher');
+  const { createSourceSnapshot } = require('./sourceSnapshot');
+  const { assertSourceCompleteness } = require('./sourceCompleteness');
+  const originalFetchToken = TokenFetcher.prototype.fetchToken;
+  const originalToken = TokenFetcher.prototype.token;
+  TokenFetcher.prototype.fetchToken = async () => {};
+  TokenFetcher.prototype.token = async () => 'fixture-token';
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-guides-direct-docx-'));
+  try {
+    for (const mode of ['incremental', 'base-hydration', 'empty-blocks']) {
+      const sourceDir = path.join(tempDir, mode);
+      fs.mkdirSync(sourceDir);
+      const record = { record_id: 'register-record', base_table_id: 'table', base_table_name: 'Get Started', fields: {
+        Docs: { text: 'Create an account', link: 'https://zilliverse.feishu.cn/docx/standalone-docx-token?from=from_copylink' },
+        Slug: 'register-with-zilliz-cloud', Progress: 'Draft', 'Placement Type': 'canonical', Targets: ['Zilliz.SaaS'],
+      } };
+      const scraper = new Scraper('root', 'base:*', 'wiki', sourceDir);
+      scraper.__base_tables = async () => [{ table_id: 'table', name: 'Get Started' }];
+      scraper.__base_records = async () => [record];
+      const calls = [];
+      scraper.__fetchFeishuJson = async url => {
+        calls.push(url);
+        if (url.includes('/wiki/v2/spaces/get_node')) {
+          const params = new URLSearchParams(url.split('?')[1]);
+          assert.equal(params.get('token'), 'standalone-docx-token');
+          assert.equal(params.get('obj_type'), 'docx');
+          return { code: 131005, msg: 'not found: document is not in wiki' };
+        }
+        assert.match(url, /\/docx\/v1\/documents\/standalone-docx-token/);
+        if (url.includes('/blocks?')) {
+          assert.equal(new URLSearchParams(url.split('?')[1]).get('document_revision_id'), '7');
+          return { code: 0, data: { items: mode === 'empty-blocks' ? [] : [
+            { block_id: 'page', block_type: 1, page: { elements: [] } },
+            { block_id: 'body', block_type: 2, text: { elements: [{ text_run: { content: 'New account instructions', text_element_style: {} } }] } },
+          ], has_more: false } };
+        }
+        return { code: 0, data: { document: { document_id: 'standalone-docx-token', revision_id: 7, title: 'Create an account' } } };
+      };
+      await scraper.__base();
+      const metadata = await scraper.fetch_wiki_node_metadata(scraper.records);
+      assert.equal(metadata.get('standalone-docx-token').obj_token, 'standalone-docx-token');
+      assert.equal(metadata.get('standalone-docx-token').revision_id, '7');
+      if (mode === 'empty-blocks') {
+        await assert.rejects(() => scraper.fetch_source_tokens(['standalone-docx-token']), /docx source file\(s\) are missing blocks/);
+        continue;
+      }
+      if (mode === 'incremental') await scraper.fetch_source_tokens(['standalone-docx-token']);
+      else await scraper.__apply_base_navigation({ hydrateLinkedDocs: true });
+      const snapshot = createSourceSnapshot({ manualName: 'guides', buildEnv: 'uat', docSourceDir: sourceDir, records: scraper.records, nodeMetadataByToken: metadata });
+      const result = assertSourceCompleteness({ manual: 'guides', buildEnv: 'uat', rootToken: 'root', sourceDir, snapshot });
+      assert.equal(result.validCanonicalSources, 1);
+      assert.equal(snapshot.records[0].doc_link, record.fields.Docs.link);
+      assert.equal(snapshot.records[0].revision_id, '7');
+      assert.ok(calls.some(url => url.includes('/blocks?')));
+      assert.equal(calls.some(url => url.includes('/nodes?')), false, 'Standalone documents have no wiki children');
+    }
+  } finally {
+    TokenFetcher.prototype.fetchToken = originalFetchToken;
+    TokenFetcher.prototype.token = originalToken;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function testDirectDocxFallbackDoesNotMaskSourceFailures() {
+  const Scraper = require('./larkDocScraper');
+  const scraper = new Scraper('root', 'base:*', 'wiki', '/unused');
+  scraper.token = 'fixture-token';
+  scraper.wikiNodeLimiter = { schedule: callback => callback() };
+  for (const code of [131006, 99991672, 99991400]) {
+    scraper.__fetchFeishuJson = async url => {
+      assert.match(url, /\/wiki\/v2\/spaces\/get_node\?/, 'Other wiki errors must not call the docx fallback');
+      return { code, msg: 'API failure' };
+    };
+    await assert.rejects(() => scraper.fetch_wiki_node('direct-docx', 'docx'), /\[wiki-node\] Failed to resolve/);
+  }
+  for (const document of [null, { document_id: 'different-docx', revision_id: 7 }, { document_id: 'direct-docx', revision_id: 0 }]) {
+    scraper.__fetchFeishuJson = async url => url.includes('/wiki/')
+      ? { code: 131005, msg: 'not found: document is not in wiki' }
+      : { code: 0, data: { document } };
+    await assert.rejects(() => scraper.fetch_wiki_node('direct-docx', 'docx'), /\[docx-metadata\] Failed to resolve current revision/);
+  }
+}
+
 async function run() {
   await testFeishuJsonFetchesAreThrottled();
   await testWikiRootFetchRetriesPrematureClose();
@@ -1616,6 +1812,10 @@ async function run() {
   await testDriveIncrementalRefreshesSourcesBeforePlanningRenderDelta();
   await testDriveFallbackIncrementalRebuildsCompleteOutput();
   await testDriveIncrementalEnforcesMaterializedRenderBoundary();
+  await testDriveBaseFolderRoutesReachTheRealWriter();
+  await testGuidesSourceReplacementOutsideWikiFailsClosed();
+  await testGuidesDirectDocxSourceReplacement();
+  await testDirectDocxFallbackDoesNotMaskSourceFailures();
   console.log('lark-docs scraper tests passed');
 }
 
