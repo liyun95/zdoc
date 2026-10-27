@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "site": "zh-CN",
-  "generatedAt": "2026-10-27T02:49:10.424Z",
+  "generatedAt": "2026-10-27T03:31:51.257Z",
   "source": "https://cms-cn.zilliz.cc/api/cloud-regions + https://cms-cn.zilliz.cc/api/cloud-features",
   "model": {
     "site": "zh-CN",
@@ -13,20 +13,6 @@
         "name": "阿里云",
         "anchor": "alibaba-cloud",
         "regions": [
-          {
-            "continent": "中东",
-            "id": "me-central-1",
-            "name": "沙特（利雅得-合作伙伴运营）",
-            "deployments": [
-              "Dedicated",
-              "BYOC"
-            ],
-            "computeTypes": [
-              "Serving 集群",
-              "按需计算"
-            ],
-            "byocOnly": false
-          },
           {
             "continent": "中国内地",
             "id": "cn-hangzhou",
@@ -102,6 +88,20 @@
             "continent": "亚太",
             "id": "ap-southeast-1",
             "name": "新加坡",
+            "deployments": [
+              "Dedicated",
+              "BYOC"
+            ],
+            "computeTypes": [
+              "Serving 集群",
+              "按需计算"
+            ],
+            "byocOnly": false
+          },
+          {
+            "continent": "中东",
+            "id": "me-central-1",
+            "name": "沙特（利雅得-合作伙伴运营）",
             "deployments": [
               "Dedicated",
               "BYOC"

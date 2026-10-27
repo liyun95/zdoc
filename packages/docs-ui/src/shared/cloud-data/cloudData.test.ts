@@ -431,6 +431,20 @@ describe('adapter.js over CMS JSON', () => {
 
   const model = buildModel('en', regionsJson as any, featuresJson as any);
 
+  it('sorts regions by the CMS record id, not by API response order', () => {
+    // CMS edits move records to the front of the response; the record id is
+    // the stable authored order.
+    const edited = {
+      data: [
+        {id: 9, attributes: {region_name: 'zz-edited', location: 'Edited Today', ip: null, provider: {data: {attributes: {name: 'AWS'}}}, continent: {data: {attributes: {name: 'Asia'}}}, supported_deployments: {data: [{attributes: {name: 'BYOC'}}]}, supported_compute_types: {data: []}}},
+        {id: 2, attributes: {region_name: 'us-west-2', location: 'Oregon, USA', ip: null, provider: {data: {attributes: {name: 'AWS'}}}, continent: {data: {attributes: {name: 'North America'}}}, supported_deployments: {data: [{attributes: {name: 'Dedicated'}}, {attributes: {name: 'BYOC'}}]}, supported_compute_types: {data: [{attributes: {name: 'Serving cluster'}}]}}},
+      ],
+    };
+    const model = buildModel('en', edited as any, featuresJson as any);
+    const aws = model.providers.find((provider) => provider.key === 'aws');
+    expect(aws?.regions.map((region) => region.id)).toEqual(['us-west-2', 'zz-edited']);
+  });
+
   it('keeps every region as a merged-table row, BYOC-only included', () => {
     const aws = model.providers.find((provider) => provider.key === 'aws');
     expect(aws?.regions.map((region) => region.id)).toEqual(['us-west-2', 'ap-east-1']);

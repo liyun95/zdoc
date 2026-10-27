@@ -135,8 +135,13 @@ function matrixFrom(rowsDefinition, field, key, rowHeader, providers, byoc) {
 function featureRows(featuresJson, vocab, warnings) {
   const rows = [];
   const data = (featuresJson && featuresJson.data) || [];
+  const withIds = [];
   for (let index = 0; index < data.length; index += 1) {
-    const attributes = data[index].attributes;
+    withIds.push({recordId: typeof data[index].id === 'number' ? data[index].id : 0, attributes: data[index].attributes});
+  }
+  withIds.sort(function (a, b) { return a.recordId - b.recordId; });
+  for (let index = 0; index < withIds.length; index += 1) {
+    const attributes = withIds[index].attributes;
     const href = normalizeHref(attributes.links, {feature: attributes.name}, warnings);
     const cells = {};
     const regionAvailability = attributes.region_availability || [];
@@ -184,18 +189,24 @@ function buildModel(site, regionsJson, featuresJson) {
   for (let index = 0; index < vocab.order.length; index += 1) byProvider[vocab.order[index]] = [];
   const regionsData = (regionsJson && regionsJson.data) || [];
   for (let index = 0; index < regionsData.length; index += 1) {
-    const attributes = regionsData[index].attributes;
+    const row = regionsData[index];
+    const attributes = row.attributes;
     const providerKey = vocab.providerKeys[relationName(attributes.provider)];
     if (!providerKey) throw new Error('unknown region provider ' + relationName(attributes.provider));
     const region = parseRegionAttributes(attributes, vocab);
     region.byocOnly = isByocOnly(region, vocab.byoc);
+    // Strapi's default response order is not stable — a CMS edit moves the
+    // record to the front. Sort by the record id so the tables keep their
+    // authored order regardless of edit recency.
+    region.recordId = typeof row.id === 'number' ? row.id : 0;
     byProvider[providerKey].push(region);
   }
 
+  const byRecordId = function (a, b) { return a.recordId - b.recordId; };
   const providers = [];
   for (let index = 0; index < vocab.order.length; index += 1) {
     const key = vocab.order[index];
-    const all = byProvider[key];
+    const all = byProvider[key].slice().sort(byRecordId);
     // The merged regions table lists every region in CMS order — BYOC-only
     // regions are regular rows whose managed columns read "not available".
     const regions = [];

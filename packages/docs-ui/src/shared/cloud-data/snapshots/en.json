@@ -1,38 +1,18 @@
 {
   "schemaVersion": 1,
   "site": "en",
-  "generatedAt": "2026-10-27T02:49:09.199Z",
+  "generatedAt": "2026-10-27T03:31:50.096Z",
   "source": "https://cms.zilliz.cc/api/cloud-regions + https://cms.zilliz.cc/api/cloud-features",
   "model": {
     "site": "en",
     "locale": "en",
-    "updatedAt": "2026-10-26T11:03:18.974Z",
+    "updatedAt": "2026-10-27T03:26:42.275Z",
     "providers": [
       {
         "key": "aws",
         "name": "AWS",
         "anchor": "aws",
         "regions": [
-          {
-            "continent": "Asia",
-            "id": "ap-east-1",
-            "name": "Hong Kong SAR",
-            "deployments": [
-              "BYOC"
-            ],
-            "computeTypes": [],
-            "byocOnly": true
-          },
-          {
-            "continent": "Asia",
-            "id": "ap-southeast-7",
-            "name": "Thailand",
-            "deployments": [
-              "BYOC"
-            ],
-            "computeTypes": [],
-            "byocOnly": true
-          },
           {
             "continent": "North America",
             "id": "us-west-2",
@@ -175,6 +155,26 @@
             "byocOnly": false
           },
           {
+            "continent": "Asia",
+            "id": "ap-east-1",
+            "name": "Hong Kong SAR",
+            "deployments": [
+              "BYOC"
+            ],
+            "computeTypes": [],
+            "byocOnly": true
+          },
+          {
+            "continent": "Asia",
+            "id": "ap-southeast-7",
+            "name": "Thailand",
+            "deployments": [
+              "BYOC"
+            ],
+            "computeTypes": [],
+            "byocOnly": true
+          },
+          {
             "continent": "Oceania",
             "id": "ap-southeast-2",
             "name": "Sydney, Australia",
@@ -290,16 +290,6 @@
         "anchor": "google-cloud",
         "regions": [
           {
-            "continent": "Europe",
-            "id": "europe-west9",
-            "name": "Paris, France",
-            "deployments": [
-              "BYOC"
-            ],
-            "computeTypes": [],
-            "byocOnly": true
-          },
-          {
             "continent": "North America",
             "id": "us-west1",
             "name": "Oregon, USA",
@@ -364,6 +354,16 @@
               "Serving cluster"
             ],
             "byocOnly": false
+          },
+          {
+            "continent": "Europe",
+            "id": "europe-west9",
+            "name": "Paris, France",
+            "deployments": [
+              "BYOC"
+            ],
+            "computeTypes": [],
+            "byocOnly": true
           },
           {
             "continent": "Asia",
@@ -814,7 +814,8 @@
               "azure": {
                 "kind": "none"
               }
-            }
+            },
+            "href": "/docs/cmek"
           },
           {
             "label": "Spark Batch Jobs",
