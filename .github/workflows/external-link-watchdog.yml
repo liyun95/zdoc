@@ -1,4 +1,4 @@
-name: External Link Watchdog
+name: external link watchdog
 
 on:
   schedule:
