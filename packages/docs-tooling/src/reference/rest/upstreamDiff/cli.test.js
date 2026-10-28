@@ -6,7 +6,7 @@ const path = require('node:path')
 const {spawnSync} = require('node:child_process')
 const {loadRestUpstreamLock} = require('./lock')
 const {loadRestUpstreamLedger} = require('./ledger')
-const {loadRuleset, DEFAULTS} = require('./cli')
+const {loadRuleset, DEFAULTS, REPOSITORY_ROOT} = require('./cli')
 const {diffDigestOf} = require('./changeSet')
 
 const INDEX = path.join(__dirname, '..', 'index.js')
@@ -22,7 +22,12 @@ test('committed lock, ledger, and ruleset parse and pin real upstream sources', 
         ['zilliz-cloud-control-plane', 'zilliztech/zilliz-cloud', 'spec-file', 'zilliz'],
         ['milvus-data-plane', 'milvus-io/milvus', 'source-tree', 'milvus'],
     ])
-    assert.equal(loadRestUpstreamLedger(DEFAULTS.ledger).entries.length, 0)
+    const ledger = loadRestUpstreamLedger(DEFAULTS.ledger)
+    // Bootstrap (2026-10-28 replay): 51 external stock operations plus 3
+    // deferred decisions (modifyProperties adoption, etl/merge and
+    // import/create branch attribution candidates).
+    assert.equal(ledger.entries.length, 54)
+    assert.equal(ledger.entries.filter(entry => entry.classification === 'external').length, 51)
     const ruleset = loadRuleset(DEFAULTS.rules)
     assert.deepEqual(ruleset.internalFieldDenylist, ['accessKey', 'secretKey', 'token', 'innerCall'])
     assert.ok(ruleset.policies.some(policy => policy.id === 'doc-design-zdoc'))
@@ -146,7 +151,101 @@ test('diff refuses source-tree sources until the extractor skeleton exists, and 
         const unclassified = runCli(['rest-upstream-diff', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'spec.json'),
             '--fragments', fragmentsDir, '--out', path.join(dir, 'out2')])
         assert.equal(unclassified.status, 1)
-        assert.match(unclassified.stderr, /REST_UPSTREAM_FRAGMENT_SURFACE_UNKNOWN.*98-unclassified.json/)
+        assert.match(unclassified.stderr, /REST_UPSTREAM_FRAGMENT_SURFACE_UNKNOWN.*98-unclassified\.json/)
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
+})
+
+function writePrepareFixture(dir, {specMaxLength, specSummary}) {
+    const fragmentsDir = path.join(dir, 'fragments')
+    fs.mkdirSync(fragmentsDir)
+    fs.writeFileSync(path.join(fragmentsDir, '21-project-operations-v2.json'), `${JSON.stringify({
+        openapi: '3.0.1',
+        paths: {'/v2/projects': {post: {
+            summary: 'Create Project.',
+            requestBody: {content: {'application/json': {schema: {type: 'object', required: ['projectName'], properties: {
+                projectName: {type: 'string', maxLength: specMaxLength},
+            }}}}},
+            responses: {'200': {description: 'ok'}},
+        }}},
+    }, null, 2)}\n`)
+    fs.writeFileSync(path.join(dir, 'titles.json'), '{\n  "创建项目": "create-project"\n}\n')
+    fs.writeFileSync(path.join(dir, 'upstream.yaml'), [
+        'openapi: 3.1.0',
+        'info: {title: Cloud-Controller-API, version: v1}',
+        'paths:',
+        '  /v2/projects:',
+        '    post:',
+        `      summary: ${specSummary}`,
+        '      requestBody:',
+        '        content:',
+        '          application/json:',
+        '            schema:',
+        '              type: object',
+        '              required: [projectName]',
+        '              properties:',
+        `                projectName: {type: string, maxLength: ${specMaxLength}}`,
+        '      responses:',
+        "        '200': {description: ok}",
+        '',
+    ].join('\n'))
+    fs.writeFileSync(path.join(dir, 'instructions.md'), '# Instruction pack\n')
+}
+
+test('rest-upstream-prepare stages an isolated agent workspace and fails closed without drift', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-prepare-'))
+    try {
+        writePrepareFixture(dir, {specMaxLength: 50, specSummary: 'Create Project.'})
+        const staging = path.join(dir, 'staging')
+        const noDrift = runCli(['rest-upstream-prepare', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
+            '--staging', staging, '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json'),
+            '--instructions', path.join(dir, 'instructions.md')])
+        assert.equal(noDrift.status, 1)
+        assert.match(noDrift.stderr, /REST_UPSTREAM_PREPARE_NO_DRIFT/)
+
+        const rehearsed = runCli(['rest-upstream-prepare', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
+            '--staging', staging, '--allow-empty-drift', '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json'),
+            '--instructions', path.join(dir, 'instructions.md')])
+        assert.equal(rehearsed.status, 0, rehearsed.stderr)
+        assert.deepEqual(fs.readdirSync(staging).sort(), ['INSTRUCTIONS.md', 'diff', 'meta', 'rules', 'staging-manifest.json'])
+        assert.deepEqual(fs.readdirSync(path.join(staging, 'diff')).sort(), ['diff.json', 'diff.md'])
+        const manifest = JSON.parse(fs.readFileSync(path.join(staging, 'staging-manifest.json'), 'utf8'))
+        assert.equal(manifest.source, 'zilliz-cloud-control-plane')
+        assert.deepEqual(manifest.files.map(file => file.path), ['INSTRUCTIONS.md', 'diff/diff.json', 'diff/diff.md', 'meta/ledger.json', 'meta/lock.json', 'meta/titles.json', 'rules/refresh-rules.json'])
+        assert.equal(fs.readFileSync(path.join(staging, 'INSTRUCTIONS.md'), 'utf8'), '# Instruction pack\n')
+
+        const occupied = runCli(['rest-upstream-prepare', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
+            '--staging', staging, '--allow-empty-drift', '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json'),
+            '--instructions', path.join(dir, 'instructions.md')])
+        assert.equal(occupied.status, 1)
+        assert.match(occupied.stderr, /REST_UPSTREAM_STAGING_EXISTS/)
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
+})
+
+test('rest-upstream-prepare stages only diff-touched fragments and enforces staging isolation', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-prepare-drift-'))
+    try {
+        writePrepareFixture(dir, {specMaxLength: 50, specSummary: 'Create Project'})
+        const instructions = ['# Instruction pack', '', `Repository root marker: ${REPOSITORY_ROOT}`, ''].join('\n')
+        fs.writeFileSync(path.join(dir, 'instructions-leak.md'), instructions)
+        const staging = path.join(dir, 'staging')
+        const leaked = runCli(['rest-upstream-prepare', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
+            '--staging', staging, '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json'),
+            '--instructions', path.join(dir, 'instructions-leak.md')])
+        assert.equal(leaked.status, 1)
+        assert.match(leaked.stderr, /REST_UPSTREAM_STAGING_ISOLATION_LEAK/)
+
+        const prepare = runCli(['rest-upstream-prepare', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
+            '--staging', staging, '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json'),
+            '--instructions', path.join(dir, 'instructions.md')])
+        assert.equal(prepare.status, 0, prepare.stderr)
+        assert.match(prepare.stdout, /staged 1 fragment\(s\), 1 substantive drift entr\(ies\)/)
+        assert.deepEqual(fs.readdirSync(path.join(staging, 'fragments')).sort(), ['21-project-operations-v2.json'])
+        const manifest = JSON.parse(fs.readFileSync(path.join(staging, 'staging-manifest.json'), 'utf8'))
+        assert.equal(manifest.files.some(file => file.path === 'fragments/21-project-operations-v2.json'), true)
     } finally {
         fs.rmSync(dir, {recursive: true, force: true})
     }
