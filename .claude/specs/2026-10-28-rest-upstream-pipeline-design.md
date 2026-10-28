@@ -112,7 +112,7 @@
    - 识别 scenario-branched 操作（request/response oneOf/anyOf 且 ≥2 object 分支）；
    - 分支内字段级 diff（新增/删除/约束/类型/描述重写），分支键 = `x-tab-label` 或分支序；
    - 上游 merged object 对分支 diff 时，字段仅归入语义匹配分支；无法归属者进 `unattributed` 候选区（→ ledger），**永不自动落分支**；
-4. **操作级分类输出**：`upstream-added` / `upstream-removed` / `upstream-modified`（字段级明细）/ `zdoc-only`（刻意文档设计或待研发确认；ledger 已分类则静默）/ `unattributed`；required 疑似 codegen 丢失条目单独标注（决策 9）；每条带上游 JSON path + 值证据。
+4. **操作级分类输出**：`upstream-added` / `fragment-only`（片段有而上游无；**只对与源同 apiSurface 的片段判定**，数据面片段缺席于控制面规格是预期而非漂移，匹配到的操作则跨全部片段比对）/ `upstream-modified`（字段级明细）/ `zdoc-only`（刻意文档设计或待研发确认；ledger 已分类则静默）/ `unattributed`；required 疑似 codegen 丢失条目单独标注（决策 9）；每条带上游 JSON path + 值证据。
 5. **确定性**：同输入字节同输出；输出 = 机器可读 JSON + 人读 markdown 清单（10-21 清单同构），直接作为 PR 内容与 agent 输入。
 
 milvus 源的 diff 输入不同（骨架 JSON 而非 spec，§6），比对与输出层（模块 3–5）共用。

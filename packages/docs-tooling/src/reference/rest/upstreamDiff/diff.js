@@ -420,14 +420,27 @@ function diffOperationPair(context) {
 }
 
 /*
- * diffSpecifications({source, upstreamPin, upstream, fragments, ledger, ruleset}) ->
+ * diffSpecifications({source, upstreamPin, upstream, fragments, ledger, ruleset, fragmentSurfaces}) ->
  * {schemaVersion, source, upstreamPin, publicationTarget, summary, entries}
  * Deterministic: same inputs -> byte-identical output (no timestamps).
+ *
+ * Operations that exist upstream are compared wherever a fragment documents
+ * them, regardless of the fragment's api surface (the control-plane spec covers
+ * import jobs that live in a data-plane fragment). `fragment-only` is only
+ * reported for fragments on the source's own api surface: a data-plane
+ * fragment missing from the control-plane spec is expected, not drift. When
+ * `fragmentSurfaces` is supplied every fragment must be classified.
  */
-function diffSpecifications({source, upstreamPin, upstream, fragments, ledger, ruleset}) {
+function diffSpecifications({source, upstreamPin, upstream, fragments, ledger, ruleset, fragmentSurfaces = null}) {
     if (!isPlainObject(ruleset) || !Array.isArray(ruleset.internalFieldDenylist)) {
         fail('REST_UPSTREAM_RULESET_INVALID', 'ruleset.internalFieldDenylist is required')
     }
+    if (fragmentSurfaces) {
+        for (const file of fragments.keys()) {
+            if (!fragmentSurfaces.has(file)) fail('REST_UPSTREAM_FRAGMENT_SURFACE_UNKNOWN', `${file} is not classified in fragment-migration.json`)
+        }
+    }
+    const onSourceSurface = file => !fragmentSurfaces || fragmentSurfaces.get(file) === source.apiSurface
     const upstreamOps = indexOperationsFromDocument(upstream)
     const fragmentOps = indexFragmentOperations(fragments)
     const entries = []
@@ -459,6 +472,7 @@ function diffSpecifications({source, upstreamPin, upstream, fragments, ledger, r
     for (const opKey of [...fragmentOps.keys()].sort()) {
         if (upstreamOps.has(opKey)) continue
         for (const fragmentRecord of fragmentOps.get(opKey)) {
+            if (!onSourceSurface(fragmentRecord.file)) continue
             if (!includesTarget(fragmentRecord.operation, source.publicationTarget)) continue
             const ledgerEntry = ledger.entries.find(candidate => candidate.source === source.id && candidate.opKey === opKey)
             entries.push(makeEntry({opKey, fragment: fragmentRecord.file, category: 'fragment-only', scope: 'operation',

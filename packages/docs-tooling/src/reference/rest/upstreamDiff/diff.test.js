@@ -195,3 +195,27 @@ test('output is deterministic and sorted', () => {
 test('ruleset without a denylist fails closed', () => {
     assert.throws(() => run({ruleset: {}}), /REST_UPSTREAM_RULESET_INVALID/)
 })
+
+test('fragment-only is scoped to the source api surface; matched operations compare across surfaces', () => {
+    const dataPlaneFragment = {openapi: '3.0.1', paths: {
+        '/v2/vectordb/collections/list': {post: {summary: 'List Collections', responses: {'200': {description: 'ok'}}}},
+        '/v2/vectordb/jobs/import/create': {post: {summary: 'Import Data (old)', responses: {'200': {description: 'ok'}}}},
+    }}
+    const controlPlaneFragment = {openapi: '3.0.1', paths: {
+        '/v2/projects/{projectId}/regions/{regionId}': {delete: {summary: 'Remove Project Region', responses: {'200': {description: 'ok'}}}},
+    }}
+    const upstream = {openapi: '3.0.3', paths: {
+        '/v2/vectordb/jobs/import/create': {post: {summary: 'Import Data', responses: {'200': {description: 'ok'}}}},
+    }}
+    const fragments = new Map([['05-collection-operations-v2.json', dataPlaneFragment], ['21-project-operations-v2.json', controlPlaneFragment]])
+    const fragmentSurfaces = new Map([['05-collection-operations-v2.json', 'data-plane'], ['21-project-operations-v2.json', 'control-plane']])
+    const result = run({upstream, fragments, fragmentSurfaces, source: {...SOURCE, apiSurface: 'control-plane'}})
+    assert.deepEqual(result.entries.map(entry => [entry.category, entry.opKey]), [
+        ['fragment-only', 'delete /v2/projects/{projectId}/regions/{regionId}'],
+        ['upstream-modified', 'post /v2/vectordb/jobs/import/create'],
+    ])
+    assert.throws(
+        () => run({upstream, fragments, fragmentSurfaces: new Map([['21-project-operations-v2.json', 'control-plane']]), source: {...SOURCE, apiSurface: 'control-plane'}}),
+        /REST_UPSTREAM_FRAGMENT_SURFACE_UNKNOWN.*05-collection-operations-v2.json/,
+    )
+})

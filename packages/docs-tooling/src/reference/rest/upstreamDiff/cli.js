@@ -17,10 +17,19 @@ const DEFAULTS = {
     rules: path.join(REST_ROOT, 'meta', 'upstream', 'refresh-rules.json'),
     fragments: path.join(REST_ROOT, 'meta', 'openapi'),
     titles: path.join(REST_ROOT, 'meta', 'titles.json'),
+    migration: path.join(REST_ROOT, 'meta', 'fragment-migration.json'),
 }
 
 function fail(code, message) {
     throw new Error(`${code}: ${message}`)
+}
+
+// fragment-migration.json classifies every fragment by api surface; the diff
+// uses it to scope `fragment-only` reporting to the source's own surface.
+function loadFragmentSurfaces(filePath) {
+    const migration = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+    if (!Array.isArray(migration.fragments)) fail('REST_UPSTREAM_MIGRATION_INVALID', `${filePath}: fragments array missing`)
+    return new Map(migration.fragments.map(fragment => [fragment.file, fragment.apiSurface]))
 }
 
 function loadRuleset(filePath) {
@@ -120,6 +129,7 @@ function registerDiffCommand(command) {
         .option('--ledger <path>', 'Ledger file path', DEFAULTS.ledger)
         .option('--rules <path>', 'Refresh ruleset path', DEFAULTS.rules)
         .option('--fragments <dir>', 'Fragment directory', DEFAULTS.fragments)
+        .option('--migration <path>', 'fragment-migration.json used to scope fragment-only reporting by api surface', DEFAULTS.migration)
         .action(opts => {
             const lock = loadRestUpstreamLock(opts.lock)
             const source = findLockSource(lock, opts.source)
@@ -127,6 +137,7 @@ function registerDiffCommand(command) {
             const ledger = loadRestUpstreamLedger(opts.ledger)
             const ruleset = loadRuleset(opts.rules)
             const fragments = loadCanonicalFragments(opts.fragments)
+            const fragmentSurfaces = loadFragmentSurfaces(opts.migration)
             const {document, contentSha256} = loadSpecFile(opts.spec)
             if (opts.expectPinned && source.pin.contentSha256 && source.pin.contentSha256 !== contentSha256) {
                 fail('REST_UPSTREAM_SPEC_DIGEST_MISMATCH', `${opts.spec} sha256 ${contentSha256} != lock ${source.pin.contentSha256}`)
@@ -134,7 +145,7 @@ function registerDiffCommand(command) {
             const upstreamCommit = opts.upstreamCommit || source.pin.commit
             if (!/^[a-f0-9]{40}$/.test(upstreamCommit)) fail('REST_UPSTREAM_COMMIT_INVALID', upstreamCommit)
             const upstream = downgradeDocument(document)
-            const diff = diffSpecifications({source, upstreamPin: upstreamCommit, upstream, fragments, ledger, ruleset})
+            const diff = diffSpecifications({source, upstreamPin: upstreamCommit, upstream, fragments, ledger, ruleset, fragmentSurfaces})
             fs.mkdirSync(opts.out, {recursive: true})
             fs.writeFileSync(path.join(opts.out, 'diff.json'), serializeDocument(diff))
             fs.writeFileSync(path.join(opts.out, 'diff.md'), renderDiffMarkdown(diff))
@@ -184,4 +195,4 @@ function registerUpstreamCommands(cli) {
 
 const UPSTREAM_COMMANDS = new Set(['rest-upstream-lock', 'rest-upstream-format', 'rest-upstream-diff', 'rest-upstream-apply'])
 
-module.exports = {registerUpstreamCommands, renderDiffMarkdown, loadSpecFile, loadRuleset, UPSTREAM_COMMANDS, DEFAULTS}
+module.exports = {registerUpstreamCommands, renderDiffMarkdown, loadSpecFile, loadRuleset, loadFragmentSurfaces, UPSTREAM_COMMANDS, DEFAULTS}

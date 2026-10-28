@@ -132,13 +132,21 @@ test('diff then apply round trip through the CLI against a YAML upstream spec', 
     }
 })
 
-test('diff refuses source-tree sources until the extractor skeleton exists', () => {
+test('diff refuses source-tree sources until the extractor skeleton exists, and unclassified fragments', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-cli-tree-'))
     try {
         fs.writeFileSync(path.join(dir, 'spec.json'), '{"openapi":"3.0.3","paths":{}}')
         const result = runCli(['rest-upstream-diff', '--source', 'milvus-data-plane', '--spec', path.join(dir, 'spec.json'), '--out', path.join(dir, 'out')])
         assert.equal(result.status, 1)
         assert.match(result.stderr, /REST_UPSTREAM_SOURCE_KIND_UNSUPPORTED/)
+
+        const fragmentsDir = path.join(dir, 'fragments')
+        fs.mkdirSync(fragmentsDir)
+        fs.writeFileSync(path.join(fragmentsDir, '98-unclassified.json'), '{\n  "openapi": "3.0.1",\n  "paths": {}\n}\n')
+        const unclassified = runCli(['rest-upstream-diff', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'spec.json'),
+            '--fragments', fragmentsDir, '--out', path.join(dir, 'out2')])
+        assert.equal(unclassified.status, 1)
+        assert.match(unclassified.stderr, /REST_UPSTREAM_FRAGMENT_SURFACE_UNKNOWN.*98-unclassified.json/)
     } finally {
         fs.rmSync(dir, {recursive: true, force: true})
     }
