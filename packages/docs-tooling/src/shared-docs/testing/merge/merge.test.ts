@@ -196,4 +196,27 @@ describe('pure two-version wrapper emitter', () => {
     expect(result).toMatchObject({ errors: [expect.objectContaining({ code: 'MERGE_NESTED_CHANNEL', page: 'page', channel: 'next', file: 'page.yaml', line: 1 })] })
   })
 
+  it.each([
+    '~~~js\nabc ~~~\n',
+    '```js\nconst x = ```\n',
+    '~~~js\n    ~~~\n',
+    '> ~~~js\n> abc ~~~\n',
+    '- old\n\n  ```js\n  abc ```\n',
+  ])('rejects marker-looking code content that is not a parser-recognized closer (%j)', source => {
+    const result = mergeMarkdown({ current: input(source, 'current'), next: input('Other\n', 'next') })
+    expect(result).toMatchObject({ errors: [expect.objectContaining({ code: 'ADAPT_UNSUPPORTED_MARKUP', file: 'current-content.md', channel: 'current', message: expect.stringContaining('Unclosed fence') })] })
+    expect(result).not.toHaveProperty('markdown')
+  })
+
+  it.each([
+    '- Old\n\n  ```js\n  a()\n  ```\n',
+    '> - Old\n>\n>   ~~~js\n>   a()\n>   ~~~\n',
+    '```js\nOld\n```',
+  ])('retains genuine parser-recognized container and nonterminated closing fences (%j)', source => {
+    const next = source.replace('Old', 'New')
+    const result = merge(source, next)
+    assertViews(result, input(source, 'current'), input(next, 'next'))
+    lint(result.markdown)
+  })
+
 })

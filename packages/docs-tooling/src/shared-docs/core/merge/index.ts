@@ -94,6 +94,26 @@ function references(document: SegmentedDocument) {
   return { bindings: env.references ?? {}, locations }
 }
 
+/** Read closure from the real fence rule while container offsets are active. */
+function unclosedFences(markdown: string): number[] {
+  const md = new MarkdownIt({ html: false })
+  const fence = md.block.ruler.__rules__.find(rule => rule.name === 'fence')!.fn
+  const unclosed: number[] = []
+  md.block.ruler.at('fence', (state, start, end, silent) => {
+    const ok = fence(state, start, end, silent)
+    if (ok && !silent) {
+      const token = state.tokens.at(-1)!
+      // The fence rule excludes a recognized closing line from token.content,
+      // but includes every consumed content line when it stops at EOF/container
+      // end. getLines uses the same live quote/list indentation as that rule.
+      if (token.content === state.getLines(start + 1, state.line, state.sCount[start], true)) unclosed.push(start)
+    }
+    return ok
+  })
+  md.parse(markdown, {})
+  return unclosed
+}
+
 interface Retained { block: MergeBlock; channel: Channel; other?: MergeBlock }
 
 /** Pure merge over already adapted channel bytes. No I/O, MDX finalization or source rewriting. */
@@ -132,16 +152,9 @@ export function mergeMarkdown(input: MergeInput): MergeResult {
       if (item.kind !== 'change') continue
       for (const channel of ['current', 'next'] as const) for (const index of item[channel]) {
         const block = docs[channel].blocks[index]
-        const code = new MarkdownIt({ html: false }).parse(parserView(docs[channel]).slice(block.span.start, block.span.end), {})
-        for (const token of code) {
-          if (token.type !== 'fence' || !token.map) continue
-          const lines = block.text.split(/\r\n|\r|\n/)
-          let end = token.map[1] - 1
-          if (lines[end] === '' && end === lines.length - 1) end--
-          const closing = /(?:^|[ \t>])([`~]+)[ \t]*$/.exec(lines[end] ?? '')?.[1] ?? ''
-          if (end <= token.map[0] || closing[0] !== token.markup[0] || closing.length < token.markup.length || [...closing].some(char => char !== token.markup[0])) {
-            errors.push(diagnostic(sources[channel], block.span.startLine - 1 + token.map[0], 'ADAPT_UNSUPPORTED_MARKUP', 'Unclosed fence would consume generated channel wrapper boundaries.'))
-          }
+        const view = parserView(docs[channel]).slice(block.span.start, block.span.end)
+        for (const line of unclosedFences(view)) {
+          errors.push(diagnostic(sources[channel], block.span.startLine - 1 + line, 'ADAPT_UNSUPPORTED_MARKUP', 'Unclosed fence would consume generated channel wrapper boundaries.'))
         }
         const gate = docs[channel].gates.find(token => !token.closing && token.span.start >= block.span.start && token.span.start < block.span.end)
         if (gate) errors.push(diagnostic(sources[channel], gate.span.startLine - 1, 'MERGE_NESTED_CHANNEL', 'An authored NextChannel gate would be nested inside a generated channel region.'))
