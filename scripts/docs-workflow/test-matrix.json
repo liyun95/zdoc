@@ -204,6 +204,27 @@
       "reason": "REST OpenAPI fragments feed fragment migration, lifecycle evidence, integrated specs, and publication artifacts."
     },
     {
+      "id": "rest-upstream-pipeline",
+      "paths": [
+        "packages/docs-tooling/src/reference/rest/upstreamDiff/**",
+        "packages/docs-tooling/src/reference/rest/meta/upstream/**",
+        "packages/docs-tooling/src/reference/rest/contracts/rest-upstream-lock.schema.json",
+        "packages/docs-tooling/src/reference/rest/contracts/rest-upstream-ledger.schema.json",
+        "packages/docs-tooling/src/reference/rest/contracts/rest-upstream-change-set.schema.json"
+      ],
+      "focusedTests": [
+        "pnpm test:rest-upstream"
+      ],
+      "harnesses": [
+        "pnpm test:rest-publication-contract"
+      ],
+      "gates": [
+        "pnpm test:workflow-matrix",
+        "git diff --check"
+      ],
+      "reason": "The rest-upstream pipeline pins upstream REST sources (lock), records adoption decisions (ledger), diffs pinned specs against the fragments branch-aware, and applies agent change sets deterministically; its hermetic suite also guards the canonical fragment byte format every fragment must keep."
+    },
+    {
       "id": "reference-navigation-validation",
       "paths": [
         "packages/docs-tooling/src/validation/referenceNavigation.ts",
