@@ -1,0 +1,20 @@
+schema_version: 1
+source:
+  file: site/en/userGuide/schema/analyzer/filter/stop-filter.md
+publish:
+  - manual: guides
+    path: tutorials/development/analyzer/analyzer-filters/stop-filter
+  - manual: guides-byoc
+    path: tutorials/development/analyzer/analyzer-filters/stop-filter
+metadata:
+  beta: "FALSE"
+  description: "The `stop` filter removes specified stop words from tokenized text, helping to eliminate common, less meaningful words. You can configure the list of stop words using the `stopwords` parameter."
+transforms:
+  - operation: replace
+    target:
+      block: stop-words-sources
+    content:
+      file: stop-words-sources.md
+  - operation: remove
+    target:
+      block: stop-words-file-resource

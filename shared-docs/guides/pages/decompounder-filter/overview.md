@@ -1,0 +1,1 @@
+The `decompounder` filter splits compound words into individual components based on a specified dictionary, making it easier to search for parts of compound terms. This filter is particularly useful for languages that frequently use compound words, such as German.

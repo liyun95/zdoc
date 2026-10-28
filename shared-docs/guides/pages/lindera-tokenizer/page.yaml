@@ -1,0 +1,20 @@
+schema_version: 1
+source:
+  file: site/en/userGuide/schema/analyzer/tokenizer/lindera-tokenizer.md
+publish:
+  - manual: guides
+    path: tutorials/development/analyzer/analyzer-tokenizers/lindera-tokenizer
+  - manual: guides-byoc
+    path: tutorials/development/analyzer/analyzer-tokenizers/lindera-tokenizer
+metadata:
+  beta: "FALSE"
+  description: "The `lindera` tokenizer performs dictionary-based morphological analysis. It is designed for Japanese and Korean—languages where words are not separated by spaces and grammatical markers (particles) attach directly to words."
+transforms:
+  - operation: remove
+    target:
+      block: lindera-compile-prerequisites
+  - operation: replace
+    target:
+      block: lindera-dictionary-options
+    content:
+      file: dictionary-options.md
