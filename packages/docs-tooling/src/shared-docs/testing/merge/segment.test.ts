@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
+import { alignBlocks } from '../../core/merge/align'
 import { segmentMarkdown } from '../../core/merge/segment'
 
 function segment(markdown: string) {
@@ -50,6 +51,41 @@ describe('parser source segmentation', () => {
     const doc = segment(source)
     expect(doc.gates.map(gate => source.slice(gate.span.start, gate.span.end))).toEqual(['<NextChannel action="include">', '</NextChannel>'])
     expect(doc.blocks[2].kind).toBe('paragraph')
+  })
+
+  it('does not let a fence-looking line in an opaque comment hide a later authored gate', () => {
+    const source = '<!--\n```\n-->\n\n<NextChannel action="include">\n\nA\n\n</NextChannel>\n'
+    const doc = segment(source)
+    expect(doc.blocks.map(block => block.kind)).toEqual(['html', 'channel'])
+    expect(doc.blocks[1].text).toBe('<NextChannel action="include">\n\nA\n\n</NextChannel>\n')
+    expect(doc.gates.map(gate => source.slice(gate.span.start, gate.span.end))).toEqual([
+      '<NextChannel action="include">', '</NextChannel>',
+    ])
+  })
+
+  it('keeps Tabs whole when an internal comment contains an unmatched fence opener', () => {
+    for (const gap of ['', '\n']) {
+      const source = `<Tabs>\n${gap}<!--\n\`\`\`\n-->\n${gap}<TabItem value="a">\n\nA\n\n</TabItem>\n\n</Tabs>\n`
+      const doc = segment(source)
+      expect(doc.blocks.map(block => block.kind)).toEqual(['tabs'])
+      expect(doc.blocks[0].text).toBe(source)
+    }
+  })
+
+  it('does not interpret a fence-looking line in raw HTML as Markdown code', () => {
+    const source = '<pre>\n```\n</pre>\n\n<NextChannel action="include">\n\nA\n\n</NextChannel>\n'
+    const doc = segment(source)
+    expect(doc.blocks.map(block => block.kind)).toEqual(['html', 'channel'])
+    expect(doc.gates).toHaveLength(2)
+  })
+
+  it('retains terminal blank lines in an unclosed fence body', () => {
+    const first = '```js\na()\n\n'
+    const second = first + '\n'
+    const a = segment(first), b = segment(second)
+    expect(a.records.map(record => [record.kind, record.text])).toEqual([['fence', first]])
+    expect(b.records.map(record => [record.kind, record.text])).toEqual([['fence', second]])
+    expect(alignBlocks(a.blocks, b.blocks)).toEqual([{ kind: 'change', current: [0], next: [0] }])
   })
 
   it.each(['\n', '\r\n', '\r'])('preserves newlines, unicode, spaces-only lines and terminal bytes (%j)', newline => {

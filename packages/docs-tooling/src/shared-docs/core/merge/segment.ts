@@ -80,16 +80,32 @@ export function segmentMarkdown(input: SegmentInput): SegmentResult {
   for (const token of tokens) {
     if (!token.map || token.level !== 0 || !kinds[token.type]) continue
     let [start, end] = token.map
-    // Some list/html maps include trailing empty lines. Spaces-only lines are content.
-    while (end > start && lineText(end - 1) === '') end--
+    // Some list/html maps include trailing empty lines. Fence and indented-code
+    // maps own every line through EOF, even when the code ends on blank lines.
+    if (token.type !== 'fence' && token.type !== 'code_block') {
+      while (end > start && lineText(end - 1) === '') end--
+    }
     intervals.push({ start: at(start), end: at(end), kind: kinds[token.type] })
   }
 
-  // HTML-disabled parsing reveals code inside JSX containers even when HTML block
-  // parsing stops at a blank line or absorbs the opening fence into its HTML token.
+  // HTML-disabled parsing reveals code inside JSX containers, but it would also
+  // interpret fence-looking text in opaque comments and raw HTML as Markdown.
+  // Shield the spans that the HTML parser has already identified as opaque.
+  const opaque = new Uint8Array(source.length)
+  for (const token of tokens) {
+    if (token.type !== 'html_block' || !token.map) continue
+    const start = at(token.map[0]), end = at(token.map[1])
+    const html = source.slice(start, end)
+    // A Tabs HTML token can itself contain a complete comment or raw element
+    // when there is no blank line between them. Mask those nested ranges only.
+    for (const match of html.matchAll(/<!--[\s\S]*?-->|<(pre|script|style|textarea)\b[^>]*>[\s\S]*?<\/\1\s*>/gi)) {
+      opaque.fill(1, start + match.index!, start + match.index! + match[0].length)
+    }
+  }
+  const codeSource = parserSource.replace(/[^\r\n]/g, (char, offset: number) => opaque[offset] ? ' ' : char)
   const literal = new Uint8Array(source.length)
   const codeParser = new MarkdownIt({ html: false })
-  const codeTokens = codeParser.parse(parserSource, {})
+  const codeTokens = codeParser.parse(codeSource, {})
   const inline = new MarkdownIt({ html: true })
   const backticks = inline.inline.ruler.__rules__.find(rule => rule.name === 'backticks')!.fn
   let inlineBase = 0
