@@ -1,5 +1,4 @@
 {
-  "6-7": "WP11",
   "7-1": "WP12",
   "7-2": "WP12",
   "7-3": "WP12",
@@ -32,7 +31,6 @@
   "T08": "WP15",
   "T09": "WP15",
   "T10": "WP15",
-  "T13": "WP11",
   "PROMOTE_PAGE_NOT_FOUND": "WP13",
   "PROMOTE_NOTHING_TO_DO": "WP13",
   "PUBLISH_IMAGE_UPLOAD_FAILED": "WP14",
