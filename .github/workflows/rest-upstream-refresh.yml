@@ -101,7 +101,6 @@ jobs:
             const bytes = await fetchSpecBytes(globalThis.fetch, {repository: source.repository, specPath: source.artifact.path, ref: commit, token})
             const specPath = path.join(process.env.RUNNER_TEMP, `upstream-spec${path.extname(source.artifact.path) || '.yaml'}`)
             fs.writeFileSync(specPath, bytes)
-            fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'upstream-commit.txt'), commit)
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `commit=${commit}\nspec_path=${specPath}\nspec_sha256=${crypto.createHash('sha256').update(bytes).digest('hex')}\n`)
             console.log(`fetched ${source.repository}:${source.artifact.path}@${commit} (${bytes.length} bytes)`)
           })().catch(error => {
@@ -199,7 +198,7 @@ jobs:
 
       - name: Run the change-scoped test union
         run: |
-          readarray -t changed_paths < <(git diff --name-only 'HEAD~1' 'HEAD' | grep -v '^packages/docs-tooling/src/reference/rest/meta/upstream/' || true)
+          readarray -t changed_paths < <(git diff --name-only 'HEAD~1' 'HEAD')
           test "${#changed_paths[@]}" -gt 0
           pnpm test:for-change -- "${changed_paths[@]}"
           pnpm test:rest-publication-contract
