@@ -372,14 +372,17 @@ function diffParameters(context) {
             continue
         }
         for (const [index, fragmentParameter] of matches.entries()) {
+            // Fragments may document one parameter several times (e.g. two Authorization
+            // headers gated by x-base-url-target); the copy index keeps entry ids unique.
             const copyIndex = matches.length > 1 ? index : undefined
+            const field = copyIndex === undefined ? key : `${key}#${copyIndex}`
             if (Boolean(fragmentParameter.required) !== Boolean(upstreamParameter.required)) {
-                entries.push(makeEntry({...meta, category: 'upstream-modified', scope: 'parameter', field: key,
+                entries.push(makeEntry({...meta, category: 'upstream-modified', scope: 'parameter', field,
                     change: {kind: 'required', before: Boolean(fragmentParameter.required), after: Boolean(upstreamParameter.required)},
                     evidence: upstreamEvidencePath, copyIndex}))
             }
             if (normalizeText(upstreamParameter.description ?? '') !== normalizeText(fragmentParameter.description ?? '')) {
-                entries.push(makeEntry({...meta, category: 'upstream-modified', scope: 'parameter', field: key,
+                entries.push(makeEntry({...meta, category: 'upstream-modified', scope: 'parameter', field,
                     change: {kind: 'description', before: fragmentParameter.description ?? null, after: upstreamParameter.description ?? null},
                     evidence: upstreamEvidencePath, copyIndex}))
             }

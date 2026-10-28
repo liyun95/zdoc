@@ -184,12 +184,28 @@ test('non-branched bodies report field-level drift directly', () => {
     ])
 })
 
-test('output is deterministic and sorted', () => {
+test('output is deterministic, sorted, and entry ids are unique', () => {
     const first = JSON.stringify(run())
     const second = JSON.stringify(run())
     assert.equal(first, second)
     const idsSorted = run().entries.map(entry => entry.id)
     assert.deepEqual(idsSorted, [...idsSorted].sort())
+    assert.equal(new Set(idsSorted).size, idsSorted.length)
+})
+
+test('duplicated parameter copies (x-base-url-target gating) get distinct entry ids', () => {
+    const fragment = {openapi: '3.0.1', paths: {'/v2/x': {post: {summary: 'X', parameters: [
+        {name: 'Authorization', in: 'header', required: true, description: 'token for clusters', 'x-base-url-target': ['cluster']},
+        {name: 'Authorization', in: 'header', required: true, description: 'token for on-demand', 'x-base-url-target': ['on-demand-compute']},
+    ], responses: {'200': {description: 'ok'}}}}}}
+    const upstream = {openapi: '3.0.3', paths: {'/v2/x': {post: {summary: 'X', parameters: [
+        {name: 'Authorization', in: 'header', required: true, description: 'token'},
+    ], responses: {'200': {description: 'ok'}}}}}}
+    const result = run({upstream, fragments: new Map([['21-project-operations-v2.json', fragment]])})
+    assert.deepEqual(result.entries.map(entry => [entry.id, entry.copyIndex]), [
+        ['upstream-modified|post /v2/x|parameter||Authorization:header#0|description|', 0],
+        ['upstream-modified|post /v2/x|parameter||Authorization:header#1|description|', 1],
+    ])
 })
 
 test('ruleset without a denylist fails closed', () => {

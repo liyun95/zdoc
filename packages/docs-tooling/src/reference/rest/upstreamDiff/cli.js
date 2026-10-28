@@ -57,7 +57,7 @@ function renderDiffMarkdown(diff) {
         if (!byOperation.has(entry.opKey)) byOperation.set(entry.opKey, [])
         byOperation.get(entry.opKey).push(entry)
     }
-    for (const [opKey, entries] of [...byOperation.entries()].sort()) {
+    for (const [opKey, entries] of [...byOperation.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))) {
         const fragment = entries.find(entry => entry.fragment)?.fragment
         lines.push(`## \`${opKey}\`${fragment ? ` (${fragment})` : ''}`, '')
         for (const entry of entries) {
