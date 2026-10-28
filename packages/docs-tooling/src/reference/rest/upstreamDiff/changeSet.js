@@ -32,6 +32,12 @@ function assertChangeSetShape(changeSet) {
         }
         if (seenEntryIds.has(entry.diffEntryId)) fail('REST_UPSTREAM_CHANGESET_DUPLICATE_DIFF_ENTRY', entry.diffEntryId)
         seenEntryIds.add(entry.diffEntryId)
+        if (entry.override === true && !entry.overrideReason) {
+            fail('REST_UPSTREAM_CHANGESET_OVERRIDE_REASON_REQUIRED', `${entry.diffEntryId}: override needs an overrideReason for the reviewer`)
+        }
+        if (entry.override !== true && entry.overrideReason !== undefined) {
+            fail('REST_UPSTREAM_CHANGESET_OVERRIDE_REASON_UNEXPECTED', `${entry.diffEntryId}: overrideReason without override`)
+        }
         if (entry.kind === 'prose' && typeof entry.value !== 'string') {
             fail('REST_UPSTREAM_CHANGESET_VALUE_INVALID', `${entry.diffEntryId}: prose values must be strings`)
         }

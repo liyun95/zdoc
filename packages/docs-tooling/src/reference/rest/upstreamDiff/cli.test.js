@@ -97,8 +97,8 @@ test('diff then apply round trip through the CLI against a YAML upstream spec', 
         assert.equal(diffDocument.upstreamPin, 'e64f3bd77c94971d2352ca61eb86d1a1f11bf2cb')
         assert.match(fs.readFileSync(path.join(outDir, 'diff.md'), 'utf8'), /## `post \/v2\/projects` \(21-project-operations-v2.json\)/)
 
-        const summaryId = 'upstream-modified|post /v2/projects|operation|||summary|'
-        const maxLengthId = 'upstream-modified|post /v2/projects|requestBody||projectName|constraint|maxLength'
+        const summaryId = 'upstream-modified|post /v2/projects|21-project-operations-v2.json|operation||||summary|'
+        const maxLengthId = 'upstream-modified|post /v2/projects|21-project-operations-v2.json|requestBody|||projectName|constraint|maxLength'
         assert.deepEqual(diffDocument.entries.map(entry => entry.id), [summaryId, maxLengthId])
         fs.writeFileSync(path.join(dir, 'change-set.json'), JSON.stringify({
             schemaVersion: '1.0',

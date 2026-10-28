@@ -114,7 +114,7 @@ test('scenario branches are documentation assets: deliberate omissions stay sile
     assert.deepEqual(ids(result, entry => create(entry) && entry.field === 'volumeName'), [])
     // stageName is covered by no branch: exactly one union-level ledger candidate.
     assert.deepEqual(ids(result, entry => create(entry) && entry.field === 'stageName'),
-        ['unattributed|post /v2/vectordb/jobs/import/create|requestBody||stageName|field-uncovered|'])
+        ['unattributed|post /v2/vectordb/jobs/import/create|11-import-operations-v2.json|requestBody|||stageName|field-uncovered|'])
     // Internal fields never surface anywhere.
     assert.deepEqual(ids(result, entry => ['accessKey', 'innerCall'].includes(entry.field)), [])
     // objectUrl maxLength drifted: reported inside each branch that documents it, with upstream evidence.
@@ -126,7 +126,7 @@ test('scenario branches are documentation assets: deliberate omissions stay sile
     assert.equal(objectUrl[0].evidence, '/paths/~1v2~1vectordb~1jobs~1import~1create/post')
     // files exists only in the fragment: informational zdoc-only entry on its branch.
     assert.deepEqual(ids(result, entry => create(entry) && entry.field === 'files'),
-        ['zdoc-only|post /v2/vectordb/jobs/import/create|requestBody|External storage (Serving)|files|field-absent-upstream|'])
+        ['zdoc-only|post /v2/vectordb/jobs/import/create|11-import-operations-v2.json|requestBody|External storage (Serving)||files|field-absent-upstream|'])
     // Upstream lacks required arrays entirely: one confirmation item per operation, not per branch.
     const confirmation = result.entries.filter(entry => entry.requiresConfirmation === 'required-array')
     assert.equal(confirmation.length, 1)
@@ -203,14 +203,14 @@ test('duplicated parameter copies (x-base-url-target gating) get distinct entry 
     ], responses: {'200': {description: 'ok'}}}}}}
     const result = run({upstream, fragments: new Map([['21-project-operations-v2.json', fragment]])})
     assert.deepEqual(result.entries.map(entry => [entry.id, entry.copyIndex]), [
-        ['upstream-modified|post /v2/x|parameter||Authorization:header#0|description|', 0],
-        ['upstream-modified|post /v2/x|parameter||Authorization:header#1|description|', 1],
+        ['upstream-modified|post /v2/x|21-project-operations-v2.json|parameter|||Authorization:header#0|description|', 0],
+        ['upstream-modified|post /v2/x|21-project-operations-v2.json|parameter|||Authorization:header#1|description|', 1],
     ])
 
     // Both copies absent upstream: reported once, not once per copy.
     const noAuthUpstream = {openapi: '3.0.3', paths: {'/v2/x': {post: {summary: 'X', responses: {'200': {description: 'ok'}}}}}}
     const absent = run({upstream: noAuthUpstream, fragments: new Map([['21-project-operations-v2.json', fragment]])})
-    assert.deepEqual(absent.entries.map(entry => entry.id), ['zdoc-only|post /v2/x|parameter||Authorization:header|param-absent-upstream|'])
+    assert.deepEqual(absent.entries.map(entry => entry.id), ['zdoc-only|post /v2/x|21-project-operations-v2.json|parameter|||Authorization:header|param-absent-upstream|'])
 })
 
 test('ruleset without a denylist fails closed', () => {
@@ -239,4 +239,37 @@ test('fragment-only is scoped to the source api surface; matched operations comp
         () => run({upstream, fragments, fragmentSurfaces: new Map([['21-project-operations-v2.json', 'control-plane']]), source: {...SOURCE, apiSurface: 'control-plane'}}),
         /REST_UPSTREAM_FRAGMENT_SURFACE_UNKNOWN.*05-collection-operations-v2.json/,
     )
+})
+
+test('ids carry the fragment file and response status, so shared field names never collide', () => {
+    const responses = (okText, badText) => ({
+        '200': {description: 'ok', content: {'application/json': {schema: {type: 'object', properties: {message: {type: 'string', description: okText}}}}}},
+        '400': {description: 'bad', content: {'application/json': {schema: {type: 'object', properties: {message: {type: 'string', description: badText}}}}}},
+    })
+    const fragment = {openapi: '3.0.1', paths: {'/x': {post: {summary: 'X', responses: responses('ok msg', 'bad msg')}}}}
+    const upstream = {openapi: '3.0.3', paths: {'/x': {post: {summary: 'X', responses: responses('ok message', 'bad message')}}}}
+    const result = run({upstream, fragments: new Map([['21-project-operations-v2.json', fragment], ['22-cluster-operations-v2.json', structuredClone(fragment)]])})
+    const ids = result.entries.map(entry => entry.id)
+    assert.equal(new Set(ids).size, ids.length)
+    assert.deepEqual(ids, [
+        'upstream-modified|post /x|21-project-operations-v2.json|response||200|message|description|',
+        'upstream-modified|post /x|21-project-operations-v2.json|response||400|message|description|',
+        'upstream-modified|post /x|22-cluster-operations-v2.json|response||200|message|description|',
+        'upstream-modified|post /x|22-cluster-operations-v2.json|response||400|message|description|',
+    ])
+    assert.deepEqual(result.entries.map(entry => entry.responseStatus), ['200', '400', '200', '400'])
+})
+
+test('relaxing a requirement is flagged for R&D confirmation; tightening is adoptable as-is', () => {
+    const body = required => ({content: {'application/json': {schema: {type: 'object', required, properties: {a: {type: 'string'}, b: {type: 'string'}}}}}})
+    const fragment = {openapi: '3.0.1', paths: {'/x': {post: {summary: 'X', parameters: [{name: 'p', in: 'query', required: true}],
+        requestBody: body(['a']), responses: {'200': {description: 'ok'}}}}}}
+    const upstream = {openapi: '3.0.3', paths: {'/x': {post: {summary: 'X', parameters: [{name: 'p', in: 'query', required: false}],
+        requestBody: body(['b']), responses: {'200': {description: 'ok'}}}}}}
+    const result = run({upstream, fragments: new Map([['21-project-operations-v2.json', fragment]])})
+    assert.deepEqual(result.entries.map(entry => [entry.field, entry.change.kind, entry.change.after, entry.requiresConfirmation]), [
+        ['p:query', 'required', false, 'required-relaxation'],
+        ['a', 'required', false, 'required-relaxation'],
+        ['b', 'required', true, undefined],
+    ])
 })

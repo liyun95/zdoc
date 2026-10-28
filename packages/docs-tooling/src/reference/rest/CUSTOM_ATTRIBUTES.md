@@ -663,7 +663,7 @@ Commands (run through `node packages/docs-tooling/src/reference/rest/index.js <c
 |---------|---------|
 | `rest-upstream-lock [--lock <path>]` | Validate the lock and list pinned sources. |
 | `rest-upstream-format [--dir <path>] [--write]` | Check that every fragment is byte-canonical (`JSON.stringify(doc, null, 2)` + newline, raw UTF-8). The hermetic suite enforces this for `meta/openapi/**`; `--write` normalizes offenders in place. |
-| `rest-upstream-diff --source <id> --spec <file> --out <dir> [--upstream-commit <sha>] [--expect-pinned] [--migration <path>]` | Downgrade a fetched upstream spec (3.1 → 3.0.3, fail-closed on unmappable constructs) and diff it against the fragments. Writes deterministic `diff.json` plus a human `diff.md`. Categories: `upstream-added`, `fragment-only`, `upstream-modified`, `upstream-added-field`, `upstream-added-param`, `unattributed`, `zdoc-only`. Operations that exist upstream are compared wherever a fragment documents them; `fragment-only` is reported only for fragments whose `fragment-migration.json` `apiSurface` matches the source (a data-plane fragment missing from the control-plane spec is expected), and every fragment must be classified there. |
+| `rest-upstream-diff --source <id> --spec <file> --out <dir> [--upstream-commit <sha>] [--expect-pinned] [--migration <path>]` | Downgrade a fetched upstream spec (3.1 → 3.0.3, fail-closed on unmappable constructs) and diff it against the fragments. Writes deterministic `diff.json` plus a human `diff.md`. Categories: `upstream-added`, `fragment-only`, `upstream-modified`, `upstream-added-field`, `upstream-added-param`, `unattributed`, `zdoc-only`. Entry ids are `category|opKey|fragment|scope|branch|responseStatus|field|changeKind|changeKey` and are unique per diff. Operations that exist upstream are compared wherever a fragment documents them; `fragment-only` is reported only for fragments whose `fragment-migration.json` `apiSurface` matches the source (a data-plane fragment missing from the control-plane spec is expected), and every fragment must be classified there. |
 | `rest-upstream-apply --diff <file> --change-set <file> --out <dir>` | Apply an agent-authored change set (contract: `contracts/rest-upstream-change-set.schema.json`) to copies of the fragments and `titles.json`, then reconcile. Writes the applied fragments, `titles.json`, and `applied.json` (applied log, ledger drafts, title log, unaddressed diff entries). |
 
 Branch-aware diff semantics (user decision 2026-10-28): scenario `oneOf`/`anyOf`
@@ -679,9 +679,31 @@ Applier guarantees: the change set must carry the `sha256:` digest of the exact
 `diff.json` it was authored against and every entry must name an existing diff
 entry id (unsourced edits are rejected); writes are limited to prose
 (`summary`/`description`/`example`), constraint, and lifecycle leaves with
-type-checked values; internal field names are refused; and the structural
-skeleton (properties, branches, `x-*` keys) must be identical before and after.
-Structural changes such as new operations or fields remain a human/ledger lane.
+type-checked values; internal field names are refused as keys and as
+`required` members; and the structural skeleton (properties, branches, `x-*`
+keys) must be identical before and after. Each write is additionally **bound to
+the cited drift**: a prose entry must cite a `summary`/`description` drift and
+write that leaf; a constraint entry must cite a `constraint`/`required`/
+`deprecated` drift, write the reported key on the reported parameter or field
+(inside a oneOf/anyOf branch when the drift was branch-scoped, in the fragment
+the drift was reported in), and carry exactly the upstream value the diff
+recorded; title additions must cite an `upstream-added` operation and removals
+a `fragment-only` one. Deviating from the upstream value, applying a drift
+flagged `requiresConfirmation` (`required-array` absent upstream or
+`required-relaxation`), or writing lifecycle attributes requires
+`override: true` plus `overrideReason`, and every override is listed in
+`applied.json` for the reviewer. Structural changes such as new operations or
+fields remain a human/ledger lane.
+
+Known limits of the P0 diff (deliberate, revisit in P2/P3): oneOf/anyOf
+branches nested inside a property (for example vector `data` rows/columns) are
+compared as opaque values, so drift inside them is not reported; description
+comparison collapses whitespace, so Markdown-only changes (line breaks, code
+block indentation) are not reported; when the upstream body is itself branched
+its per-branch `required` arrays are not compared and one confirmation item is
+emitted instead. `reconcile()` guards direct library misuse; through the CLI the
+applied log is produced by the applier itself, so its stray/incomplete checks
+cannot trip there.
 
 ## 6. Attribute Resolution Quick Reference
 

@@ -160,7 +160,7 @@ ledger（`meta/upstream/ledger.json`，append-only）：`{opKey, source, firstSe
 ### 8.2 产物契约与越权检测（fail-closed）
 
 - change-set schema 校验失败 → **整体拒收**，run 终止、无 PR；重试 = 重新 dispatch，成本 = 一次 codex run。
-- **对账检测（"无来源变更"）**：applier 后片段树对基线的 diff 必须与 diff JSON × change-set 完全互指——多一条、少一条、错位一条都拒收。这是"agent 永不发明结构"（决策 3）的机器化。
+- **对账检测（"无来源变更"）**：每条 change-set 条目必须**绑定**到它引用的 diff 条目——kind 与叶子对应（prose 只能引用 summary/description 漂移并写该叶子；constraint 只能引用 constraint/required/deprecated 漂移并写被报告的键）、位置对应（被报告的参数/字段、分支内、同一片段）、**约束值必须等于 diff 记录的上游值**；偏离上游值、采纳带 `requiresConfirmation` 的条目（上游缺 required 数组、required 放宽）或写生命周期属性，都必须 `override: true` + `overrideReason`，并全部列入 applied.json 供人审。多一条、少一条、错位一条、改值一条都拒收——这是"agent 永不发明结构/内容"（决策 3）的机器化。
 - applier 内置断言：内部字段黑名单（决策 8）、`x-*` 属性集合不变、**oneOf/anyOf 分支数与键集不变**（决策 1 的机器化）。
 
 ### 8.3 formatter round-trip 不变量（REST 特有）
@@ -256,5 +256,6 @@ run artifact 固定包含：staging 快照、diff JSON、change-set、applier �
 
 ## 变更记录
 
+- v3（2026-10-28，code-reviewer 评审后修订）：§8.2 对账从"引用 id 存在"升级为"绑定被引用条目"（kind/叶子/位置/值 + override 日志）；diff 条目 id 加入 fragment 与 response status 分量；required 放宽一律 `requiresConfirmation: required-relaxation`（决策 9 的成员级覆盖）；登记 P0 已知限制（嵌套属性内分支不比对、描述空白折叠、上游自身分支化时 required 不比对）。
 - v2（2026-10-28，评审问答后修订）：§8 重写为"staging 定界 + change-set 契约 + 确定性 applier + 九级入库前验证闸"（对齐翻译管线隔离先例；agent 不重写整文件、不持 git 写权限）；新增 §8.3 formatter round-trip 不变量与 §8.6 隔离实证 harness（#746 P1 教训）；D1 收敛为确定性步骤开 PR；§5/§9/§12 联动更新。
 - v1（2026-10-28）：初稿，基于同日调研报告与两条用户拍板（oneOf 场景分支全链路保留；shared-docs 机制层复用）。

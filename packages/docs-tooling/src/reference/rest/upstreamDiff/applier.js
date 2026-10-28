@@ -7,18 +7,25 @@ const {verifyAgainstDiff} = require('./changeSet')
 // Deterministic applier: the agent authors a schema-validated change set; this
 // module (plain code, never the agent) mutates the canonical fragment objects.
 // Invariants (design §8.2/§8.3):
-//   - every applied entry traces to a diff output entry (no unsourced changes)
+//   - every applied entry traces to a diff output entry AND is bound to it: the
+//     written leaf, its location, and (for constraints) its value must match the
+//     cited drift; deviating needs an explicit, logged override
 //   - writes are limited to whitelisted mutable leaves; the structural skeleton
-//     (everything except mutable leaves) must be byte-equal before and after, so
+//     (everything except mutable leaves) must be deep-equal before and after, so
 //     properties, oneOf/anyOf branches, and x-* keys can never drift through here
-//   - internal denylisted field names can never be introduced
+//   - internal denylisted field names can never be introduced (as keys or as
+//     required-array members)
 
 const PROSE_KEYS = new Set(['summary', 'description', 'example'])
 const CONSTRAINT_KEYS = new Set(['type', 'format', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'minLength', 'maxLength', 'pattern', 'minItems', 'maxItems', 'uniqueItems', 'enum', 'default', 'nullable', 'deprecated', 'required'])
 const LIFECYCLE_KEYS = new Set(['x-added-at', 'x-last-modified', 'x-deprecated-since'])
 const LIFECYCLE_TRACK = /^[0-9]+\.[0-9]+\.x$/
+const BRANCH_POINTER = /\/(?:oneOf|anyOf)\/[0-9]+\//
+
+const isScalar = value => value === null || ['string', 'number', 'boolean'].includes(typeof value)
+
 // Value shapes a constraint write may carry; anything else is rejected so a
-// constraint entry cannot smuggle structure (e.g. an object into `type`).
+// constraint entry cannot smuggle structure (e.g. an object into `type` or `default`).
 const CONSTRAINT_VALUE_CHECKS = {
     type: value => typeof value === 'string',
     format: value => typeof value === 'string',
@@ -34,18 +41,22 @@ const CONSTRAINT_VALUE_CHECKS = {
     uniqueItems: value => typeof value === 'boolean',
     nullable: value => typeof value === 'boolean',
     deprecated: value => typeof value === 'boolean',
-    enum: value => Array.isArray(value) && value.every(item => item === null || ['string', 'number', 'boolean'].includes(typeof item)),
+    enum: value => Array.isArray(value) && value.every(isScalar),
     // Schema objects carry a required-name array; parameter objects carry a boolean flag.
     required: value => typeof value === 'boolean' || (Array.isArray(value) && value.every(item => typeof item === 'string')),
-    default: () => true,
-}
-
-function isParameterObject(value) {
-    return isPlainObject(value) && typeof value.name === 'string' && typeof value.in === 'string'
+    default: value => isScalar(value) || (Array.isArray(value) && value.every(isScalar)),
 }
 
 function fail(code, message) {
     throw new Error(`${code}: ${message}`)
+}
+
+function isPlainObject(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isParameterObject(value) {
+    return isPlainObject(value) && typeof value.name === 'string' && typeof value.in === 'string'
 }
 
 function decodePointer(pointer) {
@@ -78,11 +89,7 @@ function resolveParent(document, pointer, diffEntryId) {
         }
         parent = parent[token]
     }
-    return {parent, leaf}
-}
-
-function isPlainObject(value) {
-    return typeof value === 'object' && value !== null && !Array.isArray(value)
+    return {parent, leaf, tokens}
 }
 
 function stripMutableLeaves(value) {
@@ -102,40 +109,125 @@ function assertSkeletonUnchanged(before, after, label) {
     }
 }
 
-function assertNoInternalFields(before, after, denylist, label) {
-    const beforeKeys = collectKeys(before)
-    for (const key of collectKeys(after)) {
-        if (denylist.includes(key) && !beforeKeys.has(key)) {
-            fail('REST_UPSTREAM_INTERNAL_FIELD', `${label}: "${key}" is an internal field and must never enter the docs`)
-        }
-    }
-}
-
-function collectKeys(value, seen = new Set(), out = new Set()) {
+function collectKeysAndRequiredMembers(value, seen = new Set(), out = {keys: new Set(), requiredMembers: new Set()}) {
     if (seen.has(value)) return out
     if (Array.isArray(value)) {
         seen.add(value)
-        for (const item of value) collectKeys(item, seen, out)
+        for (const item of value) collectKeysAndRequiredMembers(item, seen, out)
         return out
     }
     if (!isPlainObject(value)) return out
     seen.add(value)
     for (const [key, child] of Object.entries(value)) {
-        out.add(key)
-        collectKeys(child, seen, out)
+        out.keys.add(key)
+        if (key === 'required' && Array.isArray(child)) for (const member of child) if (typeof member === 'string') out.requiredMembers.add(member)
+        collectKeysAndRequiredMembers(child, seen, out)
     }
     return out
 }
 
-function applyFragmentEntry(document, entry, denylist) {
+function assertNoInternalFields(before, after, denylist, label) {
+    const beforeInventory = collectKeysAndRequiredMembers(before)
+    const afterInventory = collectKeysAndRequiredMembers(after)
+    for (const key of afterInventory.keys) {
+        if (denylist.includes(key) && !beforeInventory.keys.has(key)) {
+            fail('REST_UPSTREAM_INTERNAL_FIELD', `${label}: "${key}" is an internal field and must never enter the docs`)
+        }
+    }
+    for (const member of afterInventory.requiredMembers) {
+        if (denylist.includes(member) && !beforeInventory.requiredMembers.has(member)) {
+            fail('REST_UPSTREAM_INTERNAL_FIELD', `${label}: "${member}" is an internal field and must never be listed as required`)
+        }
+    }
+}
+
+// Expected write for a constraint entry derived from the cited drift entry.
+function expectedConstraintValue(cited, parent, leaf) {
+    const change = cited.change
+    if (change.kind === 'constraint') return {expected: change.after, comparable: true}
+    if (change.kind === 'deprecated') return {expected: change.after, comparable: true}
+    if (change.kind === 'required') {
+        if (isParameterObject(parent)) return {expected: change.after, comparable: true}
+        // schema member: the diff reports membership for one field; the write is the whole array
+        const current = Array.isArray(parent.required) ? parent.required : []
+        const field = String(cited.field || '').split('#')[0]
+        const expected = change.after ? [...new Set([...current, field])] : current.filter(name => name !== field)
+        return {expected, comparable: true, unordered: true}
+    }
+    return {comparable: false}
+}
+
+function sameValue(left, right, unordered) {
+    if (unordered && Array.isArray(left) && Array.isArray(right)) {
+        return isDeepStrictEqual([...left].sort(), [...right].sort())
+    }
+    return isDeepStrictEqual(left, right)
+}
+
+/*
+ * Bind a change-set entry to the diff entry it cites (design §8.2): the kind and
+ * leaf must correspond to the drift the diff reported, the target location must
+ * be the reported parameter/field (inside a branch when the drift was
+ * branch-scoped), and constraint values must equal the upstream value unless
+ * the entry carries an explicit, logged override. Confirmation-flagged drifts
+ * (suspected generator loss) can only be applied with an override.
+ */
+function assertBoundToCitedEntry(entry, cited, parent, leaf, tokens) {
+    const label = entry.diffEntryId
+    const change = cited.change || {}
+    if (entry.kind === 'prose') {
+        if (!['summary', 'description'].includes(change.kind)) {
+            fail('REST_UPSTREAM_APPLY_UNBOUND_TARGET', `${label}: prose entries must cite a summary/description drift, not ${change.kind}`)
+        }
+        if (leaf !== change.kind) fail('REST_UPSTREAM_APPLY_UNBOUND_TARGET', `${label}: leaf "${leaf}" does not match the cited ${change.kind} drift`)
+    } else if (entry.kind === 'constraint') {
+        const expectedLeaf = change.kind === 'constraint' ? change.key : change.kind === 'required' ? 'required' : change.kind === 'deprecated' ? 'deprecated' : null
+        if (!expectedLeaf) fail('REST_UPSTREAM_APPLY_UNBOUND_TARGET', `${label}: constraint entries must cite a constraint/required/deprecated drift, not ${change.kind}`)
+        if (leaf !== expectedLeaf) fail('REST_UPSTREAM_APPLY_UNBOUND_TARGET', `${label}: leaf "${leaf}" does not match the cited "${expectedLeaf}" drift`)
+        if (cited.requiresConfirmation && !entry.override) {
+            fail('REST_UPSTREAM_APPLY_CONFIRMATION_REQUIRED', `${label}: drift is flagged ${cited.requiresConfirmation}; apply only with override after R&D confirmation`)
+        }
+        const {expected, comparable, unordered} = expectedConstraintValue(cited, parent, leaf)
+        if (comparable && !entry.override && !sameValue(entry.value, expected, unordered)) {
+            fail('REST_UPSTREAM_APPLY_VALUE_UNBOUND', `${label}: value ${JSON.stringify(entry.value)} differs from the upstream value ${JSON.stringify(expected)}; use override with a reason to deviate`)
+        }
+    } else if (entry.kind === 'lifecycle') {
+        if (!entry.override) fail('REST_UPSTREAM_APPLY_OVERRIDE_REQUIRED', `${label}: the diff does not derive lifecycle values yet; lifecycle writes need override with a reason`)
+    }
+
+    if (['prose', 'constraint'].includes(entry.kind)) {
+        if (cited.field !== undefined) {
+            const baseField = String(cited.field).split('#')[0]
+            if (isParameterObject(parent)) {
+                if (`${parent.name}:${parent.in}` !== baseField) fail('REST_UPSTREAM_APPLY_UNBOUND_LOCUS', `${label}: target parameter ${parent.name}:${parent.in} is not the cited ${baseField}`)
+            } else if (change.kind === 'required') {
+                // Schema-level required membership is written on the schema's array; the
+                // schema must be the one that declares the cited field.
+                if (!isPlainObject(parent.properties) || !(baseField in parent.properties)) {
+                    fail('REST_UPSTREAM_APPLY_UNBOUND_LOCUS', `${label}: target schema does not declare the cited field "${baseField}"`)
+                }
+            } else if (tokens[tokens.length - 2] !== baseField) {
+                fail('REST_UPSTREAM_APPLY_UNBOUND_LOCUS', `${label}: target "${tokens[tokens.length - 2]}" is not the cited field "${baseField}"`)
+            }
+        } else if (cited.scope === 'operation' && !(tokens.length === 4 && tokens[0] === 'paths')) {
+            fail('REST_UPSTREAM_APPLY_UNBOUND_LOCUS', `${label}: operation-scoped drift must target the operation object`)
+        }
+        if (cited.branch && !BRANCH_POINTER.test(entry.opPath)) {
+            fail('REST_UPSTREAM_APPLY_UNBOUND_LOCUS', `${label}: drift is scoped to branch "${cited.branch}" but the target is outside any oneOf/anyOf branch`)
+        }
+    }
+}
+
+function applyFragmentEntry(document, entry, cited, denylist) {
     const label = entry.diffEntryId
     const kind = entry.kind
-    const forbiddenTarget = (denylist || []).includes(decodePointer(entry.opPath).pop())
-    if (forbiddenTarget) fail('REST_UPSTREAM_INTERNAL_FIELD', `${label}: "${entry.opPath}" targets an internal field`)
+    if ((denylist || []).includes(decodePointer(entry.opPath).pop())) {
+        fail('REST_UPSTREAM_INTERNAL_FIELD', `${label}: "${entry.opPath}" targets an internal field`)
+    }
     if (kind === 'lifecycle' && entry.value !== null && !LIFECYCLE_TRACK.test(entry.value)) {
         fail('REST_UPSTREAM_APPLY_VALUE_INVALID', `${label}: lifecycle values use the major.minor.x track format`)
     }
-    const {parent, leaf} = resolveParent(document, entry.opPath, label)
+    const {parent, leaf, tokens} = resolveParent(document, entry.opPath, label)
     const allowedKeys = mutableKeyFor(kind)
     if (allowedKeys && !allowedKeys.has(leaf)) {
         fail('REST_UPSTREAM_APPLY_TARGET_INVALID', `${label}: ${kind} entries may only write ${[...allowedKeys].join(', ')}; got "${leaf}"`)
@@ -149,6 +241,7 @@ function applyFragmentEntry(document, entry, denylist) {
     if (kind === 'constraint' && leaf === 'required' && (typeof entry.value === 'boolean') !== isParameterObject(parent)) {
         fail('REST_UPSTREAM_APPLY_VALUE_INVALID', `${label}: boolean required belongs to parameter objects, arrays to schemas`)
     }
+    assertBoundToCitedEntry(entry, cited, parent, leaf, tokens)
     parent[leaf] = entry.value
 }
 
@@ -172,27 +265,42 @@ function applyTitleEntries(titles, titleEntries) {
     return {titles: result, log}
 }
 
+function assertTitleBinding(entry, cited) {
+    const action = entry.value.action
+    if (action === 'add' && cited.category !== 'upstream-added') {
+        fail('REST_UPSTREAM_APPLY_UNBOUND_TARGET', `${entry.diffEntryId}: title additions must cite an upstream-added operation`)
+    }
+    if (action === 'remove' && cited.category !== 'fragment-only') {
+        fail('REST_UPSTREAM_APPLY_UNBOUND_TARGET', `${entry.diffEntryId}: title removals must cite a fragment-only operation`)
+    }
+}
+
 /*
  * applyChangeSet({documents, titles, changeSet, diff, ruleset}) ->
- * {documents, titles, appliedLog, ledgerDrafts, titleLog}
+ * {documents, changedFiles, titles, appliedLog, ledgerDrafts, titleLog, overrides}
  * documents: Map<fragmentFile, parsed object>. Only files named by entries are
  * mutated; everything else is returned untouched.
  */
 function applyChangeSet({documents, titles = {}, changeSet, diff, ruleset}) {
     verifyAgainstDiff(changeSet, diff)
+    const citedById = new Map(diff.entries.map(entry => [entry.id, entry]))
     const denylist = ruleset.internalFieldDenylist || []
     const snapshots = new Map()
     const appliedLog = []
     const ledgerDrafts = []
     const titleEntries = []
+    const overrides = []
 
     for (const entry of changeSet.entries) {
+        const cited = citedById.get(entry.diffEntryId)
+        if (entry.override) overrides.push({diffEntryId: entry.diffEntryId, kind: entry.kind, reason: entry.overrideReason})
         if (entry.kind === 'ledgerDraft') {
             ledgerDrafts.push({diffEntryId: entry.diffEntryId, ...entry.ledgerDraft})
             appliedLog.push({diffEntryId: entry.diffEntryId, kind: entry.kind})
             continue
         }
         if (entry.kind === 'title') {
+            assertTitleBinding(entry, cited)
             titleEntries.push(entry)
             appliedLog.push({diffEntryId: entry.diffEntryId, kind: entry.kind})
             continue
@@ -203,8 +311,12 @@ function applyChangeSet({documents, titles = {}, changeSet, diff, ruleset}) {
             }
             snapshots.set(entry.targetFragment, structuredClone(documents.get(entry.targetFragment)))
         }
-        applyFragmentEntry(documents.get(entry.targetFragment), entry, denylist)
-        appliedLog.push({diffEntryId: entry.diffEntryId, kind: entry.kind, targetFragment: entry.targetFragment, opPath: entry.opPath})
+        if (cited.fragment && cited.fragment !== entry.targetFragment) {
+            fail('REST_UPSTREAM_APPLY_UNBOUND_LOCUS', `${entry.diffEntryId}: drift was reported in ${cited.fragment}, not ${entry.targetFragment}`)
+        }
+        applyFragmentEntry(documents.get(entry.targetFragment), entry, cited, denylist)
+        appliedLog.push({diffEntryId: entry.diffEntryId, kind: entry.kind, targetFragment: entry.targetFragment, opPath: entry.opPath,
+            ...(entry.override ? {override: true, overrideReason: entry.overrideReason} : {})})
     }
 
     for (const [file, before] of snapshots) {
@@ -220,6 +332,7 @@ function applyChangeSet({documents, titles = {}, changeSet, diff, ruleset}) {
         appliedLog,
         ledgerDrafts,
         titleLog: titleResult.log,
+        overrides,
     }
 }
 

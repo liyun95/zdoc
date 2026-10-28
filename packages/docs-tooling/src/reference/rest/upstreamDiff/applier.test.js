@@ -59,12 +59,12 @@ function baseDiff() {
         ledger: {schemaVersion: '1.0', entries: []}, ruleset: RULESET})
 }
 
-const SUMMARY_ID = 'upstream-modified|post /v2/vectordb/jobs/import/create|operation|||summary|'
-const DESCRIPTION_ID = 'upstream-modified|post /v2/vectordb/jobs/import/create|operation|||description|'
-const MAXLENGTH_SERVING_ID = 'upstream-modified|post /v2/vectordb/jobs/import/create|requestBody|External storage (Serving)|objectUrl|constraint|maxLength'
-const MAXLENGTH_ONDEMAND_ID = 'upstream-modified|post /v2/vectordb/jobs/import/create|requestBody|External storage (On-demand)|objectUrl|constraint|maxLength'
-const UNATTRIBUTED_STAGE_NAME_ID = 'unattributed|post /v2/vectordb/jobs/import/create|requestBody||stageName|field-uncovered|'
-const ADDED_OP_ID = 'upstream-added|post /v2/vectordb/jobs/import/get_progress|operation|||operation-absent-in-fragments|'
+const SUMMARY_ID = 'upstream-modified|post /v2/vectordb/jobs/import/create|11-import-operations-v2.json|operation||||summary|'
+const DESCRIPTION_ID = 'upstream-modified|post /v2/vectordb/jobs/import/create|11-import-operations-v2.json|operation||||description|'
+const MAXLENGTH_SERVING_ID = 'upstream-modified|post /v2/vectordb/jobs/import/create|11-import-operations-v2.json|requestBody|External storage (Serving)||objectUrl|constraint|maxLength'
+const MAXLENGTH_ONDEMAND_ID = 'upstream-modified|post /v2/vectordb/jobs/import/create|11-import-operations-v2.json|requestBody|External storage (On-demand)||objectUrl|constraint|maxLength'
+const UNATTRIBUTED_STAGE_NAME_ID = 'unattributed|post /v2/vectordb/jobs/import/create|11-import-operations-v2.json|requestBody|||stageName|field-uncovered|'
+const ADDED_OP_ID = 'upstream-added|post /v2/vectordb/jobs/import/get_progress||operation||||operation-absent-in-fragments|'
 const CREATE_POINTER = '/paths/~1v2~1vectordb~1jobs~1import~1create/post'
 
 function changeSet(entries, diff = baseDiff()) {
@@ -92,7 +92,8 @@ test('happy path: sourced entries apply, skeleton stays put, reconcile reports t
         {id: UNATTRIBUTED_STAGE_NAME_ID, kind: 'ledgerDraft', ledgerDraft: {opKey: 'post /v2/vectordb/jobs/import/create',
             classification: 'deferred', reason: 'branch attribution needs PM input', owner: 'doc-team'}},
         {id: ADDED_OP_ID, kind: 'title', value: {action: 'add', zhTitle: '查询导入进度', slug: 'get-import-progress'}},
-        {id: DESCRIPTION_ID, kind: 'lifecycle', targetFragment: '11-import-operations-v2.json', opPath: `${CREATE_POINTER}/x-added-at`, value: '3.1.x'},
+        {id: DESCRIPTION_ID, kind: 'lifecycle', targetFragment: '11-import-operations-v2.json', opPath: `${CREATE_POINTER}/x-added-at`, value: '3.1.x',
+            override: true, overrideReason: 'lifecycle derived by hand from the 3.1 release notes'},
     ])))
 
     const result = applyChangeSet({documents, titles: {'查看导入': 'import-data'}, changeSet: changeSetDoc, diff, ruleset: RULESET})
@@ -107,6 +108,8 @@ test('happy path: sourced entries apply, skeleton stays put, reconcile reports t
     assert.deepEqual(result.titles, {'查看导入': 'import-data', '查询导入进度': 'get-import-progress'})
     assert.deepEqual(result.ledgerDrafts.map(draft => draft.classification), ['deferred'])
     assert.deepEqual(result.appliedLog.map(logEntry => logEntry.kind), ['prose', 'constraint', 'constraint', 'ledgerDraft', 'title', 'lifecycle'])
+    assert.deepEqual(result.overrides, [{diffEntryId: DESCRIPTION_ID, kind: 'lifecycle', reason: 'lifecycle derived by hand from the 3.1 release notes'}])
+    assert.equal(result.appliedLog[5].override, true)
 
     const unaddressed = reconcile(result.appliedLog, changeSetDoc, diff)
     assert.deepEqual(unaddressed, [])
@@ -135,7 +138,7 @@ test('every sourcing and shape guarantee fails closed', () => {
     wrongDigest.diffDigest = `sha256:${'0'.repeat(64)}`
     assert.throws(() => applyChangeSet({documents, changeSet: wrongDigest, diff, ruleset: RULESET}), /REST_UPSTREAM_CHANGESET_DIFF_MISMATCH/)
 
-    const unsourced = changeSet([{diffEntryId: 'upstream-modified|post /v2/nope|operation|||summary|', kind: 'prose',
+    const unsourced = changeSet([{diffEntryId: 'upstream-modified|post /v2/nope|21-project-operations-v2.json|operation||||summary|', kind: 'prose',
         targetFragment: '11-import-operations-v2.json', opPath: `${CREATE_POINTER}/summary`, value: 'x'}])
     assert.throws(() => applyChangeSet({documents, changeSet: unsourced, diff, ruleset: RULESET}), /REST_UPSTREAM_CHANGESET_UNSOURCED/)
 
@@ -201,22 +204,73 @@ test('parameter required flags apply as booleans; schema required stays an array
     }}}}
     const diff = diffSpecifications({source: SOURCE, upstreamPin: SHA, upstream, fragments: new Map([['21-project-operations-v2.json', fragment]]),
         ledger: {schemaVersion: '1.0', entries: []}, ruleset: RULESET})
-    const paramId = 'upstream-modified|post /v2/x|parameter||projectId:query|required|'
-    const bodyId = 'upstream-modified|post /v2/x|requestBody||name|required|'
+    const paramId = 'upstream-modified|post /v2/x|21-project-operations-v2.json|parameter|||projectId:query|required|'
+    const bodyId = 'upstream-modified|post /v2/x|21-project-operations-v2.json|requestBody|||name|required|'
     assert.deepEqual(diff.entries.map(entry => entry.id), [paramId, bodyId])
 
     const apply = entries => applyChangeSet({documents: new Map([['21-project-operations-v2.json', structuredClone(fragment)]]),
         changeSet: changeSet(entries, diff), diff, ruleset: RULESET})
-    const ok = apply([
+    // Both drifts relax a requirement: flagged for R&D confirmation, so they apply only with an override.
+    assert.ok(diff.entries.every(entry => entry.requiresConfirmation === 'required-relaxation'))
+    assert.throws(() => apply([
         {id: paramId, kind: 'constraint', targetFragment: '21-project-operations-v2.json', opPath: '/paths/~1v2~1x/post/parameters/0/required', value: false},
-        {id: bodyId, kind: 'constraint', targetFragment: '21-project-operations-v2.json', opPath: '/paths/~1v2~1x/post/requestBody/content/application~1json/schema/required', value: []},
+    ]), /REST_UPSTREAM_APPLY_CONFIRMATION_REQUIRED/)
+    const confirmed = {override: true, overrideReason: 'R&D confirmed 2026-10-28'}
+    const ok = apply([
+        {id: paramId, kind: 'constraint', targetFragment: '21-project-operations-v2.json', opPath: '/paths/~1v2~1x/post/parameters/0/required', value: false, ...confirmed},
+        {id: bodyId, kind: 'constraint', targetFragment: '21-project-operations-v2.json', opPath: '/paths/~1v2~1x/post/requestBody/content/application~1json/schema/required', value: [], ...confirmed},
     ])
     const operation = ok.documents.get('21-project-operations-v2.json').paths['/v2/x'].post
     assert.equal(operation.parameters[0].required, false)
     assert.deepEqual(operation.requestBody.content['application/json'].schema.required, [])
 
     assert.throws(() => apply([{id: paramId, kind: 'constraint', targetFragment: '21-project-operations-v2.json',
-        opPath: '/paths/~1v2~1x/post/parameters/0/required', value: ['projectId']}]), /REST_UPSTREAM_APPLY_VALUE_INVALID/)
+        opPath: '/paths/~1v2~1x/post/parameters/0/required', value: ['projectId'], ...confirmed}]), /REST_UPSTREAM_APPLY_VALUE_INVALID/)
     assert.throws(() => apply([{id: bodyId, kind: 'constraint', targetFragment: '21-project-operations-v2.json',
-        opPath: '/paths/~1v2~1x/post/requestBody/content/application~1json/schema/required', value: true}]), /REST_UPSTREAM_APPLY_VALUE_INVALID/)
+        opPath: '/paths/~1v2~1x/post/requestBody/content/application~1json/schema/required', value: true, ...confirmed}]), /REST_UPSTREAM_APPLY_VALUE_INVALID/)
+    // Internal field names cannot enter through a required array either, override or not.
+    assert.throws(() => apply([{id: bodyId, kind: 'constraint', targetFragment: '21-project-operations-v2.json',
+        opPath: '/paths/~1v2~1x/post/requestBody/content/application~1json/schema/required', value: ['name', 'token'], ...confirmed}]), /REST_UPSTREAM_INTERNAL_FIELD/)
+})
+
+test('writes are bound to the cited drift: kind, leaf, locus, and value must match unless overridden', () => {
+    const diff = baseDiff()
+    const fresh = () => new Map([['11-import-operations-v2.json', importFragment()]])
+    const apply = entries => applyChangeSet({documents: fresh(), changeSet: changeSet(entries, diff), diff, ruleset: RULESET})
+    const servingObjectUrl = `${CREATE_POINTER}/requestBody/content/application~1json/schema/oneOf/1/properties/objectUrl`
+
+    // Borrowing an unrelated id to write prose (the hallucination path) is rejected.
+    assert.throws(() => apply([{id: MAXLENGTH_SERVING_ID, kind: 'prose', targetFragment: '11-import-operations-v2.json',
+        opPath: `${CREATE_POINTER}/description`, value: 'HALLUCINATED'}]), /REST_UPSTREAM_APPLY_UNBOUND_TARGET/)
+    // A summary drift cannot be used to rewrite the description.
+    assert.throws(() => apply([{id: SUMMARY_ID, kind: 'prose', targetFragment: '11-import-operations-v2.json',
+        opPath: `${CREATE_POINTER}/description`, value: 'x'}]), /REST_UPSTREAM_APPLY_UNBOUND_TARGET/)
+    // Operation-scoped drift must land on the operation object, not inside a branch.
+    assert.throws(() => apply([{id: SUMMARY_ID, kind: 'prose', targetFragment: '11-import-operations-v2.json',
+        opPath: `${CREATE_POINTER}/requestBody/content/application~1json/schema/oneOf/0/summary`, value: 'x'}]), /REST_UPSTREAM_APPLY_UNBOUND_LOCUS/)
+    // Constraint value must equal the upstream value the diff reported...
+    assert.throws(() => apply([{id: MAXLENGTH_SERVING_ID, kind: 'constraint', targetFragment: '11-import-operations-v2.json',
+        opPath: `${servingObjectUrl}/maxLength`, value: 9999}]), /REST_UPSTREAM_APPLY_VALUE_UNBOUND/)
+    // ...unless the deviation is explicit and explained, in which case it is logged.
+    const overridden = apply([{id: MAXLENGTH_SERVING_ID, kind: 'constraint', targetFragment: '11-import-operations-v2.json',
+        opPath: `${servingObjectUrl}/maxLength`, value: 512, override: true, overrideReason: 'PM asked for the documented limit, not the enforced one'}])
+    assert.deepEqual(overridden.overrides.map(entry => entry.kind), ['constraint'])
+    // The cited drift names objectUrl; writing clusterId instead is a locus mismatch.
+    assert.throws(() => apply([{id: MAXLENGTH_SERVING_ID, kind: 'constraint', targetFragment: '11-import-operations-v2.json',
+        opPath: `${CREATE_POINTER}/requestBody/content/application~1json/schema/oneOf/0/properties/clusterId/maxLength`, value: 256}]), /REST_UPSTREAM_APPLY_UNBOUND_LOCUS/)
+    // A maxLength drift cannot be used to write a different constraint key.
+    assert.throws(() => apply([{id: MAXLENGTH_SERVING_ID, kind: 'constraint', targetFragment: '11-import-operations-v2.json',
+        opPath: `${servingObjectUrl}/default`, value: 'x'}]), /REST_UPSTREAM_APPLY_UNBOUND_TARGET/)
+    // Object defaults are never a legal constraint value shape.
+    assert.throws(() => apply([{id: MAXLENGTH_SERVING_ID, kind: 'constraint', targetFragment: '11-import-operations-v2.json',
+        opPath: `${servingObjectUrl}/default`, value: {smuggled: {deep: true}}}]), /REST_UPSTREAM_APPLY_VALUE_INVALID/)
+    // Lifecycle writes need an explicit override; titles must cite the matching inventory category.
+    assert.throws(() => apply([{id: DESCRIPTION_ID, kind: 'lifecycle', targetFragment: '11-import-operations-v2.json',
+        opPath: `${CREATE_POINTER}/x-added-at`, value: '3.1.x'}]), /REST_UPSTREAM_APPLY_OVERRIDE_REQUIRED/)
+    assert.throws(() => apply([{id: SUMMARY_ID, kind: 'title', value: {action: 'add', zhTitle: '错', slug: 'wrong'}}]), /REST_UPSTREAM_APPLY_UNBOUND_TARGET/)
+    // Overrides must carry a reason (parse-time) and cannot appear without the flag.
+    assert.throws(() => parseChangeSet(JSON.stringify(changeSet([{id: MAXLENGTH_SERVING_ID, kind: 'constraint', targetFragment: '11-import-operations-v2.json',
+        opPath: `${servingObjectUrl}/maxLength`, value: 512, override: true}], diff))), /REST_UPSTREAM_CHANGESET_OVERRIDE_REASON_REQUIRED/)
+    assert.throws(() => parseChangeSet(JSON.stringify(changeSet([{id: MAXLENGTH_SERVING_ID, kind: 'constraint', targetFragment: '11-import-operations-v2.json',
+        opPath: `${servingObjectUrl}/maxLength`, value: 256, overrideReason: 'stray'}], diff))), /REST_UPSTREAM_CHANGESET_OVERRIDE_REASON_UNEXPECTED/)
 })

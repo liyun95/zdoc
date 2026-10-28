@@ -39,7 +39,9 @@
         "targetFragment": {"$ref": "#/$defs/fragmentFile"},
         "opPath": {"$ref": "#/$defs/jsonPointer"},
         "value": {},
-        "ledgerDraft": {"$ref": "#/$defs/ledgerDraft"}
+        "ledgerDraft": {"$ref": "#/$defs/ledgerDraft"},
+        "override": {"type": "boolean"},
+        "overrideReason": {"type": "string", "minLength": 1}
       }
     }
   }

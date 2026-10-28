@@ -125,9 +125,14 @@ function indexFragmentOperations(fragments) {
     return operations
 }
 
+// Id layout: category|opKey|fragment|scope|branch|responseStatus|field|changeKind|changeKey.
+// fragment and responseStatus are mandatory components: the same field name drifts
+// independently per fragment copy and per response status, and every id must stay
+// unique because change sets address edits by id.
 function entryId(entry) {
     return [
-        entry.category, entry.opKey, entry.scope || '', entry.branch || '', entry.field || '',
+        entry.category, entry.opKey, entry.fragment || '', entry.scope || '', entry.branch || '',
+        entry.responseStatus || '', entry.field || '',
         entry.change ? entry.change.kind : '', entry.change && entry.change.key || '',
     ].join('|')
 }
@@ -191,7 +196,10 @@ function diffSchemaPair(context) {
         const inUpstreamRequired = Array.isArray(upstreamRequired) && upstreamRequired.includes(name)
         if (inFragmentRequired !== inUpstreamRequired && upstreamRequired !== null) {
             entries.push(makeEntry({...context.meta, category: 'upstream-modified', scope: context.scope, branch: context.branch, field: name,
-                change: {kind: 'required', before: inFragmentRequired, after: inUpstreamRequired}, evidence: context.upstreamEvidencePath}))
+                change: {kind: 'required', before: inFragmentRequired, after: inUpstreamRequired}, evidence: context.upstreamEvidencePath,
+                // Relaxing a fragment-side requirement on upstream say-so is exactly the
+                // "suspected generator loss" class (decision 9): never auto-adoptable.
+                requiresConfirmation: inUpstreamRequired ? undefined : 'required-relaxation'}))
         }
     }
 
@@ -302,9 +310,11 @@ function diffResponses(context) {
     const upstreamResponses = isPlainObject(upstreamOperation.responses) ? upstreamOperation.responses : {}
     for (const [status, fragmentResponse] of Object.entries(fragmentResponses)) {
         if (!isPlainObject(fragmentResponse)) continue
+        // Every response-scoped entry carries its status so ids stay unique across 200/4xx shapes.
+        const statusContext = {...context, meta: {...context.meta, responseStatus: status}}
         const upstreamResponse = upstreamResponses[status]
         if (!isPlainObject(upstreamResponse)) {
-            entries.push(makeEntry({...context.meta, category: 'zdoc-only', scope: 'response', field: status,
+            entries.push(makeEntry({...statusContext.meta, category: 'zdoc-only', scope: 'response', field: status,
                 change: {kind: 'response-absent-upstream', before: null, after: null}, evidence: context.upstreamEvidencePath}))
             continue
         }
@@ -312,7 +322,7 @@ function diffResponses(context) {
         const upstreamContent = isPlainObject(upstreamResponse.content) ? upstreamResponse.content['application/json'] : null
         if (!fragmentContent) continue
         if (!upstreamContent) {
-            entries.push(makeEntry({...context.meta, category: 'upstream-modified', scope: 'response', field: status,
+            entries.push(makeEntry({...statusContext.meta, category: 'upstream-modified', scope: 'response', field: status,
                 change: {kind: 'body-media-absent-upstream', before: 'application/json', after: null}, evidence: context.upstreamEvidencePath}))
             continue
         }
@@ -331,7 +341,7 @@ function diffResponses(context) {
                 }
             })
             if (best >= 0) {
-                entries.push(...diffSchemaPair({...context, fragmentSchema: fragmentBranches.branches[best],
+                entries.push(...diffSchemaPair({...statusContext, fragmentSchema: fragmentBranches.branches[best],
                     upstreamSchema: upstreamContent.schema, branch: fragmentBranches.labels[best],
                     scope: 'response', suppressUpstreamOnlyFields: true}))
             }
@@ -341,12 +351,12 @@ function diffResponses(context) {
             }
             for (const name of Object.keys(upstreamProperties)) {
                 if (denylisted(context.ruleset, name) || coveredNames.has(name)) continue
-                entries.push(makeEntry({...context.meta, category: 'upstream-added-field', scope: 'response', field: name,
+                entries.push(makeEntry({...statusContext.meta, category: 'upstream-added-field', scope: 'response', field: name,
                     change: {kind: 'field-uncovered', before: null, after: null}, evidence: context.upstreamEvidencePath}))
             }
             continue
         }
-        entries.push(...diffBodied(context, fragmentContent, upstreamContent, 'response'))
+        entries.push(...diffBodied(statusContext, fragmentContent, upstreamContent, 'response'))
     }
     return entries
 }
@@ -379,7 +389,8 @@ function diffParameters(context) {
             if (Boolean(fragmentParameter.required) !== Boolean(upstreamParameter.required)) {
                 entries.push(makeEntry({...meta, category: 'upstream-modified', scope: 'parameter', field,
                     change: {kind: 'required', before: Boolean(fragmentParameter.required), after: Boolean(upstreamParameter.required)},
-                    evidence: upstreamEvidencePath, copyIndex}))
+                    evidence: upstreamEvidencePath, copyIndex,
+                    requiresConfirmation: upstreamParameter.required ? undefined : 'required-relaxation'}))
             }
             if (normalizeText(upstreamParameter.description ?? '') !== normalizeText(fragmentParameter.description ?? '')) {
                 entries.push(makeEntry({...meta, category: 'upstream-modified', scope: 'parameter', field,

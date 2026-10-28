@@ -178,6 +178,7 @@ function registerApplyCommand(command) {
                 diffDigest: changeSet.diffDigest,
                 changedFiles: [...result.changedFiles].sort(),
                 appliedLog: result.appliedLog,
+                overrides: result.overrides,
                 titleLog: result.titleLog,
                 ledgerDrafts: result.ledgerDrafts,
                 unaddressedDiffEntries: unaddressed,
