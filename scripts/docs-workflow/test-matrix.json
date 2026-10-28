@@ -210,7 +210,10 @@
         "packages/docs-tooling/src/reference/rest/meta/upstream/**",
         "packages/docs-tooling/src/reference/rest/contracts/rest-upstream-lock.schema.json",
         "packages/docs-tooling/src/reference/rest/contracts/rest-upstream-ledger.schema.json",
-        "packages/docs-tooling/src/reference/rest/contracts/rest-upstream-change-set.schema.json"
+        "packages/docs-tooling/src/reference/rest/contracts/rest-upstream-change-set.schema.json",
+        "packages/docs-tooling/src/reference/rest/CUSTOM_ATTRIBUTES.md",
+        ".claude/specs/2026-10-28-rest-openapi-source-to-docs-research.md",
+        ".claude/specs/2026-10-28-rest-upstream-pipeline-design.md"
       ],
       "focusedTests": [
         "pnpm test:rest-upstream"
