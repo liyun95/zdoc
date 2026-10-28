@@ -1,0 +1,135 @@
+// @vitest-environment node
+import { mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { expect, it, onTestFinished, vi } from 'vitest'
+import { runBuild, readSharedDocs } from '../../commands/build'
+import { runInspect } from '../../commands/inspect'
+import { FakeImageFetcher } from '../../adapters/images'
+import { guidesSnapshotPath } from '../../adapters/guides-snapshot'
+import { createBuildDemo, externalImage, imageBytes, write } from '../build/demo'
+import type { SharedDocsError, Transform } from '../../core/types'
+
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 })
+async function setup(transforms: Transform[], content = '') {
+  const root = await mkdtemp(join(tmpdir(), 'wp10-build-'))
+  onTestFinished(() => rm(root, { recursive: true, force: true }))
+  const options = await createBuildDemo(root)
+  const file = 'pages/build-pipeline/page.yaml'
+  const original = await readFile(join(options.sharedDocs, file), 'utf8')
+  await write(options.sharedDocs, file, original + `transforms: ${JSON.stringify(transforms)}\n`)
+  await write(options.sharedDocs, 'pages/build-pipeline/cloud.md', content)
+  return { ...options, root }
+}
+async function build(options: Awaited<ReturnType<typeof setup>>) {
+  let text = ''; let errors: readonly SharedDocsError[] = []
+  const fetcher = new FakeImageFetcher(new Map([[externalImage, imageBytes]]))
+  const code = await runBuild({ ...options, page: 'build-pipeline' }, value => { text += value }, { fetcher, onErrors: value => { errors = [...errors, ...value] } })
+  return { code, text, errors, fetcher }
+}
+const addition: Transform = { operation: 'add', position: 'before', target: { block: 'connect' }, content: { file: 'cloud.md' } }
+
+it('[4-5] feeds inserted variables, fragments, alerts, links and nested product filters through the full build', async () => {
+  const options = await setup([addition], '## Cloud setup\n\n{{var.Cloud.Product}}\n\n{{fragments/used.md}}\n\n<div class="alert note">\n[mapped](mapped.md)\n</div>\n\n<include target="paas">\nBYOC only\n<exclude target="saas">\nNested BYOC\n</exclude>\n</include>\n<include target="saas">\nSaaS only\n</include>')
+  const result = await build(options)
+  expect(result.code, result.text).toBe(0)
+  for (const manual of ['guides', 'guides-byoc']) {
+    const text = await readFile(join(options.out, manual, 'tutorials/build-pipeline.mdx'), 'utf8')
+    expect(text).toContain('Zilliz Cloud')
+    expect(text).toContain('A fragment for Zilliz Cloud.')
+    expect(text).toContain('<Admonition')
+    expect(text).toContain('[mapped](./mapped-cloud)')
+    expect(text).not.toContain('<include')
+    expect(text).not.toContain('<exclude')
+    expect(text.includes('BYOC only')).toBe(manual === 'guides-byoc')
+    expect(text.includes('SaaS only')).toBe(manual === 'guides')
+  }
+})
+
+it('[4-4] renders an explicitly added shell fence as ordered Zilliz CLI and enforces Python in remaining multilingual groups', async () => {
+  const options = await setup([{ operation: 'add', target: { block: 'connect', language: 'shell' }, content: { file: 'cloud.md' } }], '```shell\nzilliz list\n```')
+  const result = await build(options)
+  expect(result.code, result.text).toBe(0)
+  const text = await readFile(join(options.out, 'guides/tutorials/build-pipeline.mdx'), 'utf8')
+  expect(text).toContain('Zilliz CLI')
+  expect(text.indexOf('value=\'python\'')).toBeLessThan(text.indexOf('value=\'shell\''))
+  await rm(options.out, { recursive: true })
+  const config = await readFile(join(options.sharedDocs, 'pages/build-pipeline/page.yaml'), 'utf8')
+  await write(options.sharedDocs, 'pages/build-pipeline/page.yaml', config.replace('transforms: ', 'transforms: ').replace(/\]\n$/, ',{"operation":"remove","target":{"block":"connect","language":"python"}}]\n'))
+  const failed = await build(options)
+  expect(failed.code).toBe(1)
+  expect(failed.errors.some(error => error.code === 'TABS_REQUIRED_MISSING')).toBe(true)
+})
+
+it.each([
+  ['link', 'Heading\n\n[missing](unmapped.md)', 'LINK_UNRESOLVED', 3],
+  ['product', 'Heading\n\nMilvus', 'PRODUCT_NAME_FOUND', 3],
+  ['variable', 'Heading\n{{var.absent}}', 'VAR_MISSING', 2],
+  ['filter', 'Heading\n</include>', 'TRANSFORM_CONTENT_MARKUP', 2],
+  ['image', 'Heading\n![local](diagram.png)', 'TRANSFORM_CONTENT_MARKUP', 2],
+] as const)('locates %s errors in the inserted content file', async (_name, content, code, line) => {
+  const options = await setup([addition], content)
+  const result = await build(options)
+  expect(result.code).toBe(1)
+  expect(result.errors).toEqual(expect.arrayContaining([expect.objectContaining({ code, file: expect.stringContaining('/pages/build-pipeline/cloud.md'), line })]))
+  await expect(readdir(options.out)).rejects.toMatchObject({ code: 'ENOENT' })
+})
+
+it('keeps the inserted-file origin after multiline fragment expansion', async () => {
+  const options = await setup([addition], '{{fragments/used.md}}\n[missing](unmapped.md)')
+  const result = await build(options)
+  expect(result.errors.filter(error => error.code === 'LINK_UNRESOLVED').every(error => error.file?.endsWith('/cloud.md'))).toBe(true)
+  expect(result.errors.some(error => error.code === 'LINK_UNRESOLVED')).toBe(true)
+})
+
+it('points inline-content product failures to the YAML item', async () => {
+  const options = await setup([{ operation: 'replace', target: { block: 'connect', language: 'python', lines: 'connect("{{var.cloud.region}}")' }, content: { lines: 'print("Milvus")' } }])
+  const result = await build(options)
+  expect(result.errors).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'PRODUCT_NAME_FOUND', file: expect.stringContaining('/page.yaml'), line: 9 })]))
+})
+
+it('rejects content-file traversal and symlink escapes without reading outside bytes', async () => {
+  const options = await setup([{ ...addition, content: { file: '../outside.md' } }])
+  expect(await readSharedDocs(options.sharedDocs)).toMatchObject({ errors: [expect.objectContaining({ code: 'TRANSFORM_CONTENT_NOT_FOUND' })] })
+  const config = await readFile(join(options.sharedDocs, 'pages/build-pipeline/page.yaml'), 'utf8')
+  await write(options.sharedDocs, 'pages/build-pipeline/page.yaml', config.replace('../outside.md', 'link.md'))
+  await write(options.root, 'outside.md', 'Outside')
+  await symlink(join(options.root, 'outside.md'), join(options.sharedDocs, 'pages/build-pipeline/link.md'))
+  expect(await readSharedDocs(options.sharedDocs)).toMatchObject({ errors: [expect.objectContaining({ code: 'TRANSFORM_CONTENT_NOT_FOUND' })] })
+})
+
+it('retains source-only inspect and the existing WP11 failure for unequal channel output', async () => {
+  const options = await setup([{ ...addition, channel: 'next' }], 'Next-only addition')
+  let inspected = ''
+  expect(await runInspect({ ...options, page: 'build-pipeline' }, value => { inspected += value })).toBe(0)
+  expect(inspected).not.toContain('Next-only addition')
+  const result = await build(options)
+  expect(result.code).toBe(1)
+  expect(result.text).toContain('two-version merging requires WP11')
+})
+
+it('validates every transform before downloading any images', async () => {
+  const options = await setup([addition, { operation: 'remove', target: { block: 'missing' } }], 'Valid addition')
+  const result = await build(options)
+  expect(result.code).toBe(1)
+  expect(result.fetcher.requests).toEqual([])
+  expect(result.errors.some(error => error.code === 'TRANSFORM_TARGET_NOT_FOUND')).toBe(true)
+})
+
+it('attributes Tabs failures to the inserted fence and excludes filtered product names', async () => {
+  const options = await setup([{ operation: 'add', target: { block: 'connect', language: 'unknown' }, content: { file: 'cloud.md' } }], '\n```unknown\nexample()\n```')
+  const result = await build(options)
+  expect(result.errors).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'TABS_UNKNOWN_LANGUAGE', file: expect.stringContaining('/cloud.md'), line: 2 })]))
+  const filtered = await setup([addition], '<exclude target="zilliz">\nMilvus\n</exclude>\nCloud prose')
+  expect((await build(filtered)).code).toBe(0)
+})
+
+it('rejects a rule for a channel where the page does not exist before image preparation', async () => {
+  const options = await setup([{ ...addition, channel: 'current' }], 'Cloud')
+  const snapshot = guidesSnapshotPath
+  const entries = await readFile(join(options.dev, snapshot), 'utf8')
+  await write(options.dev, snapshot, entries.replace('"release_channel":"current"', '"release_channel":"next"'))
+  const result = await build(options)
+  expect(result.errors).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'TRANSFORM_CHANNEL_INVALID', file: expect.stringContaining('/page.yaml'), line: 9 })]))
+  expect(result.fetcher.requests).toEqual([])
+})
