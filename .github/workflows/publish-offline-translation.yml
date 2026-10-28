@@ -1,4 +1,4 @@
-name: publish offline Translation
+name: publish offline translation
 run-name: offline ja-JP Guides ${{ inputs.candidate_sha }}
 
 on:

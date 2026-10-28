@@ -1,4 +1,4 @@
-name: Replay Tests
+name: replay tests
 
 on:
   schedule:
