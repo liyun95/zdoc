@@ -24,6 +24,8 @@ export interface SegmentedDocument {
   records: (MergeBlock | MergeSeparator)[]
   /** Actual authored tokens only; literal code/comment tags are absent. */
   gates: GateToken[]
+  /** Parser-confirmed comments and raw HTML literal contents, outside code. */
+  opaque: SourceSpan[]
 }
 export interface SegmentInput {
   markdown: string
@@ -34,3 +36,32 @@ export interface SegmentInput {
 export type SegmentResult = { document: SegmentedDocument } | { errors: SharedDocsError[] }
 export type Alignment = { kind: 'common'; current: number; next: number }
   | { kind: 'change'; current: number[]; next: number[] }
+
+export interface MergeInput {
+  current: SegmentInput & { components?: readonly Component[] }
+  next: SegmentInput & { components?: readonly Component[] }
+  context?: DiagnosticContext
+  releaseChannel?: 'current' | 'next' | 'retire-in-next'
+}
+export interface MergeNote { code: 'MERGE_METADATA_DIFFERENT'; message: string; fields: string[] }
+/** Output offsets are UTF-16, matching SourceSpan; source slices are never rewritten. */
+export interface MergeEmission {
+  kind: BlockKind
+  channels: Channel[]
+  span: SourceSpan
+  sources: { channel: Channel; span: SourceSpan }[]
+  /** Exactly the synthesized line terminator after a nonterminated source block. */
+  terminalPadding?: SourceSpan
+}
+export interface GeneratedRegion { channel: Channel; span: SourceSpan; contentSpan: SourceSpan; openSpan: SourceSpan; closeSpan: SourceSpan }
+export interface MergeOutput {
+  markdown: string
+  components: Component[]
+  origins: readonly (readonly MergeOrigin[])[]
+  notes: MergeNote[]
+  generatedRegions: GeneratedRegion[]
+  emissions: MergeEmission[]
+  /** Exact adapted-byte fast path; no segmentation or serialization has occurred. */
+  unchanged: boolean
+}
+export type MergeResult = MergeOutput | { errors: SharedDocsError[] }

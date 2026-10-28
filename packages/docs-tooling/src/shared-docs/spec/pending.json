@@ -1,8 +1,5 @@
 {
-  "6-1": "WP11",
-  "6-2": "WP11",
   "6-3": "WP11",
-  "6-4": "WP11",
   "6-5": "WP11",
   "6-6": "WP11",
   "6-7": "WP11",
@@ -39,7 +36,6 @@
   "T09": "WP15",
   "T10": "WP15",
   "T13": "WP11",
-  "MERGE_NESTED_CHANNEL": "WP11",
   "PROMOTE_PAGE_NOT_FOUND": "WP13",
   "PROMOTE_NOTHING_TO_DO": "WP13",
   "PUBLISH_IMAGE_UPLOAD_FAILED": "WP14",

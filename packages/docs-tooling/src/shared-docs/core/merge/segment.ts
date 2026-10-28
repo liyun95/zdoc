@@ -152,6 +152,7 @@ export function segmentMarkdown(input: SegmentInput): SegmentResult {
   const state = new md.inline.State(source, md, {}, [])
   const stack: { name: string; start: number; end: number }[] = []
   const gates: GateToken[] = []
+  const opaque: SourceSpan[] = []
   for (let cursor = bodyStart; cursor < source.length;) {
     if (literal[cursor]) { cursor++; continue }
     if (source[cursor] === '\\') { cursor += 2; continue }
@@ -166,7 +167,7 @@ export function segmentMarkdown(input: SegmentInput): SegmentResult {
     const end = jsxEnd ?? state.pos
     const raw = source.slice(cursor, end)
     const tag = /^<(\/?)([A-Za-z][\w:.-]*)(?=[\s/>])/.exec(raw)
-    if (!tag) { cursor = end; continue } // Comments/declarations are opaque.
+    if (!tag) { opaque.push(span(cursor, end)); cursor = end; continue } // Comments/declarations are opaque.
     const [, closing, name] = tag
     if (name === 'NextChannel') gates.push({ closing: !!closing, span: span(cursor, end) })
     if (closing) {
@@ -188,7 +189,7 @@ export function segmentMarkdown(input: SegmentInput): SegmentResult {
       if (['pre', 'script', 'style', 'textarea'].includes(name.toLowerCase())) {
         const close = new RegExp(`</${name}\\s*>`, 'i').exec(source.slice(end))
         if (!close) fail(cursor, `Unclosed ${name} tag`)
-        else { cursor = end + close.index + close[0].length; continue }
+        else { const to = end + close.index + close[0].length; opaque.push(span(cursor, to)); cursor = to; continue }
       } else stack.push({ name, start: cursor, end })
     }
     cursor = end
@@ -232,7 +233,7 @@ export function segmentMarkdown(input: SegmentInput): SegmentResult {
   }
   gap(cursor, source.length)
   if (errors.length) return { errors }
-  return { document: { source, bodyStart, lineOffsets: offsets, envelope, records, gates,
+  return { document: { source, bodyStart, lineOffsets: offsets, envelope, records, gates, opaque,
     blocks: records.filter((record): record is MergeBlock => record.kind !== 'separator'),
     separators: records.filter((record): record is MergeSeparator => record.kind === 'separator') } }
 }
