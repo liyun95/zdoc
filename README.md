@@ -198,6 +198,71 @@ For a new interface, the minimum review checklist is: source operation and
 matrix coverage; generated English/Chinese output; and the English build's
 Japanese localization provenance.
 
+### REST upstream drift watchdog and refresh
+
+The REST fragments are kept aligned with their upstream specs through two
+workflows driven by `packages/docs-tooling/src/reference/rest/meta/upstream/rest-upstream-lock.json`.
+The lock pins one commit per upstream source (`zilliz-cloud-control-plane`
+spec-file source today; the milvus data-plane source waits on its extractor
+skeleton). See
+[the pipeline design](.claude/specs/2026-10-28-rest-upstream-pipeline-design.md)
+and [the 10-21 replay alignment report](.claude/specs/2026-10-28-rest-upstream-replay-10-21-alignment.md)
+for the acceptance evidence.
+
+`rest-upstream-drift-watchdog.yml` runs daily and on demand. It is read-only:
+for each spec-file source it compares the tracked ref HEAD with the pin and,
+on drift, downloads the spec at HEAD and runs the deterministic diff. The
+report artifact (`rest-upstream-drift-<run_id>`) carries
+`watchdog-report.{md,json}` plus the raw `diff.json`/`diff.md` per drifting
+source; the Feishu card fires only when drift exists. A `pin-behind` status on
+`milvus-data-plane` is expected until the P2 extractor lands. The lock file is
+never written by the watchdog; pins move only through reviewed refresh PRs.
+
+`rest-upstream-refresh.yml` is dispatched by an operator after a watchdog
+report (inputs: `source`, optional `upstream_commit`, `base_ref`,
+`draft_pr`). One dispatch produces one PR per source: prepare an isolated
+staging directory (diff plus touched fragment copies plus the ruleset and the
+instruction pack, with a repository-path isolation sweep), run one codex agent
+turn on the internal gateway that emits a schema'd change set, apply it with
+the deterministic applier (every entry must bind to a cited diff entry;
+denylist, `x-*`, and oneOf branch structure are asserted), run the canonical
+bytes check, the change-scoped `test:for-change` union plus
+`pnpm test:rest-publication-contract` and `pnpm test:workflow-policy`, both
+site builds, `git diff --check`, and finally open the PR with
+`REST_UPSTREAM_REFRESH_PAT` so the pull-request checks actually run. The PR
+body embeds the diff report and the applier log (overrides, ledger drafts,
+unaddressed entries) for human review.
+
+Required credentials and variables (all fail closed when missing):
+
+- `REST_UPSTREAM_GITHUB_TOKEN` — contents:read on `zilliztech/zilliz-cloud`
+  (falls back to `PRODUCT_DOC_LINKS_GITHUB_TOKEN`).
+- `REST_UPSTREAM_REFRESH_PAT` — a PAT allowed to push a `rest-upstream-refresh/*`
+  branch and open a PR; it must not be the default `GITHUB_TOKEN` (bot-PR CI
+  is phantom by design).
+- `AGENTIC_PROVIDER_API_KEY` plus `REST_UPSTREAM_AGENT_MODEL` and
+  `REST_UPSTREAM_AGENT_BASE_URL` (each falls back to the translation agent's
+  `AGENTIC_*` counterparts).
+
+Upstream deltas are classified in the append-only ledger
+(`meta/upstream/ledger.json`): `adopted`, `rejected`, `deferred`, or
+`external`. Bootstrap (2026-10-28) pre-registered the 51 stock fragment-only
+operations (v1 legacy, spark, access-control, api-keys, private-endpoint) as
+`external` plus 3 deferred decisions. Generate or merge further classifications
+with:
+
+```bash
+node packages/docs-tooling/src/reference/rest/index.js rest-upstream-ledger-bootstrap \
+  --from-diff <diff.json> --date <YYYY-MM-DD> --out <proposal.json>   # review, then:
+node packages/docs-tooling/src/reference/rest/index.js rest-upstream-ledger-bootstrap \
+  --merge <proposal.json>
+```
+
+`rest-upstream-prepare` builds the same staging directory locally for manual
+rehearsals (add `--allow-empty-drift` when no drift exists). The agent runner
+(`scripts/rest-upstream/rest-refresh-agent.js`) requires the staging directory
+from prepare, so it never needs the repository.
+
 ## Production publication runbook
 
 > Pipeline map: [`fetch-translation-pipeline-map.md`](.claude/specs/2026-08-29-fetch-translation-pipeline-map.md) — the phase-by-phase flow, artifact contracts, the 4 Git push points, and the known failure modes with their recovery entries.

@@ -252,10 +252,27 @@ run artifact 固定包含：staging 快照、diff JSON、change-set、applier �
 
 **对 shared-docs 的刻意差异**（对齐其 §7 声明风格）：单通道 lock（无 current/next）；无页级激活/active.json（片段→页面确定性生成）；zh 不走翻译 lane（titles.json + x-i18n，SKU 语义独立）；reader 换 GitHub API（无祖先校验，代以 pin 可达性 + contentSha256）；ledger 粒度 = operation 而非 page/block；无组合 stage（消费链 = 既有 refGen，零改动）。
 
+## 15. 实施状态与验收证据（2026-10-28）
+
+| 阶段 | 状态 | 证据 |
+|---|---|---|
+| P0（lock/ledger/change-set 契约 + diff 工具 + applier + hermetic 套件 + 矩阵登记） | 已实现 | PR #906 前 13 提交（`ec29f1de7`→`27b44c0b7`），36 测试；code-reviewer 三 P1 已修并复核 |
+| P1 workflows | 已实现 | `.github/workflows/rest-upstream-drift-watchdog.yml`（每日 04:17 + dispatch，只读）、`.github/workflows/rest-upstream-refresh.yml`（dispatch；prepare→codex→apply→门禁→PAT 开 PR）；二者过 `test:workflow-policy` 118 项与 actionlint |
+| P1 agent 面 | 已实现 | `rest-upstream-prepare`（staging + 隔离断言 + 无漂移 fail-closed）、`scripts/rest-upstream/rest-refresh-agent.js`（单 turn codex，digest 绑定校验）、`.github/prompts/codex-rest-refresh-agent.md` 指令包 |
+| P1 ledger bootstrap | 已落地 | 54 条入 `meta/upstream/ledger.json`（51 external 存量 + 3 deferred）；CLI 子命令 `rest-upstream-ledger-bootstrap`（generate/merge 双模式） |
+| 10-21 重放对齐（P1 硬指标） | **96.2% 严格一致**（76/79；三偏差=范围排除×2+清单过时×1，零工具误差）；deprecated 5/5、unattributed 3/3、新增参数 2/2、required 慎采 13 操作机器化 | [重放对齐报告](2026-10-28-rest-upstream-replay-10-21-alignment.md)；证据根 `tmp/rest-upstream-replay/` |
+| P1 首次真实刷新演练 | 待办（需 operator 配置 secrets/vars 后 dispatch） | gate 全绿 + 人审合并 + lock bump 原子 + sync 落 dev 尚未实证 |
+
+**待 operator 配置**：`REST_UPSTREAM_GITHUB_TOKEN`（可回退 `PRODUCT_DOC_LINKS_GITHUB_TOKEN`）、`REST_UPSTREAM_REFRESH_PAT`、`AGENTIC_PROVIDER_API_KEY`、vars `REST_UPSTREAM_AGENT_MODEL`/`REST_UPSTREAM_AGENT_BASE_URL`（可回退 `AGENTIC_TRANSLATION_MODEL`/`AGENTIC_BASE_URL`）。
+
+---
+
+
 ---
 
 ## 变更记录
 
+- v4（2026-10-28，P1 实施后）：P0+P1 均在 PR #906（`feat/rest-upstream-pipeline`）实现并登记验收证据（§15）。D5/D6 落定：refresh PR 由 `REST_UPSTREAM_REFRESH_PAT` 打开（bot-PR 幻影 CI 教训），上游读取 token = `REST_UPSTREAM_GITHUB_TOKEN` 回退 `PRODUCT_DOC_LINKS_GITHUB_TOKEN`（同权限面，D6 推荐采纳）。一处对 §7 T1 的修订：watchdog 对"无漂移"**不**回写 lock 的 `lastVerifiedAt`（master 只经评审 PR 写入；该字段随 refresh PR 的 pin bump 一并推进），watchdog 报告工件内记录本次核验日期。
 - v3（2026-10-28，code-reviewer 评审后修订）：§8.2 对账从"引用 id 存在"升级为"绑定被引用条目"（kind/叶子/位置/值 + override 日志）；diff 条目 id 加入 fragment 与 response status 分量；required 放宽一律 `requiresConfirmation: required-relaxation`（决策 9 的成员级覆盖）；登记 P0 已知限制（嵌套属性内分支不比对、描述空白折叠、上游自身分支化时 required 不比对）。
 - v2（2026-10-28，评审问答后修订）：§8 重写为"staging 定界 + change-set 契约 + 确定性 applier + 九级入库前验证闸"（对齐翻译管线隔离先例；agent 不重写整文件、不持 git 写权限）；新增 §8.3 formatter round-trip 不变量与 §8.6 隔离实证 harness（#746 P1 教训）；D1 收敛为确定性步骤开 PR；§5/§9/§12 联动更新。
 - v1（2026-10-28）：初稿，基于同日调研报告与两条用户拍板（oneOf 场景分支全链路保留；shared-docs 机制层复用）。
