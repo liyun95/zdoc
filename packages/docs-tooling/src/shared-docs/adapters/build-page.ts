@@ -270,23 +270,16 @@ export async function buildPage(input: { pageId: string; sharedDocs: SharedDocsI
   const sourceConfig = parseSourceConfig(shared.sourceYaml, context)
   const customEditUrl = runtime.fetchContext && !('errors' in sourceConfig)
     ? `https://github.com/milvus-io/milvus-docs/edit/${encodeURIComponent(sourceConfig.config.track)}/${config.source.file.split('/').map(encodeURIComponent).join('/')}` : undefined
-  const inspect = (index: number) => {
+  const manualContexts = config.publish.map((target, index) => {
     const release = targets.get(index)?.fetch?.channel ?? records.find(record => record.slug === pageId)?.release_channel?.toLowerCase()
     const availableChannels: Channel[] = release === 'next' ? ['next'] : release === 'retire-in-next' ? ['current'] : ['current', 'next']
-    return inspectPage({ pageId, sourceYaml: shared.sourceYaml, pageYaml: page.pageYaml, lockYaml: page.lockYaml,
-      variablesJson: shared.variablesJson, sharedDocsPath: shared.sharedDocsPath, context: { ...shared.context, ...context },
-      ...(config.transforms?.length ? { transformContext: { contentFiles: page.contentFiles ?? new Map(), tabsRules: shared.tabsRules,
-        manual: config.publish[index].manual, availableChannels } } : {}) }, reader, input.md2md)
-  }
-  const inspected = await inspect(0)
+    return { name: target.manual, availableChannels }
+  })
+  const inspected = await inspectPage({ pageId, sourceYaml: shared.sourceYaml, pageYaml: page.pageYaml, lockYaml: page.lockYaml,
+    variablesJson: shared.variablesJson, sharedDocsPath: shared.sharedDocsPath, context: { ...shared.context, ...context },
+    ...(config.transforms?.length ? { transformContext: { contentFiles: page.contentFiles ?? new Map(), tabsRules: shared.tabsRules,
+      manuals: manualContexts } } : {}) }, reader, input.md2md)
   if ('errors' in inspected) return { errors: [...errors, ...inspected.errors], failures }
-  const inspections = new Map([[0, inspected]])
-  for (let index = 1; index < config.publish.length; index++) {
-    const result = config.transforms?.length ? await inspect(index) : inspected
-    if ('errors' in result) errors.push(...result.errors)
-    else inspections.set(index, result)
-  }
-  if (errors.length && config.transforms?.length) return { errors, failures }
   const versions = new Map<Channel, Map<number, BuiltPage>>()
   for (const channel of ['current', 'next'] as const) {
     const source = config.source.file
@@ -296,7 +289,7 @@ export async function buildPage(input: { pageId: string; sharedDocs: SharedDocsI
     for (const [index, target] of config.publish.entries()) {
       const dev = targets.get(index)
       if (!dev) continue
-      const version = inspections.get(index)!.channels[channel]
+      const version = inspected.manualChannels?.get(target.manual)?.[channel] ?? inspected.channels[channel]
       const prepared = await runtime.prepare(version.content, source, version.commit, location)
       const sharedPages = await runtime.sharedPages(version.commit)
       const sources = await productSources(version, source, shared, reader)
