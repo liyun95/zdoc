@@ -703,9 +703,10 @@ function larkDocsPlugin(context, options) {
                             })
                             : new Map()
                         const previousSnapshot = readSnapshot(snapshotPath)
-                        const sharedReceiptsByRecordId = sharedReceiptsForPlanning({ sourceDirName: path.basename(docSourceDir), snapshot: previousSnapshot })
+                        const receiptDiagnostics = []
+                        const sharedReceiptsByRecordId = sharedReceiptsForPlanning({ sourceDirName: path.basename(docSourceDir), snapshot: previousSnapshot, diagnostics: receiptDiagnostics })
                         if (sharedReceiptsByRecordId.size === 0 && (previousSnapshot?.records || []).some(record => record.source_kind === 'shared-page')) {
-                            console.warn('[incremental-fetch] Shared publication receipts are unavailable in this workspace; shared records will count as missing sources.')
+                            console.warn(`[incremental-fetch] Shared publication receipts are unavailable in this workspace; shared records will count as missing sources (${receiptDiagnostics.join('; ')}).`)
                         }
                         const sourceCompleteness = previousSnapshot && !sourceCacheIsFresh ? validateSourceCompleteness({
                             manual: manualName,
