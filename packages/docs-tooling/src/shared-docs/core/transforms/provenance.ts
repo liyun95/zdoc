@@ -9,18 +9,18 @@ export function provenanceCarrier(lines: readonly MappedLine[], corpus: readonly
   return { content: lines.map((line, index) => tags[index] + line.text).join('\n'), overhead: tags.join('').length * 3,
     decode(content: string): MappedLine[] {
       const output: MappedLine[] = []
-      let origin = lines[0]?.origin
+      let source = lines[0]
       for (const text of content.split('\n')) {
         let clean = text
         for (let start = clean.indexOf(prefix); start >= 0; start = clean.indexOf(prefix)) {
           const end = clean.indexOf('\uE001', start + prefix.length)
           const index = Number(clean.slice(start + prefix.length, end))
           if (end < 0 || !Number.isInteger(index) || !lines[index]) throw new Error('Invalid md2md provenance carrier')
-          origin = lines[index].origin
+          source = lines[index]
           clean = clean.slice(0, start) + clean.slice(end + 1)
         }
-        if (!origin) throw new Error('Missing transform origin')
-        output.push({ text: clean, origin })
+        if (!source) throw new Error('Missing transform origin')
+        output.push({ ...source, text: clean })
       }
       return output
     } }

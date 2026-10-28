@@ -2,7 +2,7 @@ import type { Channel, NamedBlockInventory, SharedDocsError, Transform } from '.
 import type { TabsRules } from '../site'
 
 export interface Origin { file: string; line: number; kind: 'source' | 'content-file' | 'inline'; transformIndex?: number }
-export interface MappedLine { text: string; origin: Origin }
+export interface MappedLine { text: string; origin: Origin; blockSeparator?: true }
 export interface ContentFile { file: string; text: string }
 export interface TransformInput {
   markdown: string

@@ -3,11 +3,15 @@ import { mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it, onTestFinished, vi } from 'vitest'
+import { evaluate } from '@mdx-js/mdx'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import * as jsx from 'react/jsx-runtime'
 import { runBuild, readSharedDocs } from '../../commands/build'
 import { runInspect } from '../../commands/inspect'
 import { FakeImageFetcher } from '../../adapters/images'
 import { guidesSnapshotPath } from '../../adapters/guides-snapshot'
-import { createBuildDemo, externalImage, imageBytes, write } from '../build/demo'
+import { createBuildDemo, externalImage, git, imageBytes, write } from '../build/demo'
 import type { SharedDocsError, Transform } from '../../core/types'
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 })
@@ -132,4 +136,51 @@ it('rejects a rule for a channel where the page does not exist before image prep
   const result = await build(options)
   expect(result.errors).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'TRANSFORM_CHANNEL_INVALID', file: expect.stringContaining('/page.yaml'), line: 9 })]))
   expect(result.fetcher.requests).toEqual([])
+})
+
+async function replaceSourceBlock(options: Awaited<ReturnType<typeof setup>>, body: string) {
+  const file = 'site/en/build-pipeline.md'
+  const original = await readFile(join(options.repo, file), 'utf8')
+  await write(options.repo, file, original.replace(/(<!-- doc:block:start id="connect" -->\n)[\s\S]*?(\n<!-- doc:block:end id="connect" -->)/, `$1${body}$2`))
+  await git(options.repo, 'add', file)
+  await git(options.repo, 'commit', '--quiet', '-m', 'Synthetic Markdown block boundaries')
+  const commit = await git(options.repo, 'rev-parse', 'HEAD')
+  await write(options.sharedDocs, 'pages/build-pipeline/lock.yaml', JSON.stringify({ schema_version: 1, current: commit, next: commit }))
+}
+async function renderedPage(options: Awaited<ReturnType<typeof setup>>, manual: string) {
+  const mdx = (await readFile(join(options.out, manual, 'tutorials/build-pipeline.mdx'), 'utf8')).replace(/^---\n[\s\S]*?\n---\n/, '')
+  const evaluated = await evaluate(mdx, { ...jsx })
+  return renderToStaticMarkup(createElement(evaluated.default))
+}
+
+it.each(['before', 'after'] as const)('renders a block-level paragraph addition %s prose as its own paragraph', async position => {
+  const options = await setup([{ ...addition, position }], 'Added paragraph.')
+  await replaceSourceBlock(options, 'Original paragraph.')
+  const result = await build(options)
+  expect(result.code, result.text).toBe(0)
+  for (const manual of ['guides', 'guides-byoc']) {
+    const html = await renderedPage(options, manual)
+    const paragraphs = ['<p>Added paragraph.</p>', '<p>Original paragraph.</p>']
+    expect(html).toContain((position === 'before' ? paragraphs : paragraphs.reverse()).join('\n'))
+  }
+})
+
+it('renders a paragraph added after a list outside the final list item', async () => {
+  const options = await setup([{ ...addition, position: 'after' }], 'Added paragraph.')
+  await replaceSourceBlock(options, 'Original paragraph.\n\n- First item\n- Last item')
+  const result = await build(options)
+  expect(result.code, result.text).toBe(0)
+  for (const manual of ['guides', 'guides-byoc']) {
+    const html = await renderedPage(options, manual)
+    expect(html).toContain('<li>Last item</li>\n</ul>\n<p>Added paragraph.</p>')
+  }
+})
+
+it('keeps one separator when product filtering removes the trailing part of a block addition', async () => {
+  const options = await setup([addition], 'Visible paragraph.\n\n<include target="paas">\nBYOC only.\n</include>\n\n')
+  await replaceSourceBlock(options, 'Original paragraph.')
+  const result = await build(options)
+  expect(result.code, result.text).toBe(0)
+  const mdx = await readFile(join(options.out, 'guides/tutorials/build-pipeline.mdx'), 'utf8')
+  expect(mdx).toContain('Visible paragraph.\n\nOriginal paragraph.')
 })

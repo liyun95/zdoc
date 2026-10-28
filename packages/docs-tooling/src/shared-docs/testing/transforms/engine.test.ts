@@ -30,7 +30,7 @@ it('[4-3] preserves relative space and Tab indentation and consumes YAML termina
 
 it('keeps same-boundary block and line additions in configuration order', () => {
   const additions: Transform[] = ['one', 'two'].map(name => ({ operation: 'add', position: 'before', target: { block: 'example' }, content: { file: `${name}.md` } }))
-  expect(body(execute(block('Original'), additions, { 'one.md': 'First', 'two.md': 'Second' }))).toBe('First\nSecond\nOriginal')
+  expect(body(execute(block('Original'), additions, { 'one.md': 'First', 'two.md': 'Second' }))).toBe('First\n\nSecond\n\nOriginal')
   const lines: Transform[] = ['first()', 'second()'].map(text => ({ operation: 'add', position: 'after', target: { block: 'example', language: 'python', lines: 'value = 1' }, content: { lines: text } }))
   expect(body(execute(block(fence('python')), lines))).toContain('value = 1\nfirst()\nsecond()\n```')
 })
@@ -89,7 +89,7 @@ it('orders insertions before a consuming edit at a shared boundary between disti
     { operation: 'remove', target: { block: 'second' } },
     { operation: 'add', target: { block: 'first' }, position: 'after', content: { file: 'cloud.md' } },
   ], { 'cloud.md': 'Inserted' })
-  expect(body(result)).toBe('First\nInserted')
+  expect(body(result)).toBe('First\n\nInserted')
 })
 
 it('recognizes inserted line sequences without mistaking a matching prefix for the full selector', () => {
@@ -105,4 +105,19 @@ it('keeps added language fences inside a list even when the block has blank edge
   const source = '1. Step\n\n    <!-- doc:block:start id="example" -->\n\n    ```python\n    original()\n    ```\n\n    <!-- doc:block:end id="example" -->'
   const result = execute(source, [{ operation: 'add', target: { block: 'example', language: 'java' }, content: { file: 'java.md' } }], { 'java.md': fence('java', 'newValue();') })
   expect(body(result)).toContain('    ```java\n    newValue();\n    ```')
+})
+
+it('separates block additions with exactly one blank line without changing internal spacing or origins', () => {
+  for (const position of ['before', 'after'] as const) {
+    for (const padding of ['', '\n', '\n\n']) {
+      const source = 'Outside before\n' + block(padding + 'Original' + padding) + '\nOutside after'
+      const transforms: Transform[] = ['one', 'two'].map(name => ({ operation: 'add', position, target: { block: 'example' }, content: { file: `${name}.md` } }))
+      const result = execute(source, transforms, { 'one.md': padding + 'First\n\nInternal paragraph' + padding, 'two.md': padding + 'Second' + padding })
+      if ('errors' in result) throw new Error(JSON.stringify(result.errors))
+      const added = 'First\n\nInternal paragraph\n\nSecond'
+      expect(result.text).toBe(position === 'before' ? `Outside before\n\n${added}\n\nOriginal${padding}\nOutside after` : `Outside before\n${padding}Original\n\n${added}\n\nOutside after`)
+      expect(result.lines.find(row => row.text === 'Second')?.origin).toMatchObject({ file: 'pages/example/two.md', line: padding.length + 1 })
+      expect(result.lines.find(row => row.text === 'Original')?.origin).toMatchObject({ file: 'site/en/page.md', line: padding.length + 3 })
+    }
+  }
 })

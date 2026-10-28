@@ -1,5 +1,6 @@
 import type { MappedLine } from './types'
 import type { SharedDocsError } from '../types'
+import { normalizeBlockSeparators } from './spacing'
 
 /** Product targets use legacy token membership; a stack keeps outer exclusions active. */
 export function filterContent(lines: readonly MappedLine[], target: string): { lines: MappedLine[] } | { errors: SharedDocsError[] } {
@@ -21,5 +22,5 @@ export function filterContent(lines: readonly MappedLine[], target: string): { l
     else if (stack.every(frame => frame.keep)) output.push(line)
   }
   for (const frame of stack) fail(frame.line, 'Unclosed product-filter tag')
-  return errors.length ? { errors } : { lines: output }
+  return errors.length ? { errors } : { lines: normalizeBlockSeparators(output) }
 }

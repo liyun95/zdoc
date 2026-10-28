@@ -4,6 +4,7 @@ import { yamlLine } from '../yaml'
 import type { NamedBlock, SharedDocsError, Transform } from '../types'
 import { codeLines } from './schema'
 import { filterContent } from './filter'
+import { normalizeBlockSeparators } from './spacing'
 import type { ContentFile, Edit, MappedLine, Origin, PlanResult, TransformInput, TransformPlan } from './types'
 export type { ContentFile, MappedLine, Origin, TransformInput, TransformPlan } from './types'
 export { filterContent } from './filter'
@@ -153,6 +154,12 @@ export function planTransforms(input: TransformInput): PlanResult {
       }
     }
     if (rule.operation === 'add') {
+      if (level === 0 && content.some(line => line.text.trim())) {
+        // Keep boundary intent until markers are removed, so existing edge blanks
+        // and adjacent additions collapse to one separator without losing origins.
+        content = [{ text: '', origin: origin(index, 'file'), blockSeparator: true }, ...content,
+          { text: '', origin: origin(index, 'file'), blockSeparator: true }]
+      }
       const at = level === 0 ? (rule.position === 'before' ? block.startLine - 1 : block.endLine) : level === 1 ? end : rule.position === 'before' ? start : end
       edits.push({ start: at, end: at, lines: content, index })
     } else edits.push({ start: level === 0 && rule.operation === 'remove' ? block.startLine - 1 : start,
@@ -183,5 +190,6 @@ export function applyPlan(markdown: string, file: string, plan: TransformPlan): 
 }
 export function stripMappedMarkers(lines: readonly MappedLine[], blocks: readonly NamedBlock[]): MappedLine[] {
   const markers = new Set(blocks.flatMap(block => [block.startLine, block.endLine]))
-  return lines.filter(line => line.origin.kind !== 'source' || !markers.has(line.origin.line))
+  const stripped = lines.filter(line => line.origin.kind !== 'source' || !markers.has(line.origin.line))
+  return normalizeBlockSeparators(stripped)
 }

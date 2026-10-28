@@ -275,6 +275,11 @@ last language fails with `TRANSFORM_TARGET_KIND`; remove the whole block instead
 WP4 still checks required languages for multilingual groups and chooses the first
 available language when the configured default is absent.
 
+Block-level additions stay separate Markdown blocks: each boundary against
+nonblank content has exactly one blank line, including between additions at the
+same boundary. Existing edge blanks are reused, and filtering cannot leave double
+separators. Internal content spacing and code-line additions remain unchanged.
+
 Block/language content comes from a regular file in the page directory. A
 language file contains exactly one fence of that language; replacing a code group
 requires a complete group, including its switcher when multilingual. File paths
@@ -314,6 +319,12 @@ through expansion, and its decoded bytes must equal the normal result. No
 variable/fragment expansion grammar is reimplemented. Expanded fragment lines
 retain their inclusion-site origin; exact locations inside multiline expansions
 remain a follow-up requiring an md2md output source map.
+
+An internal carrier/decode/byte-equality error fails the selected page through
+the existing build-command catch. Fetch builds each selected page independently;
+its source job retains that page's current dev bytes and receipt while continuing
+other pages. Fault-injection tests exercise the real source generator and bundle
+validation against a locally retained successful publication.
 
 The OpenAI assertion fixture copies the retained Python source with only named
 markers added. Its separately labeled synthetic multi-language examples cover
