@@ -8,6 +8,26 @@
 
 **Tech stack:** TypeScript, the existing markdown-it parser, md2md 1.3.0, Vitest, the existing MDX compiler, React rendering tests and local Git fixtures.
 
+## Approved rulings — 2026-10-28
+
+The owner approved implementation in PR #14, comment 6463394698. The following rulings supersede the original requests and conditional proposals below. The plan will be removed in a normal commit before readiness. Upstream master was fetched again and remains `19628451cda1c11e8eb1ca924eeff8ba5dc291d2`; no merge was necessary.
+
+## Rulings on the plan (source of truth for WP11)
+
+The plan is approved, with these rulings on R1–R7.
+
+1. **R1 — whole-page channels: approved as proposed.** Validate both channel plans, but emit only the visible body: `next` for NEXT pages, `current` for RETIRE-IN-NEXT pages, keeping the existing page/sidebar channel metadata and the current-front-matter policy. Do not emit pairs on these pages. Standalone CLI channel propagation is not required now; keep the 12-page baseline unchanged and test whole-page metadata through the existing `fetchContext` seam.
+2. **R2 — equality envelope: approved.** Strict body equality with the narrowly defined inter-block separators; front matter (current) and the canonical import union asserted separately; one note per manual when metadata differs.
+3. **R3 — authored gates and code directives: approved.** Preserve their bytes inside indivisible blocks, never generate or interpret them for alignment, and apply the same channel semantics to both sides in projection tests. Treat upstream directives as compatibility behavior only; they are not an endorsed authoring pattern.
+4. **R4 — duplicate heading IDs: approved.** Fail with `ADAPT_UNSUPPORTED_MARKUP` naming both origins and the repair (a `channel` transform or a heading change). No automatic suffixes or link rewriting.
+5. **R5 — plan path: waived for this checkpoint.** As in WP10, remove `.claude/plans/` in a normal commit before marking the PR ready, so the final diff has no unmapped path. Do not edit the test matrix.
+6. **R6 — literal tags in code: fail closed.** If a generated paired region would contain a fenced block with literal `<NextChannel` text (which the unchanged Fetch lint would reject), fail with `ADAPT_UNSUPPORTED_MARKUP` at that line, explaining the limitation. Document it in the shared-docs README. Do not change the lint or the resolver.
+7. **R7 — unchanged path: approved as proposed.** Output bytes must be unchanged; call counts may drop. "Equal" means equal adapted channel content, not equal lock SHAs; characterize any case that becomes equal only after MDX patching.
+
+Everything else in the plan is approved. Proceed with implementation, tests first, on this PR; mark it ready when done and stop.
+
+
+
 ## Review checkpoint and evidence
 
 This commit contains a plan only. It does not implement WP11, change tests or remove pending requirement IDs. After approval, tests and implementation will use this same branch and PR. The completed PR will be marked ready, followed by a stop; no upstream PR will be opened.
