@@ -185,3 +185,38 @@ test('writeCanonicalOutputs leaves untouched fragments byte-identical and change
         fs.rmSync(dir, {recursive: true, force: true})
     }
 })
+
+test('parameter required flags apply as booleans; schema required stays an array', () => {
+    const fragment = {openapi: '3.0.1', paths: {'/v2/x': {post: {
+        summary: 'X',
+        parameters: [{name: 'projectId', in: 'query', required: true, description: 'Project.'}],
+        requestBody: {content: {'application/json': {schema: {type: 'object', required: ['name'], properties: {name: {type: 'string'}}}}}},
+        responses: {'200': {description: 'ok'}},
+    }}}}
+    const upstream = {openapi: '3.0.3', paths: {'/v2/x': {post: {
+        summary: 'X',
+        parameters: [{name: 'projectId', in: 'query', required: false, description: 'Project.'}],
+        requestBody: {content: {'application/json': {schema: {type: 'object', required: [], properties: {name: {type: 'string'}}}}}},
+        responses: {'200': {description: 'ok'}},
+    }}}}
+    const diff = diffSpecifications({source: SOURCE, upstreamPin: SHA, upstream, fragments: new Map([['21-project-operations-v2.json', fragment]]),
+        ledger: {schemaVersion: '1.0', entries: []}, ruleset: RULESET})
+    const paramId = 'upstream-modified|post /v2/x|parameter||projectId:query|required|'
+    const bodyId = 'upstream-modified|post /v2/x|requestBody||name|required|'
+    assert.deepEqual(diff.entries.map(entry => entry.id), [paramId, bodyId])
+
+    const apply = entries => applyChangeSet({documents: new Map([['21-project-operations-v2.json', structuredClone(fragment)]]),
+        changeSet: changeSet(entries, diff), diff, ruleset: RULESET})
+    const ok = apply([
+        {id: paramId, kind: 'constraint', targetFragment: '21-project-operations-v2.json', opPath: '/paths/~1v2~1x/post/parameters/0/required', value: false},
+        {id: bodyId, kind: 'constraint', targetFragment: '21-project-operations-v2.json', opPath: '/paths/~1v2~1x/post/requestBody/content/application~1json/schema/required', value: []},
+    ])
+    const operation = ok.documents.get('21-project-operations-v2.json').paths['/v2/x'].post
+    assert.equal(operation.parameters[0].required, false)
+    assert.deepEqual(operation.requestBody.content['application/json'].schema.required, [])
+
+    assert.throws(() => apply([{id: paramId, kind: 'constraint', targetFragment: '21-project-operations-v2.json',
+        opPath: '/paths/~1v2~1x/post/parameters/0/required', value: ['projectId']}]), /REST_UPSTREAM_APPLY_VALUE_INVALID/)
+    assert.throws(() => apply([{id: bodyId, kind: 'constraint', targetFragment: '21-project-operations-v2.json',
+        opPath: '/paths/~1v2~1x/post/requestBody/content/application~1json/schema/required', value: true}]), /REST_UPSTREAM_APPLY_VALUE_INVALID/)
+})

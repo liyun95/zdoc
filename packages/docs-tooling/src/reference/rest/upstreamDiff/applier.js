@@ -35,8 +35,13 @@ const CONSTRAINT_VALUE_CHECKS = {
     nullable: value => typeof value === 'boolean',
     deprecated: value => typeof value === 'boolean',
     enum: value => Array.isArray(value) && value.every(item => item === null || ['string', 'number', 'boolean'].includes(typeof item)),
-    required: value => Array.isArray(value) && value.every(item => typeof item === 'string'),
+    // Schema objects carry a required-name array; parameter objects carry a boolean flag.
+    required: value => typeof value === 'boolean' || (Array.isArray(value) && value.every(item => typeof item === 'string')),
     default: () => true,
+}
+
+function isParameterObject(value) {
+    return isPlainObject(value) && typeof value.name === 'string' && typeof value.in === 'string'
 }
 
 function fail(code, message) {
@@ -140,6 +145,9 @@ function applyFragmentEntry(document, entry, denylist) {
     }
     if (!isPlainObject(parent)) {
         fail('REST_UPSTREAM_APPLY_TARGET_INVALID', `${label}: parent of ${entry.opPath} is not an object`)
+    }
+    if (kind === 'constraint' && leaf === 'required' && (typeof entry.value === 'boolean') !== isParameterObject(parent)) {
+        fail('REST_UPSTREAM_APPLY_VALUE_INVALID', `${label}: boolean required belongs to parameter objects, arrays to schemas`)
     }
     parent[leaf] = entry.value
 }
