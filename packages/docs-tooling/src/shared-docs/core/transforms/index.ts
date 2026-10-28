@@ -16,6 +16,8 @@ function dedent(lines: string[]): string[] {
 }
 const normalized = (line: string) => line.replace(/^[ \t]+|[ \t]+$/g, '')
 const overlaps = (a: [number, number], b: [number, number]) => a[0] < b[1] && b[0] < a[1]
+const containsSelection = (lines: string[], selection: string[]) => lines.some((_, start) =>
+  start + selection.length <= lines.length && selection.every((line, offset) => normalized(lines[start + offset]) === line))
 
 /** Validate all original-source targets first. Applying a successful plan is separate. */
 export function planTransforms(input: TransformInput): PlanResult {
@@ -52,6 +54,7 @@ export function planTransforms(input: TransformInput): PlanResult {
     if (!block) { fail(index, 'TRANSFORM_TARGET_NOT_FOUND', `Named block not found: ${rule.target.block}`, ['target', 'block']); continue }
     let start = block.startLine, end = block.endLine - 1
     let level = 0, lang: string | undefined
+    let contentIndent = indent(lines[block.startLine - 1])
     if (rule.target.language !== undefined) {
       lang = canonical(rule.target.language)
       level = rule.target.lines === undefined ? 1 : 2
@@ -71,6 +74,7 @@ export function planTransforms(input: TransformInput): PlanResult {
       if (duplicate) continue
       originalLanguages.set(block.id, [...seen])
       const member = members.find(member => member.language && canonical(member.language) === lang)
+      contentIndent = indent(lines[member?.start ?? members[0].start])
       const added = active.some(other => other.rule.target.block === block.id && other.rule.operation === 'add' && other.rule.target.lines === undefined && other.rule.target.language !== undefined && canonical(other.rule.target.language) === lang)
       if (level === 1 && rule.operation === 'add') {
         if (member) { fail(index, 'TRANSFORM_LANGUAGE_EXISTS', `Language already exists: ${lang}`, ['target', 'language']); continue }
@@ -85,7 +89,14 @@ export function planTransforms(input: TransformInput): PlanResult {
           const matches: number[] = []
           for (let i = start + 1; i + selection.length <= member.end; i++) if (selection.every((line, j) => normalized(lines[i + j]) === line)) matches.push(i)
           if (matches.length !== 1) {
-            const insertedMatch = !matches.length && active.some(other => other.rule !== rule && other.rule.target.block === block.id && other.rule.target.language !== undefined && canonical(other.rule.target.language) === lang && other.rule.content?.lines && codeLines(other.rule.content.lines).some(line => normalized(line) === selection[0]))
+            const insertedMatch = !matches.length && active.some(other => {
+              if (other.rule === rule || other.rule.target.block !== block.id) return false
+              if (other.rule.target.language !== undefined ? canonical(other.rule.target.language) !== lang : other.rule.operation !== 'replace') return false
+              if (other.rule.content?.lines) return containsSelection(codeLines(other.rule.content.lines), selection)
+              const contentLines = loaded.get(other.index)?.map(row => row.text) ?? []
+              return [...fencesIn(contentLines.join('\n'), contentLines)].some(([first, fence]) =>
+                canonical(fence.language ?? '') === lang && containsSelection(contentLines.slice(first + 1, fence.end), selection))
+            })
             fail(index, insertedMatch ? 'TRANSFORM_ON_INSERTED' : matches.length ? 'LINE_AMBIGUOUS' : 'LINE_NOT_FOUND', insertedMatch ? 'Cannot target inserted code lines' : `Expected one match, found ${matches.length}`, ['target', 'lines']); continue
           }
           start = matches[0]; end = start + selection.length
@@ -137,9 +148,8 @@ export function planTransforms(input: TransformInput): PlanResult {
             fail(index, 'TRANSFORM_CONTENT_MARKUP', `Language content must contain exactly one ${lang} fence`, [], content[0]?.origin); continue
           }
         }
-        const prefix = level === 1 ? indent(lines[block.startLine] || lines[start] || '') : indent(lines[block.startLine - 1])
         const adjusted = dedent(content.map(row => row.text))
-        content = content.map((row, i) => ({ ...row, text: adjusted[i] ? prefix + adjusted[i] : '' }))
+        content = content.map((row, i) => ({ ...row, text: adjusted[i] ? contentIndent + adjusted[i] : '' }))
       }
     }
     if (rule.operation === 'add') {
@@ -162,7 +172,9 @@ export function applyPlan(markdown: string, file: string, plan: TransformPlan): 
   const input = markdownLines(markdown).map((text, i) => ({ text, origin: { kind: 'source' as const, file, line: i + 1 } }))
   const output: MappedLine[] = []
   let cursor = 0
-  for (const edit of [...plan.edits].sort((a, b) => a.start - b.start || a.index - b.index)) {
+  // Distinct targets may share a boundary (e.g. add after A, remove adjacent B).
+  // Emit zero-width additions first so a later insertion cannot rewind a consumed range.
+  for (const edit of [...plan.edits].sort((a, b) => a.start - b.start || (a.end - a.start) - (b.end - b.start) || a.index - b.index)) {
     output.push(...input.slice(cursor, edit.start), ...edit.lines)
     cursor = edit.end
   }

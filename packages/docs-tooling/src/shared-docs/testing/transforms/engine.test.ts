@@ -82,3 +82,27 @@ it('preserves indentation inside list-contained code groups', () => {
   const source = '1. Step\n\n' + block('```python\n    before()\n```').split('\n').map(line => '    ' + line).join('\n')
   expect(body(execute(source, [{ operation: 'replace', target: { block: 'example', language: 'python', lines: 'before()' }, content: { lines: 'after()\n    nested()' } }]))).toContain('    ```python\n        after()\n            nested()\n    ```')
 })
+
+it('orders insertions before a consuming edit at a shared boundary between distinct blocks', () => {
+  const source = block('First', 'first') + '\n' + block('Second', 'second')
+  const result = execute(source, [
+    { operation: 'remove', target: { block: 'second' } },
+    { operation: 'add', target: { block: 'first' }, position: 'after', content: { file: 'cloud.md' } },
+  ], { 'cloud.md': 'Inserted' })
+  expect(body(result)).toBe('First\nInserted')
+})
+
+it('recognizes inserted line sequences without mistaking a matching prefix for the full selector', () => {
+  const source = block(fence('python', 'original()'))
+  const add: Transform = { operation: 'add', position: 'after', target: { block: 'example', language: 'python', lines: 'original()' }, content: { lines: 'first()\nsecond()' } }
+  const remove = (lines: string): Transform => ({ operation: 'remove', target: { block: 'example', language: 'python', lines } })
+  expect(execute(source, [add, remove('first()\nsecond()')])).toMatchObject({ errors: [{ code: 'TRANSFORM_ON_INSERTED' }] })
+  expect(execute(source, [add, remove('first()\nabsent()')])).toMatchObject({ errors: [{ code: 'LINE_NOT_FOUND' }] })
+  expect(execute(source, [{ operation: 'replace', target: { block: 'example', language: 'python' }, content: { file: 'cloud.md' } }, remove('new()')], { 'cloud.md': fence('python', 'new()') })).toMatchObject({ errors: [{ code: 'TRANSFORM_ON_INSERTED' }] })
+})
+
+it('keeps added language fences inside a list even when the block has blank edge lines', () => {
+  const source = '1. Step\n\n    <!-- doc:block:start id="example" -->\n\n    ```python\n    original()\n    ```\n\n    <!-- doc:block:end id="example" -->'
+  const result = execute(source, [{ operation: 'add', target: { block: 'example', language: 'java' }, content: { file: 'java.md' } }], { 'java.md': fence('java', 'newValue();') })
+  expect(body(result)).toContain('    ```java\n    newValue();\n    ```')
+})
