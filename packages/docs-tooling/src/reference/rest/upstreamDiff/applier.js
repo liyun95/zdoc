@@ -20,7 +20,6 @@ const PROSE_KEYS = new Set(['summary', 'description', 'example'])
 const CONSTRAINT_KEYS = new Set(['type', 'format', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'minLength', 'maxLength', 'pattern', 'minItems', 'maxItems', 'uniqueItems', 'enum', 'default', 'nullable', 'deprecated', 'required'])
 const LIFECYCLE_KEYS = new Set(['x-added-at', 'x-last-modified', 'x-deprecated-since'])
 const LIFECYCLE_TRACK = /^[0-9]+\.[0-9]+\.x$/
-const BRANCH_POINTER = /\/(?:oneOf|anyOf)\/[0-9]+\//
 
 const isScalar = value => value === null || ['string', 'number', 'boolean'].includes(typeof value)
 
@@ -172,7 +171,7 @@ function sameValue(left, right, unordered) {
  * the entry carries an explicit, logged override. Confirmation-flagged drifts
  * (suspected generator loss) can only be applied with an override.
  */
-function assertBoundToCitedEntry(entry, cited, parent, leaf, tokens) {
+function assertBoundToCitedEntry(document, entry, cited, parent, leaf, tokens) {
     const label = entry.diffEntryId
     const change = cited.change || {}
     if (entry.kind === 'prose') {
@@ -212,10 +211,33 @@ function assertBoundToCitedEntry(entry, cited, parent, leaf, tokens) {
         } else if (cited.scope === 'operation' && !(tokens.length === 4 && tokens[0] === 'paths')) {
             fail('REST_UPSTREAM_APPLY_UNBOUND_LOCUS', `${label}: operation-scoped drift must target the operation object`)
         }
-        if (cited.branch && !BRANCH_POINTER.test(entry.opPath)) {
-            fail('REST_UPSTREAM_APPLY_UNBOUND_LOCUS', `${label}: drift is scoped to branch "${cited.branch}" but the target is outside any oneOf/anyOf branch`)
+        if (cited.branch) {
+            const branchLabel = branchLabelAt(document, tokens)
+            if (branchLabel === null) {
+                fail('REST_UPSTREAM_APPLY_UNBOUND_LOCUS', `${label}: drift is scoped to branch "${cited.branch}" but the target is outside any oneOf/anyOf branch`)
+            }
+            if (branchLabel !== cited.branch) {
+                fail('REST_UPSTREAM_APPLY_UNBOUND_LOCUS', `${label}: drift is scoped to branch "${cited.branch}" but the target sits in branch "${branchLabel}"`)
+            }
         }
     }
+}
+
+// Label of the oneOf/anyOf branch the pointer passes through, computed the same way
+// the diff labels branches (x-tab-label, else branch-N among the object members).
+function branchLabelAt(document, tokens) {
+    for (let index = 0; index < tokens.length - 1; index++) {
+        if (!['oneOf', 'anyOf'].includes(tokens[index]) || !/^[0-9]+$/.test(tokens[index + 1])) continue
+        let container = document
+        for (const token of tokens.slice(0, index + 1)) container = Array.isArray(container) ? container[Number(token)] : container?.[token]
+        if (!Array.isArray(container)) return null
+        const branch = container[Number(tokens[index + 1])]
+        if (!isPlainObject(branch)) return null
+        if (typeof branch['x-tab-label'] === 'string') return branch['x-tab-label']
+        const objectPosition = container.slice(0, Number(tokens[index + 1]) + 1).filter(isPlainObject).length
+        return `branch-${objectPosition}`
+    }
+    return null
 }
 
 function applyFragmentEntry(document, entry, cited, denylist) {
@@ -241,7 +263,7 @@ function applyFragmentEntry(document, entry, cited, denylist) {
     if (kind === 'constraint' && leaf === 'required' && (typeof entry.value === 'boolean') !== isParameterObject(parent)) {
         fail('REST_UPSTREAM_APPLY_VALUE_INVALID', `${label}: boolean required belongs to parameter objects, arrays to schemas`)
     }
-    assertBoundToCitedEntry(entry, cited, parent, leaf, tokens)
+    assertBoundToCitedEntry(document, entry, cited, parent, leaf, tokens)
     parent[leaf] = entry.value
 }
 

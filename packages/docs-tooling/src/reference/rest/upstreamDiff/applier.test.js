@@ -274,3 +274,16 @@ test('writes are bound to the cited drift: kind, leaf, locus, and value must mat
     assert.throws(() => parseChangeSet(JSON.stringify(changeSet([{id: MAXLENGTH_SERVING_ID, kind: 'constraint', targetFragment: '11-import-operations-v2.json',
         opPath: `${servingObjectUrl}/maxLength`, value: 256, overrideReason: 'stray'}], diff))), /REST_UPSTREAM_CHANGESET_OVERRIDE_REASON_UNEXPECTED/)
 })
+
+test('branch-scoped drift must be written into the cited branch, not a sibling branch with the same field', () => {
+    const diff = baseDiff()
+    const apply = entries => applyChangeSet({documents: new Map([['11-import-operations-v2.json', importFragment()]]),
+        changeSet: changeSet(entries, diff), diff, ruleset: RULESET})
+    // MAXLENGTH_SERVING_ID is scoped to "External storage (Serving)" (oneOf/1); oneOf/2 is the On-demand branch.
+    assert.throws(() => apply([{id: MAXLENGTH_SERVING_ID, kind: 'constraint', targetFragment: '11-import-operations-v2.json',
+        opPath: `${CREATE_POINTER}/requestBody/content/application~1json/schema/oneOf/2/properties/objectUrl/maxLength`, value: 256}]),
+    /REST_UPSTREAM_APPLY_UNBOUND_LOCUS.*sits in branch "External storage \(On-demand\)"/)
+    const ok = apply([{id: MAXLENGTH_SERVING_ID, kind: 'constraint', targetFragment: '11-import-operations-v2.json',
+        opPath: `${CREATE_POINTER}/requestBody/content/application~1json/schema/oneOf/1/properties/objectUrl/maxLength`, value: 256}])
+    assert.equal(ok.appliedLog.length, 1)
+})

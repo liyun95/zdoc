@@ -685,8 +685,8 @@ keys) must be identical before and after. Each write is additionally **bound to
 the cited drift**: a prose entry must cite a `summary`/`description` drift and
 write that leaf; a constraint entry must cite a `constraint`/`required`/
 `deprecated` drift, write the reported key on the reported parameter or field
-(inside a oneOf/anyOf branch when the drift was branch-scoped, in the fragment
-the drift was reported in), and carry exactly the upstream value the diff
+(inside the very oneOf/anyOf branch the drift names — matched by `x-tab-label`
+— when the drift was branch-scoped, in the fragment the drift was reported in), and carry exactly the upstream value the diff
 recorded; title additions must cite an `upstream-added` operation and removals
 a `fragment-only` one. Deviating from the upstream value, applying a drift
 flagged `requiresConfirmation` (`required-array` absent upstream or
