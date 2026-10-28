@@ -74,7 +74,7 @@ describe('pure two-version wrapper emitter', () => {
     expect(envelope.frontMatter?.text).toBe(segmented(current).envelope.frontMatter?.text)
     expect(envelope.imports.map(item => item.component)).toEqual(['Admonition', 'Tabs', 'TabItem'])
     expect(result.components).toEqual(['Admonition', 'Tabs', 'TabItem'])
-    expect(result.notes).toEqual([{ code: 'MERGE_METADATA_DIFFERENT', fields: ['nested.a', 'nested.z', 'title'], message: expect.any(String) }])
+    expect(result.notes).toEqual([{ code: 'MERGE_FRONT_MATTER_CURRENT', fields: ['nested.a', 'nested.z', 'title'], message: expect.any(String) }])
     for (const region of result.generatedRegions) expect(result.markdown.slice(region.span.start, region.span.end)).not.toContain('import ')
     assertViews(result, input(current, 'current'), input(next, 'next'))
     lint(result.markdown)

@@ -43,7 +43,7 @@ export interface MergeInput {
   context?: DiagnosticContext
   releaseChannel?: 'current' | 'next' | 'retire-in-next'
 }
-export interface MergeNote { code: 'MERGE_METADATA_DIFFERENT'; message: string; fields: string[] }
+export interface MergeNote { code: 'MERGE_FRONT_MATTER_CURRENT'; message: string; fields: string[] }
 /** Output offsets are UTF-16, matching SourceSpan; source slices are never rewritten. */
 export interface MergeEmission {
   kind: BlockKind

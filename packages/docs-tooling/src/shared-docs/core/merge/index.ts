@@ -140,7 +140,7 @@ export function mergeMarkdown(input: MergeInput): MergeResult {
   if ('errors' in mb) errors.push(...mb.errors)
   if ('errors' in ma || 'errors' in mb) return { errors }
   const fields = changedFields(ma.value, mb.value).sort()
-  const notes: MergeNote[] = fields.length ? [{ code: 'MERGE_METADATA_DIFFERENT', fields,
+  const notes: MergeNote[] = fields.length ? [{ code: 'MERGE_FRONT_MATTER_CURRENT', fields,
     message: `Current front matter retained; channel metadata differs at: ${fields.join(', ')}` }] : []
   const alignment = selected ? [] : alignBlocks(a.document.blocks, b.document.blocks)
   const retained: Retained[] = selected ? docs[selected].blocks.map(block => ({ block, channel: selected })) : alignment.flatMap(item =>

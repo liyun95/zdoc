@@ -16,6 +16,7 @@ import { createGuidesSnapshot } from '../../adapters/guides-snapshot'
 import { createZdocContentReader } from '../../adapters/zdoc-content'
 import { RealMd2md } from '../../adapters/md2md'
 import { createBuildDemo, externalImage, git, imageBytes, write } from '../build/demo'
+import { currentView, nextView } from '../merge/helpers'
 import type { SharedDocsError, Transform } from '../../core/types'
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 })
@@ -132,14 +133,16 @@ it('rejects content-file traversal and symlink escapes without reading outside b
   expect(await readSharedDocs(options.sharedDocs)).toMatchObject({ errors: [expect.objectContaining({ code: 'TRANSFORM_CONTENT_NOT_FOUND' })] })
 })
 
-it('retains source-only inspect and the existing WP11 failure for unequal channel output', async () => {
+it('retains source-only inspect and successfully projects unequal channel output', async () => {
   const options = await setup([{ ...addition, channel: 'next' }], 'Next-only addition')
   let inspected = ''
   expect(await runInspect({ ...options, page: 'build-pipeline' }, value => { inspected += value })).toBe(0)
   expect(inspected).not.toContain('Next-only addition')
   const result = await build(options)
-  expect(result.code).toBe(1)
-  expect(result.text).toContain('two-version merging requires WP11')
+  expect(result.code, result.text).toBe(0)
+  const output = await readFile(join(options.out, 'guides/tutorials/build-pipeline.mdx'), 'utf8')
+  expect(currentView(output)).not.toContain('Next-only addition')
+  expect(nextView(output)).toContain('Next-only addition')
 })
 
 it('validates every transform before downloading any images', async () => {

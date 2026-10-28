@@ -66,11 +66,21 @@ export async function inspectPage(input: ReadPageInput & { variablesJson: string
     const blocks = inventoryBlocks(markdown, parsed)
     let plan: TransformPlan | undefined
     if (input.transformContext && read.config.transforms?.length) {
+      const reported = new Map<string, number>()
       for (const manual of input.transformContext.manuals) {
         const result = planTransforms({ contentFiles: input.transformContext.contentFiles, tabsRules: input.transformContext.tabsRules,
           availableChannels: manual.availableChannels, markdown, blocks, transforms: read.config.transforms,
           channel, page: input.pageId, pageYaml: input.pageYaml, configFile: pageFile, sourceFile: sourceName })
-        if ('errors' in result) errors.push(...result.errors)
+        if ('errors' in result) {
+          // Preserve repeated failures from distinct rules, while collapsing only
+          // the same occurrence repeated by another manual's availability check.
+          const occurrences = new Map<string, number>()
+          for (const error of result.errors) {
+            const identity = JSON.stringify(error), count = (occurrences.get(identity) ?? 0) + 1
+            occurrences.set(identity, count)
+            if (count > (reported.get(identity) ?? 0)) { errors.push(error); reported.set(identity, count) }
+          }
+        }
         else plan ??= result
       }
       if (!plan) continue

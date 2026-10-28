@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -32,6 +33,11 @@ it('keeps single-version bytes for the same source and lock without generated wr
   expect(first.code, first.diagnostic).toBe(0)
   expect(second.code, second.diagnostic).toBe(0)
   expect(second.pages).toEqual(first.pages)
+  // Independent bytes produced by unmodified origin/master 19628451c.
+  expect(second.pages.map(page => createHash('sha256').update(page).digest('hex'))).toEqual([
+    'b76af821db2be61beb7e3c84be4eaf08397fa203c2e494ceadf469f89366c74e',
+    'e2e478863f62a1565b1c25fab948502335d6fa3f7f65345c5d34f04f93ea040f',
+  ])
   for (const page of second.pages) {
     expect(page.toString()).not.toContain('<NextChannel')
     expect(page.toString()).not.toContain('version note')
@@ -51,13 +57,13 @@ it('keeps single-version bytes when distinct locked commits contain identical so
   expect(merged.pages).toEqual(baseline.pages)
 })
 
-it('still rejects divergent output from a next-only transform at equal lock SHAs', async () => {
+it('merges divergent output from a next-only transform at equal lock SHAs', async () => {
   const options = await fixture()
   const yaml = await readFile(join(options.sharedDocs, 'pages/build-pipeline/page.yaml'), 'utf8')
   await write(options.sharedDocs, 'pages/build-pipeline/page.yaml', yaml +
     'transforms: [{operation: add, position: before, target: {block: connect}, channel: next, content: {file: cloud.md}}]\n')
   await write(options.sharedDocs, 'pages/build-pipeline/cloud.md', 'Next-only addition')
   const result = await output(options, 'diverged')
-  expect(result.code).toBe(1)
-  expect(result.diagnostic).toContain('two-version merging requires WP11')
+  expect(result.code, result.diagnostic).toBe(0)
+  expect(result.pages.every(page => page.toString().includes('<NextChannel action="include">'))).toBe(true)
 })
