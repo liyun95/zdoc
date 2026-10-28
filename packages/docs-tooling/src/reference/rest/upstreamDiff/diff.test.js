@@ -206,6 +206,11 @@ test('duplicated parameter copies (x-base-url-target gating) get distinct entry 
         ['upstream-modified|post /v2/x|parameter||Authorization:header#0|description|', 0],
         ['upstream-modified|post /v2/x|parameter||Authorization:header#1|description|', 1],
     ])
+
+    // Both copies absent upstream: reported once, not once per copy.
+    const noAuthUpstream = {openapi: '3.0.3', paths: {'/v2/x': {post: {summary: 'X', responses: {'200': {description: 'ok'}}}}}}
+    const absent = run({upstream: noAuthUpstream, fragments: new Map([['21-project-operations-v2.json', fragment]])})
+    assert.deepEqual(absent.entries.map(entry => entry.id), ['zdoc-only|post /v2/x|parameter||Authorization:header|param-absent-upstream|'])
 })
 
 test('ruleset without a denylist fails closed', () => {

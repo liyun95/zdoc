@@ -388,10 +388,13 @@ function diffParameters(context) {
             }
         }
     }
+    const reportedAbsent = new Set()
     for (const fragmentParameter of fragmentParams) {
         if (denylisted(ruleset, fragmentParameter.name)) continue
         const key = `${fragmentParameter.name}:${fragmentParameter.in}`
+        if (reportedAbsent.has(key)) continue
         if (upstreamParams.some(parameter => `${parameter.name}:${parameter.in}` === key)) continue
+        reportedAbsent.add(key)
         entries.push(makeEntry({...meta, category: 'zdoc-only', scope: 'parameter', field: key,
             change: {kind: 'param-absent-upstream', before: null, after: null}, evidence: upstreamEvidencePath}))
     }
