@@ -383,6 +383,15 @@ closed with `ADAPT_UNSUPPORTED_MARKUP` at that source line because the unchanged
 Fetch lint scans literal tags inside fences. The same conservative guard also
 covers other literal channel-tag spellings in a paired region. Unclosed fences,
 ambiguous markup and incompatible global reference bindings fail closed as well.
+The unchanged static CURRENT resolver scans fixed triple backtick/tilde segments,
+so even valid long fences can hide generated gates when a literal shorter marker
+inside one fence shifts that scan into a later block. The complete assembled page
+is checked, including common blocks and both generated opening and closing tags.
+A hidden boundary fails with `ADAPT_UNSUPPORTED_MARKUP` at the original marker
+that starts the unsafe resolver segment; rewrite the fence example using
+indentation or different markers, or use a channel transform. Ordinary fences
+whose scan leaves all generated boundaries visible remain supported. Equal-input
+and whole-page output retain their existing paths without generated gates.
 
 Explicit heading IDs remain global in MDX. A duplicate ID across retained blocks
 fails with `ADAPT_UNSUPPORTED_MARKUP`, naming both origins and suggesting a

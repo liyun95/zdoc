@@ -284,5 +284,24 @@ export function mergeMarkdown(input: MergeInput): MergeResult {
       }
     }
   }
+  // Match the unchanged production static resolver's literal segmentation,
+  // including markers in common blocks and the current metadata envelope.
+  // Markdown-valid long fences can make its fixed-three-marker scan bridge
+  // blocks and hide a generated opening OR closing tag. Never emit that page.
+  const boundaries = generatedRegions.flatMap(region => [region.openSpan, region.closeSpan])
+  for (const fence of markdown.matchAll(/```[\s\S]*?```|~~~[\s\S]*?~~~/g)) {
+    const start = fence.index!, end = start + fence[0].length
+    if (!boundaries.some(boundary => boundary.start < end && boundary.end > start)) continue
+    const emission = emissions.find(item => item.span.start <= start && start < item.span.end)
+    // Every fence marker comes from a retained source slice or front matter;
+    // generated separators, imports and channel tags contain no fence markers.
+    const source = emission?.sources[0]
+    const channel = source?.channel ?? 'current'
+    const sourceOffset = source ? source.span.start + start - emission!.span.start : start
+    errors.push({ ...diagnostic(sources[channel], lineAt(docs[channel].lineOffsets, sourceOffset), 'ADAPT_UNSUPPORTED_MARKUP',
+      'The unchanged static resolver would hide a generated channel boundary inside a literal fence segment.'),
+      fix: 'Rewrite the fence example (use indentation or a different marker) or use a channel transform before merging.' })
+  }
+  if (errors.length) return { errors }
   return { markdown, components, origins, notes, generatedRegions, emissions, unchanged: false }
 }
