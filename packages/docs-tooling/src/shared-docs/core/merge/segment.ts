@@ -88,24 +88,49 @@ export function segmentMarkdown(input: SegmentInput): SegmentResult {
     intervals.push({ start: at(start), end: at(end), kind: kinds[token.type] })
   }
 
-  // HTML-disabled parsing reveals code inside JSX containers, but it would also
-  // interpret fence-looking text in opaque comments and raw HTML as Markdown.
-  // Shield the spans that the HTML parser has already identified as opaque.
-  const opaque = new Uint8Array(source.length)
-  for (const token of tokens) {
-    if (token.type !== 'html_block' || !token.map) continue
-    const start = at(token.map[0]), end = at(token.map[1])
-    const html = source.slice(start, end)
-    // A Tabs HTML token can itself contain a complete comment or raw element
-    // when there is no blank line between them. Mask those nested ranges only.
-    for (const match of html.matchAll(/<!--[\s\S]*?-->|<(pre|script|style|textarea)\b[^>]*>[\s\S]*?<\/\1\s*>/gi)) {
-      opaque.fill(1, start + match.index!, start + match.index! + match[0].length)
-    }
-  }
-  const codeSource = parserSource.replace(/[^\r\n]/g, (char, offset: number) => opaque[offset] ? ' ' : char)
+  // Markdown-it's HTML parser can absorb an entire Tabs group, while its
+  // HTML-disabled parser can mistake a fence inside a comment for real code.
+  // Resolve these boundaries together: only comment/raw-HTML starts outside
+  // parser-identified code may shield the next code parse. A literal comment
+  // opener inside a fence cannot hide that fence's closing line.
   const literal = new Uint8Array(source.length)
   const codeParser = new MarkdownIt({ html: false })
-  const codeTokens = codeParser.parse(codeSource, {})
+  let codeRanges: (readonly [number, number])[] = []
+  let codeTokens: ReturnType<typeof codeParser.parse> = []
+  const seen = new Set<string>()
+  for (;;) {
+    const signature = JSON.stringify(codeRanges)
+    if (seen.has(signature)) { fail(bodyStart, 'Ambiguous code and HTML boundaries'); return { errors } }
+    seen.add(signature)
+    const code = new Uint8Array(source.length)
+    for (const [start, end] of codeRanges) code.fill(1, start, end)
+    const opaque = new Uint8Array(source.length)
+    for (const token of tokens) {
+      if (token.type !== 'html_block' || !token.map) continue
+      const start = at(token.map[0]), end = at(token.map[1])
+      const html = source.slice(start, end)
+      // Search starts in source order. A false code range may run through a
+      // real comment's closing marker, so only the opening position is tested
+      // for code ownership; the closing marker is read from the original text.
+      const opening = /<!--|<(pre|script|style|textarea)\b[^>]*>/gi
+      for (const match of html.matchAll(opening)) {
+        const from = start + match.index!
+        if (code[from] || opaque[from]) continue
+        const close = match[0] === '<!--' ? /-->/g : new RegExp(`</${match[1]}\\s*>`, 'gi')
+        close.lastIndex = match.index! + match[0].length
+        const ending = close.exec(html)
+        if (!ending) continue
+        const to = start + ending.index + ending[0].length
+        opaque.fill(1, from, to)
+      }
+    }
+    const codeSource = parserSource.replace(/[^\r\n]/g, (char, offset: number) => opaque[offset] ? ' ' : char)
+    codeTokens = codeParser.parse(codeSource, {})
+    const nextRanges = codeTokens.filter(token => (token.type === 'fence' || token.type === 'code_block') && token.map)
+      .map(token => [at(token.map![0]), at(token.map![1])] as const)
+    if (JSON.stringify(nextRanges) === signature) break
+    codeRanges = nextRanges
+  }
   const inline = new MarkdownIt({ html: true })
   const backticks = inline.inline.ruler.__rules__.find(rule => rule.name === 'backticks')!.fn
   let inlineBase = 0

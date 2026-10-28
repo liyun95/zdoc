@@ -79,6 +79,16 @@ describe('parser source segmentation', () => {
     expect(doc.gates).toHaveLength(2)
   })
 
+  it('keeps a literal comment opener inside a fence from masking its closer', () => {
+    for (const actualComment of ['<!-- actual comment -->', '<!--\n```\n-->']) {
+      const source = `<Tabs>\n<TabItem value="a">\n\`\`\`html\n<!--\n\`\`\`\n${actualComment}\n\nA\n\n</TabItem>\n\n</Tabs>\n`
+      const doc = segment(source)
+      expect(doc.blocks.map(block => block.kind)).toEqual(['tabs'])
+      expect(doc.blocks[0].text).toBe(source)
+      expect(doc.gates).toEqual([])
+    }
+  })
+
   it('retains terminal blank lines in an unclosed fence body', () => {
     const first = '```js\na()\n\n'
     const second = first + '\n'
