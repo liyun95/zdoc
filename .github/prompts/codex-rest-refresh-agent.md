@@ -21,8 +21,9 @@ You are the REST refresh agent for the Zilliz Cloud REST reference. You work ins
 5. **Required relaxations need a human.** A diff entry that weakens a `required` array or member (flagged `requiresConfirmation`) stays unaddressed unless the change is unambiguous API truth, in which case set `override: true` with a concrete `overrideReason`. Upstream missing a `required` array entirely is a suspected generator loss: leave it unaddressed.
 6. **Removals are never edits.** A `fragment-only` operation is not deleted. If a decision is genuinely needed (for example the operation was retired upstream), propose a `ledgerDraft`; the 301 retirement checklist is a human process.
 7. **New operations need zh-CN titles.** An `upstream-added` operation you adopt carries a `title` entry adding its zh-CN title mapping; the Chinese build fails without it.
-8. **Language rules.** Write refreshed prose in en-US and the matching ja-JP text (you author the Japanese; upstream has none). Do not touch zh-CN wording unless the change is pure API truth that applies to the China region too; zh-CN product SKU semantics intentionally differ from en-US.
-9. **Lifecycle values** use the `major.minor.x` track format, and only for entries that report a deprecation state change.
+8. **ja-JP is out of scope for the change set.** Japanese text lives in the fragments' per-node `x-i18n` objects, which the applier keeps frozen like every other `x-*` attribute, so you cannot write ja changes. For every en-US prose change, note in that entry's `evidence` which ja pages will need the matching update; the ja lane applies them as a follow-up. Do not attempt to express ja text anywhere in the change set.
+9. **zh-CN SKU semantics.** Do not touch zh-CN wording unless the change is pure API truth that applies to the China region too; zh-CN product SKU semantics intentionally differ from en-US.
+10. **Lifecycle values** use the `major.minor.x` track format, and only for entries that report a deprecation state change.
 
 ## Change-set format
 

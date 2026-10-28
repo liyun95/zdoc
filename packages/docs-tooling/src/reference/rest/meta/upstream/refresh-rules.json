@@ -36,7 +36,7 @@
     },
     {
       "id": "ja-jp-follows-en",
-      "rule": "Every en-US prose change needs the matching ja-JP change in the same change set; upstream specs carry no Japanese, so the agent writes it for human review."
+      "rule": "ja-JP text lives in the fragments' per-node x-i18n objects, which the applier keeps frozen like every other x-* attribute; the automated change set therefore cannot write Japanese. Every en-US prose change must record in its evidence which ja pages need the matching update, and the ja lane applies them as a follow-up; do not claim ja parity inside the change set."
     },
     {
       "id": "removal-needs-decision",

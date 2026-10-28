@@ -229,9 +229,14 @@ denylist, `x-*`, and oneOf branch structure are asserted), run the canonical
 bytes check, the change-scoped `test:for-change` union plus
 `pnpm test:rest-publication-contract` and `pnpm test:workflow-policy`, both
 site builds, `git diff --check`, and finally open the PR with
-`REST_UPSTREAM_REFRESH_PAT` so the pull-request checks actually run. The PR
-body embeds the diff report and the applier log (overrides, ledger drafts,
-unaddressed entries) for human review.
+`REST_UPSTREAM_REFRESH_PAT` so the pull-request checks actually run. The same
+commit bumps the lock pin to the refreshed upstream commit with its content
+SHA (atomic adoption: the watchdog goes quiet exactly when the PR merges).
+The PR body embeds the diff report and the applier log (overrides, ledger
+drafts, unaddressed entries) for human review. ja-JP is a deliberate
+follow-up: the change set cannot write ja (the applier freezes `x-i18n`
+leaves), so each en-US prose change records the ja pages the ja lane must
+refresh.
 
 Required credentials and variables (all fail closed when missing):
 

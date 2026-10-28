@@ -19,6 +19,10 @@ const {serializeDocument} = require(path.join(__dirname, '..', '..', 'packages',
 
 const REST_UPSTREAM_ENTRY = path.join(__dirname, '..', '..', 'packages', 'docs-tooling', 'src', 'reference', 'rest', 'index.js')
 const GITHUB_API = 'https://api.github.com'
+// Repositories that need the private-repo contents:read token; everything
+// else reads anonymously through the public token. New private sources must
+// be registered here.
+const PRIVATE_TOKEN_REPOSITORIES = Object.freeze(new Set(['zilliztech/zilliz-cloud']))
 
 function fail(message) {
     throw new Error(message)
@@ -49,7 +53,7 @@ async function fetchSpecBytes(fetchImpl, {repository, specPath, ref, token}) {
 // One source check. `no-drift` is the cheap daily path; `drift` runs the diff
 // at HEAD; `pin-only` covers source-tree sources ahead of the P2 extractor.
 async function checkSource(fetchImpl, {source, tokens}) {
-    const isPrivate = source.repository === 'zilliztech/zilliz-cloud'
+    const isPrivate = PRIVATE_TOKEN_REPOSITORIES.has(source.repository)
     const token = isPrivate ? tokens.private : tokens.public
     if (isPrivate && !token) fail('REST_UPSTREAM_WATCHDOG_TOKEN_MISSING: provision REST_UPSTREAM_GITHUB_TOKEN (or PRODUCT_DOC_LINKS_GITHUB_TOKEN) with contents:read on zilliztech/zilliz-cloud')
     const headSha = await resolveHeadSha(fetchImpl, {repository: source.repository, ref: source.trackedRef, token})
@@ -71,7 +75,7 @@ async function runWatchdog({lockPath, outDir, tokens, fetchImpl = globalThis.fet
             fs.mkdirSync(sourceDir, {recursive: true})
             // Keep the upstream extension: loadSpecFile dispatches YAML vs JSON on it.
             const specPath = path.join(sourceDir, `upstream-spec${path.extname(check.artifactPath) || '.yaml'}`)
-            fs.writeFileSync(specPath, await fetchSpecBytes(fetchImpl, {repository: source.repository, specPath: check.artifactPath, ref: check.head, token: source.repository === 'zilliztech/zilliz-cloud' ? tokens.private : tokens.public}))
+            fs.writeFileSync(specPath, await fetchSpecBytes(fetchImpl, {repository: source.repository, specPath: check.artifactPath, ref: check.head, token: PRIVATE_TOKEN_REPOSITORIES.has(source.repository) ? tokens.private : tokens.public}))
             const diffDir = path.join(sourceDir, 'diff')
             const result = spawnSync(process.execPath, [REST_UPSTREAM_ENTRY, 'rest-upstream-diff', '--source', source.id, '--spec', specPath, '--upstream-commit', check.head, '--out', diffDir], {encoding: 'utf8'})
             if (result.status !== 0) fail(`REST_UPSTREAM_WATCHDOG_DIFF_FAILED: ${source.id}: ${result.stderr.slice(0, 1000)}`)

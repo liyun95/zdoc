@@ -46,6 +46,10 @@ jobs:
         with:
           ref: ${{ inputs.base_ref }}
           fetch-depth: 0
+          # The agent turn runs with full sandbox access; do not leave the
+          # default checkout token in the workspace git config. The final step
+          # pushes with the PAT URL instead.
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v5
 
@@ -57,6 +61,15 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # The refresh flow only targets master-owned fragments today; other
+      # bases would open a refresh PR against a branch that cannot carry them.
+      - name: Validate dispatch inputs
+        run: |
+          test '${{ inputs.base_ref }}' = 'master' || {
+            echo "base_ref must be 'master' (got '${{ inputs.base_ref }}')" >&2
+            exit 1
+          }
 
       - name: Resolve upstream revision and fetch the spec
         id: upstream
@@ -71,25 +84,31 @@ jobs:
             exit 1
           }
           mkdir -p "$RUNNER_TEMP/rest-upstream"
+          # stdin scripts mixing require() with top-level await fail module
+          # detection on Node 22 (ERR_AMBIGUOUS_MODULE_SYNTAX): wrap in an IIFE.
           node <<'NODE'
           const fs = require('node:fs')
           const path = require('node:path')
+          const crypto = require('node:crypto')
           const {resolveHeadSha, fetchSpecBytes} = require('./scripts/rest-upstream/drift-watchdog')
           const {loadRestUpstreamLock, findLockSource} = require('./packages/docs-tooling/src/reference/rest/upstreamDiff/lock')
-          const lock = loadRestUpstreamLock('./packages/docs-tooling/src/reference/rest/meta/upstream/rest-upstream-lock.json')
-          const source = findLockSource(lock, process.env.SOURCE)
-          if (source.artifact.kind !== 'spec-file') throw new Error(`rest-upstream-refresh: ${source.id} is a source-tree source; the extractor skeleton (P2) is required first`)
-          const token = process.env.REST_UPSTREAM_GITHUB_TOKEN
-          const commit = process.env.UPSTREAM_COMMIT || await resolveHeadSha(globalThis.fetch, {repository: source.repository, ref: source.trackedRef, token})
-          const bytes = await fetchSpecBytes(globalThis.fetch, {repository: source.repository, specPath: source.artifact.path, ref: commit, token})
-          const outDir = process.env.RUNNER_TEMP
-          const specPath = path.join(outDir, `upstream-spec${path.extname(source.artifact.path) || '.yaml'}`)
-          fs.writeFileSync(specPath, bytes)
-          fs.writeFileSync(path.join(outDir, 'upstream-commit.txt'), commit)
-          console.log(`fetched ${source.repository}:${source.artifact.path}@${commit} (${bytes.length} bytes)`)
+          ;(async () => {
+            const lock = loadRestUpstreamLock('./packages/docs-tooling/src/reference/rest/meta/upstream/rest-upstream-lock.json')
+            const source = findLockSource(lock, process.env.SOURCE)
+            if (source.artifact.kind !== 'spec-file') throw new Error(`rest-upstream-refresh: ${source.id} is a source-tree source; the extractor skeleton (P2) is required first`)
+            const token = process.env.REST_UPSTREAM_GITHUB_TOKEN
+            const commit = process.env.UPSTREAM_COMMIT || await resolveHeadSha(globalThis.fetch, {repository: source.repository, ref: source.trackedRef, token})
+            const bytes = await fetchSpecBytes(globalThis.fetch, {repository: source.repository, specPath: source.artifact.path, ref: commit, token})
+            const specPath = path.join(process.env.RUNNER_TEMP, `upstream-spec${path.extname(source.artifact.path) || '.yaml'}`)
+            fs.writeFileSync(specPath, bytes)
+            fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'upstream-commit.txt'), commit)
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `commit=${commit}\nspec_path=${specPath}\nspec_sha256=${crypto.createHash('sha256').update(bytes).digest('hex')}\n`)
+            console.log(`fetched ${source.repository}:${source.artifact.path}@${commit} (${bytes.length} bytes)`)
+          })().catch(error => {
+            console.error(String(error?.message || error))
+            process.exit(1)
+          })
           NODE
-          echo "commit=$(cat "$RUNNER_TEMP/upstream-commit.txt")" >> "$GITHUB_OUTPUT"
-          echo "spec_path=$RUNNER_TEMP/upstream-spec.yaml" >> "$GITHUB_OUTPUT"
 
       # Deterministic staging: diff + touched fragment copies + ruleset +
       # instructions, with the repository-path isolation sweep (design §8.1/§8.6).
@@ -133,9 +152,14 @@ jobs:
 
       # Gate 9a: land the verified outputs on the refresh branch. Only files
       # the applier changed move; unaddressed diff entries ride the PR body.
-      - name: Land applied fragments and titles on the refresh branch
+      # Design §3.1/§5: adoption is atomic — the same commit lands the fragment
+      # and titles deltas AND bumps the lock pin, so the watchdog goes quiet
+      # exactly when the refresh PR merges (no hand-edited lock follow-up).
+      - name: Land applied fragments, titles, and the lock pin bump on the refresh branch
         env:
           SOURCE: ${{ inputs.source }}
+          UPSTREAM_COMMIT: ${{ steps.upstream.outputs.commit }}
+          SPEC_SHA256: ${{ steps.upstream.outputs.spec_sha256 }}
         run: |
           node <<'NODE'
           const fs = require('node:fs')
@@ -148,21 +172,28 @@ jobs:
           if (applied.titleLog.length > 0) {
             fs.copyFileSync(path.join(process.env.RUNNER_TEMP, process.env.APPLIED, 'titles.json'), path.join(restMeta, 'titles.json'))
           }
-          console.log(`landed ${applied.changedFiles.length} fragment(s); ${applied.titleLog.length} title entr(ies); ${applied.overrides.length} override(s); ${applied.ledgerDrafts.length} ledger draft(s)`)
+          const lockPath = path.join(restMeta, 'upstream', 'rest-upstream-lock.json')
+          const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'))
+          const source = lock.sources.find(entry => entry.id === process.env.SOURCE)
+          if (!source) throw new Error(`lock has no source ${process.env.SOURCE}`)
+          source.pin = {commit: process.env.UPSTREAM_COMMIT, contentSha256: process.env.SPEC_SHA256}
+          source.lastVerifiedAt = new Date().toISOString()
+          fs.writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`)
+          console.log(`landed ${applied.changedFiles.length} fragment(s); ${applied.titleLog.length} title entr(ies); ${applied.overrides.length} override(s); ${applied.ledgerDrafts.length} ledger draft(s); pin -> ${process.env.UPSTREAM_COMMIT}`)
           NODE
           git add packages/docs-tooling/src/reference/rest/meta
           test -n "$(git status --porcelain -- packages/docs-tooling/src/reference/rest/meta)" || {
-            echo 'The change set produced no fragment or titles delta on this base; nothing to refresh' >&2
+            echo 'The change set produced no fragment, titles, or lock delta on this base; nothing to refresh' >&2
             exit 1
           }
           git config user.name 'zdoc rest-upstream bot'
           git config user.email 'bot@zilliz.com'
-          git commit -m "refactor(rest): refresh fragments from ${SOURCE} @ $(cat "$RUNNER_TEMP/upstream-commit.txt")"
+          git commit -m "refactor(rest): refresh fragments from ${SOURCE} @ ${UPSTREAM_COMMIT}"
 
-      # Gates 3-7 in order (design §8.4): canonical bytes, fragment collection
-      # + completeness receipt + titles assertions (rest-publication-contract),
-      # the test:for-change union, and workflow policy. Any failure stops the
-      # run with the evidence in the artifacts.
+      # Gates 3-7 in order (design §8.4): canonical bytes, the change-scoped
+      # test union, workflow policy. The missing-zh-title assertion lives in
+      # the generator and fires in build:zh-CN (next step). Any failure stops
+      # the run with the evidence in the artifacts.
       - name: Verify canonical fragment bytes
         run: node packages/docs-tooling/src/reference/rest/index.js rest-upstream-format
 
@@ -224,7 +255,8 @@ jobs:
             '- [ ] `x-*` attributes: zero unexpected diff',
             '- [ ] no internal-field denylist term in any changed value',
             '- [ ] zh-CN changes are API-truth only (SKU semantics untouched)',
-            '- [ ] every en-US prose change has the matching ja-JP change',
+            `- [ ] the lock pin is bumped to ${process.env.UPSTREAM_COMMIT} in the same commit (atomic adoption)`,
+            '- [ ] ja-JP follow-up: the change set cannot write ja (x-i18n is applier-frozen); every en-US prose change lists the ja pages the ja lane must refresh',
             '- [ ] entries flagged `requiresConfirmation` that were applied carry an override reason',
             '- [ ] new operations carry a zh-CN titles.json mapping; no operation was removed',
             '',

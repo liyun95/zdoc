@@ -193,6 +193,31 @@ function writePrepareFixture(dir, {specMaxLength, specSummary}) {
     fs.writeFileSync(path.join(dir, 'instructions.md'), '# Instruction pack\n')
 }
 
+test('rest-upstream-ledger-bootstrap --from-diff defaults --date to today', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-bootstrap-date-'))
+    try {
+        fs.writeFileSync(path.join(dir, 'diff.json'), JSON.stringify({
+            schemaVersion: '1.0',
+            source: 'zilliz-cloud-control-plane',
+            publicationTarget: 'zilliz',
+            upstreamPin: 'a'.repeat(40),
+            summary: {'fragment-only': 1},
+            entries: [{
+                id: 'fragment-only|post /v2/vectordb/jobs/import/abort|11-import-operations-v2.json|operation||||operation-absent-upstream|',
+                category: 'fragment-only', opKey: 'post /v2/vectordb/jobs/import/abort', fragment: '11-import-operations-v2.json',
+                scope: 'operation', change: {kind: 'operation-absent-upstream', before: null, after: null},
+                evidence: 'fragment 11-import-operations-v2.json', ledgerStatus: 'pending',
+            }],
+        }, null, 2) + '\n')
+        const generated = runCli(['rest-upstream-ledger-bootstrap', '--from-diff', path.join(dir, 'diff.json'), '--out', path.join(dir, 'proposal.json')])
+        assert.equal(generated.status, 0, generated.stderr)
+        const proposal = JSON.parse(fs.readFileSync(path.join(dir, 'proposal.json'), 'utf8'))
+        assert.match(proposal.generatedOn, /^\d{4}-\d{2}-\d{2}$/)
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
+})
+
 test('rest-upstream-prepare stages an isolated agent workspace and fails closed without drift', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-prepare-'))
     try {
@@ -220,6 +245,25 @@ test('rest-upstream-prepare stages an isolated agent workspace and fails closed 
             '--instructions', path.join(dir, 'instructions.md')])
         assert.equal(occupied.status, 1)
         assert.match(occupied.stderr, /REST_UPSTREAM_STAGING_EXISTS/)
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
+})
+
+test('rest-upstream-prepare resolves the committed instruction pack from REPOSITORY_ROOT without --instructions', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-prepare-default-'))
+    try {
+        writePrepareFixture(dir, {specMaxLength: 50, specSummary: 'Create Project.'})
+        const staging = path.join(dir, 'staging')
+        const prepare = runCli(['rest-upstream-prepare', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
+            '--staging', staging, '--allow-empty-drift', '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json')])
+        assert.equal(prepare.status, 0, prepare.stderr)
+        assert.equal(fs.readFileSync(path.join(staging, 'INSTRUCTIONS.md'), 'utf8').includes('REST Upstream Refresh Agent'), true)
+        const missing = runCli(['rest-upstream-prepare', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
+            '--staging', path.join(dir, 'staging-2'), '--allow-empty-drift', '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json'),
+            '--instructions', path.join(dir, 'absent.md')])
+        assert.equal(missing.status, 1)
+        assert.match(missing.stderr, /REST_UPSTREAM_INSTRUCTIONS_MISSING/)
     } finally {
         fs.rmSync(dir, {recursive: true, force: true})
     }

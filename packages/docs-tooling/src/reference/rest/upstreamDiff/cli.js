@@ -12,7 +12,9 @@ const {applyChangeSet, reconcile, writeCanonicalOutputs} = require('./applier')
 const {buildLedgerProposal, parseRestUpstreamLedgerProposal, mergeLedgerProposal} = require('./ledgerBootstrap')
 const {prepareRestUpstreamStaging} = require('./staging')
 
-const REPOSITORY_ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..')
+// Six levels up from upstreamDiff/: rest → reference → src → docs-tooling → packages → repo root.
+const REPOSITORY_ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..', '..')
+const DEFAULT_INSTRUCTIONS = path.join(REPOSITORY_ROOT, '.github', 'prompts', 'codex-rest-refresh-agent.md')
 
 const REST_ROOT = path.join(__dirname, '..')
 const DEFAULTS = {
@@ -211,15 +213,16 @@ function registerLedgerBootstrapCommand(command) {
         .description('Pre-register existing drift (generate a proposal from a full diff) or merge a reviewed proposal into the ledger')
         .option('--from-diff <path>', 'diff.json produced by rest-upstream-diff at the pinned commit')
         .option('--merge <path>', 'Human-reviewed proposal to merge into the append-only ledger')
-        .option('--date <YYYY-MM-DD>', 'UTC date recorded on generated entries (default: today)', () => new Date().toISOString().slice(0, 10))
+        .option('--date <YYYY-MM-DD>', 'UTC date recorded on generated entries (default: today)')
         .option('--out <path>', 'Proposal output path (generate mode)')
         .option('--ledger <path>', 'Ledger file path', DEFAULTS.ledger)
         .action(opts => {
             if (opts.fromDiff) {
                 if (opts.merge) fail('REST_UPSTREAM_BOOTSTRAP_MODE_CONFLICT', 'use either --from-diff or --merge, not both')
                 if (!opts.out) fail('REST_UPSTREAM_BOOTSTRAP_OUT_REQUIRED', 'generate mode needs --out')
+                const date = opts.date || new Date().toISOString().slice(0, 10)
                 const diff = JSON.parse(fs.readFileSync(opts.fromDiff, 'utf8'))
-                const proposal = buildLedgerProposal(diff, {date: opts.date})
+                const proposal = buildLedgerProposal(diff, {date})
                 fs.mkdirSync(path.dirname(path.resolve(opts.out)), {recursive: true})
                 fs.writeFileSync(opts.out, serializeDocument(proposal))
                 console.log(`bootstrap proposal ${proposal.entries.length} entr(ies) -> ${opts.out}`)
@@ -239,7 +242,7 @@ function registerPrepareCommand(command) {
         .description('Build the isolated agent staging directory (diff + touched fragment copies + ruleset + instructions)')
         .requiredOption('--source <id>', 'Source id from the lock file')
         .requiredOption('--spec <path>', 'Upstream spec file (.yaml/.yml/.json) fetched at the commit under review')
-        .requiredOption('--staging <dir>', 'Staging directory to create (must not exist)')
+        .requiredOption('--staging <dir>', 'Staging directory to create (must be absent or empty)')
         .option('--upstream-commit <sha>', 'Commit the spec was fetched from; defaults to the lock pin')
         .option('--expect-pinned', 'Fail unless the spec bytes match the lock contentSha256', false)
         .option('--allow-empty-drift', 'Stage even when no substantive drift exists (rehearsal escape hatch)', false)
@@ -251,6 +254,11 @@ function registerPrepareCommand(command) {
         .option('--fragments <dir>', 'Fragment directory', DEFAULTS.fragments)
         .option('--migration <path>', 'fragment-migration.json used to scope fragment-only reporting by api surface', DEFAULTS.migration)
         .action(opts => {
+            // The default pack anchors REPOSITORY_ROOT; a wrong root would
+            // only surface as an ENOENT deep in staging. Trip here instead.
+            if (!fs.existsSync(opts.instructions)) {
+                fail('REST_UPSTREAM_INSTRUCTIONS_MISSING', `${opts.instructions}: instruction pack not found (REPOSITORY_ROOT=${REPOSITORY_ROOT})`)
+            }
             const {diff, specSha256, source} = computeUpstreamDiff(opts)
             const drift = substantiveDriftEntries(diff)
             if (drift.length === 0 && !opts.allowEmptyDrift) {
