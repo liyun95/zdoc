@@ -7,12 +7,14 @@ const {execFileSync} = require('node:child_process')
 const {loadTypeScript} = require('../lib/load-typescript')
 const fetch = require('../../packages/docs-tooling/src/lark/sharedPageFetch')
 const SourceIndex = require('../../packages/docs-tooling/src/lark/larkSourceIndex')
-const {validateSharedReceipt, safeHandoffPath} = require('../../packages/docs-tooling/src/lark/sharedPageRouting')
+const {validateSharedReceipt, readSharedReceipt, readActiveState, safeHandoffPath} = require('../../packages/docs-tooling/src/lark/sharedPageRouting')
 const {runBuild, readSharedDocs} = loadTypeScript(path.resolve(__dirname, '../../packages/docs-tooling/src/shared-docs/commands/build.ts'))
 const {parseLock} = loadTypeScript(path.resolve(__dirname, '../../packages/docs-tooling/src/shared-docs/core/lock.ts'))
 const {parseSourceConfig} = loadTypeScript(path.resolve(__dirname, '../../packages/docs-tooling/src/shared-docs/core/config.ts'))
 const {resolveManualPublication} = loadTypeScript(path.resolve(__dirname, '../../packages/docs-tooling/src/manuals/registry.ts'))
 const {createGuidesNavigationState} = require('../../packages/docs-tooling/src/lark/sourceSnapshot')
+const {validateImageBaseUrl} = require('../../packages/docs-tooling/src/lark/sharedImageUploader')
+const {HttpImageFetcher} = loadTypeScript(path.resolve(__dirname, '../../packages/docs-tooling/src/shared-docs/adapters/images.ts'))
 const sharedRoot = 'shared-docs/guides'
 function write(root, relative, bytes) {
   if (!safeHandoffPath(relative)) throw new Error('Unsafe source output path')
@@ -117,7 +119,7 @@ function baselineFallback(data, recordId, baselineRoot, out, source = {}) {
   }
   return {outputs, receipt, active}
 }
-function receiptDraft({page, input, upstream, lock, outputs, images, channel, imageBaseUrl}) {
+function receiptDraft({page, input, upstream, lock, outputs, images, channel, imageBaseUrl, notes = []}) {
   const byPath = new Map()
   for (const version of ['current', 'next']) for (const file of upstream[version]) {
     if (!byPath.has(file.path)) byPath.set(file.path, {path: file.path, current: null, next: null})
@@ -138,17 +140,28 @@ function receiptDraft({page, input, upstream, lock, outputs, images, channel, im
     fetch: {navigation: fetch.digest(JSON.stringify(input.evidence.navigation)), image_base_url: imageBaseUrl},
     tools: {zdoc: input.evidence.master_commit, md2md: md2mdPackage.version},
     images: images.map(image => ({source: image.original, sha256: image.sha256, object: image.address})),
-  }, outputs, channel: channel === 'current' ? null : channel, notes: []}
+  }, outputs, channel: channel === 'current' ? null : channel, notes}
 }
+function receiptNotes(built) {
+  const groups = new Map()
+  for (const output of built) for (const note of output.notes) {
+    const text = `${note.code}: ${note.message}; fields: ${[...note.fields].sort().join(', ')}`
+    if (!groups.has(text)) groups.set(text, new Set())
+    groups.get(text).add(output.manual)
+  }
+  return [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([text, manuals]) => manuals.size === built.length ? text : `${[...manuals].sort().join(', ')}: ${text}`)
+}
+
 /** One success/fallback transaction per record. Only scratch holds image bodies; this does not upload or publish. */
 async function generateSharedSources(options, dependencies = {}) {
   const {preparation: data, repositoryRoot, baselineRoot, repo, sourceDir, candidate, rootToken, out, scratch, runId} = options
   if (!data || (!Object.keys(data.inputs).length && !data.errors.length)) return null
+  const imageBaseUrl = validateImageBaseUrl(options.imageBaseUrl)
   if (!/^\d+$/.test(String(runId))) throw new Error('A numeric Fetch run ID is required')
   fetch.pinnedCommit(repositoryRoot, data.master_commit); fetch.pinnedCommit(baselineRoot, data.dev_commit)
   emptyDirectory(out); emptyDirectory(scratch)
   const context = fetch.restoreRouting(data)
-  const effectiveActive = structuredClone(data.active), outcomes = [], referringTables = new Set()
+  const effectiveActive = structuredClone(data.active), outcomes = [], referringTables = new Set(), imageNotices = new Map()
   const currentSources = readCurrentSources(sourceDir, candidate)
   const oldReads = new Map()
   const fetchOld = token => {
@@ -182,17 +195,34 @@ async function generateSharedSources(options, dependencies = {}) {
       const lock = parsedLock.lock
       const upstream = Object.fromEntries(['current', 'next'].map(version => [version, lockedInventory(repo, lock[version])]))
       const targets = fetch.planFetchTargets({record, sourceDir, baselineRoot, rootToken, page, navigation: data.navigation, previousSnapshot: data.previous_snapshot})
-      const fetchContext = {page, targets, records: data.navigation.navigationRecords.map(row => ({record_id: row.record_id, slug: row.slug,
+      const active = readActiveState(baselineRoot)?.pages.find(entry => entry.record === record.record_id && entry.page === page)
+      let previousReceipt = null
+      if (active) {
+        const previousSnapshot = JSON.parse(fetch.regularBytes(baselineRoot, fetch.snapshotPath))
+        const previous = previousSnapshot.records?.find(row => row.record_id === active.record && row.shared_page?.page === page)
+        if (!previous) throw new Error('Active shared page has no corresponding baseline snapshot record')
+        previousReceipt = readSharedReceipt(baselineRoot, previous.shared_page)
+        require('../../packages/docs-tooling/src/lark/sharedPagePublication').validatePublishedReceipt(previousReceipt, previous,
+          {workspace: baselineRoot, snapshot: previousSnapshot})
+      }
+      const recordedImages = new Map((previousReceipt?.inputs.images || []).map(image => [image.source, image.sha256]))
+      const acceptedFetcher = new HttpImageFetcher(Math.ceil((options.imageTimeout ?? 120) * 1000))
+      const readAcceptedImage = async (source, sha256) => {
+        const image = previousReceipt?.inputs.images.find(image => image.source === source && image.sha256 === sha256)
+        if (!image) throw new Error(`Missing accepted image object: ${source}`)
+        const base = validateImageBaseUrl(previousReceipt.inputs.fetch.image_base_url)
+        return (dependencies.readAcceptedImage || (url => acceptedFetcher.fetch(url)))(`${base}/${image.object}`)
+      }
+      const fetchContext = {page, targets, recordedImages, records: data.navigation.navigationRecords.map(row => ({record_id: row.record_id, slug: row.slug,
         placement_type: row.placement_type, publish_targets: row.targets, output_paths: {}}))}
       let built, log = ''
       const buildErrors = []
       const code = await runBuild({sharedDocs: path.join(repositoryRoot, sharedRoot), repo, dev: baselineRoot, out: buildOut, page,
-        imageTimeout: options.imageTimeout ?? 120}, text => { log += text }, {repositoryRoot, fetchContext, fetcher: dependencies.fetcher, onErrors: errors => buildErrors.push(...errors), onBuilt: pages => { built = pages }})
+        imageTimeout: options.imageTimeout ?? 120}, text => { log += text }, {repositoryRoot, fetchContext, fetcher: dependencies.fetcher, readAcceptedImage, onErrors: errors => buildErrors.push(...errors), onBuilt: pages => { built = pages }})
       if (code || !built || built.length !== 2) throw Object.assign(new Error(`Paired shared build failed: ${log}`), {
         code: buildErrors.some(error => error.code === 'OWNERSHIP_PATH_MISMATCH') ? 'OWNERSHIP_PATH_MISMATCH' : 'SHARED_BUILD_FAILED',
         detail: buildErrors.length ? buildErrors : null,
       })
-      const imageBaseUrl = (options.imageBaseUrl || 'https://zdoc-images.s3.us-west-2.amazonaws.com').replace(/\/$/, '')
       for (const output of built) for (const address of new Set(output.images.map(image => image.address))) output.mdx = output.mdx.split(address).join(`${imageBaseUrl}/${address}`)
       const activation = await fetch.activationDraft({record, page, active: data.active, previousSnapshot: data.previous_snapshot, currentSources,
         navigation: data.navigation, pages: built, sourceDir, rootToken, fetchOld, runId})
@@ -214,7 +244,7 @@ async function generateSharedSources(options, dependencies = {}) {
         path: `${resolveManualPublication(output.manual, 'en').publication.contentRoot}/${output.path}${output.extension}`,
         sha256: fetch.digest(Buffer.from(output.mdx))}))
       const receipt = receiptDraft({page, input, upstream, lock, outputs, images, channel: targets[0].channel,
-        imageBaseUrl})
+        imageBaseUrl, notes: receiptNotes(built)})
       validateSharedReceipt(receipt, input.identity)
       const identity = {...input.identity, inputs_sha256: fetch.digest(JSON.stringify(receipt.inputs))}
       const files = []
@@ -231,6 +261,11 @@ async function generateSharedSources(options, dependencies = {}) {
           const linking = link.source_token && candidate.records.find(row => [row.doc_token, row.node_token, row.obj_token].includes(link.source_token))
           if (linking?.table_id) referringTables.add(linking.table_id)
         }
+      }
+      for (const output of built) for (const notice of output.notices) {
+        const row = {code: notice.code, page, source_page: page, url: notice.detail.original,
+          recorded: notice.detail.recorded, observed: notice.detail.observed}
+        imageNotices.set(JSON.stringify(row), row)
       }
       outcomes.push({record_id: record.record_id, page, status: 'success', identity, outputs: files, images,
         receipt: `pages/${page}/receipt-draft.json`, activation, targets, image_base_url: imageBaseUrl, input_context: {...input.evidence, upstream}})
@@ -268,7 +303,7 @@ async function generateSharedSources(options, dependencies = {}) {
   candidate.navigation_records = finalNavigation.navigationRecords; candidate.table_digests = finalNavigation.tableDigests
   if (options.plan) options.plan.affected_tables = [...new Set([...(options.plan.affected_tables || []), ...bundle.referring_tables,
     ...selected.map(record => record.base_table_id)])].filter(Boolean).sort()
-  const notices = []
+  const notices = [...imageNotices.values()]
   for (const source of currentSources) for (const link of require('../../packages/docs-tooling/src/lark/canonicalLinkAuditor').extractContentLinks(source)) {
     const active = effectiveActive.pages.find(entry => entry.feishu_token === link.token)
     if (active && link.anchor && !Object.hasOwn(active.anchors, link.anchor)) notices.push({...link, page: active.page})
@@ -315,4 +350,4 @@ async function main(argv) {
   }
 }
 if (require.main === module) main(process.argv.slice(2)).catch(error => { console.error(error.stack); process.exitCode = 1 })
-module.exports = {prepareUpstream, lockedInventory, generateSharedSources, readCurrentSources, receiptDraft, baselineFallback, baselinePublicationPaths, main}
+module.exports = {prepareUpstream, lockedInventory, generateSharedSources, readCurrentSources, receiptDraft, receiptNotes, baselineFallback, baselinePublicationPaths, main}

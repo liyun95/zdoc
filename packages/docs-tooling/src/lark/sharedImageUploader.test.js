@@ -69,3 +69,15 @@ test('corrupt existing content and write failures stop without repair, deletion 
     assert.deepEqual(calls.map(call => call.constructor.name), mode === 'existing-corrupt' ? ['GetObjectCommand'] : ['GetObjectCommand', 'PutObjectCommand'])
   }
 })
+
+test('shared uploader requires an explicit valid image base even in skip mode', () => {
+  const previous = process.env.IMAGE_BED_URL
+  delete process.env.IMAGE_BED_URL
+  try {
+    for (const baseUrl of [undefined, '', 'http://images.test', 'https://user:secret@images.test', 'https://images.test/?query=1']) {
+      assert.throws(() => new SharedImageUploader({baseUrl, mode: 'skip'}), /IMAGE_BED_URL/)
+    }
+    process.env.IMAGE_BED_URL = 'https://environment.test/'
+    assert.equal(new SharedImageUploader({mode: 'skip'}).baseUrl, 'https://environment.test')
+  } finally {if (previous === undefined) delete process.env.IMAGE_BED_URL; else process.env.IMAGE_BED_URL = previous}
+})

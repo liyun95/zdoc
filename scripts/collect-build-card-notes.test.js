@@ -796,3 +796,15 @@ test('shared publication summary includes page-local failure and unknown-anchor 
     assert.match(note, /reader: https:\/\/example.feishu.cn\/wiki\/old#unknown/);
   });
 });
+
+test('shared publication summary renders typed image notices with both digests', () => {
+  withTempCwd(() => {
+    const directory = 'tmp/shared-report'; fs.mkdirSync(directory, {recursive: true});
+    fs.writeFileSync(path.join(directory, 'guides-shared-publication.json'), JSON.stringify({schema_version: 1, failures: [],
+      notices: [{code: 'IMAGE_SOURCE_CHANGED', page: 'sample', source_page: 'sample', url: 'https://origin.test/image.png', recorded: 'a'.repeat(64), observed: 'b'.repeat(64)}]}));
+    const note = require('./collect-build-card-notes').sharedPublicationNote({directory});
+    assert.match(note, /IMAGE_SOURCE_CHANGED: sample: https:\/\/origin.test\/image.png/);
+    assert.ok(note.includes('recorded=' + 'a'.repeat(64))); assert.ok(note.includes('observed=' + 'b'.repeat(64)));
+    assert.doesNotMatch(note, /SHARED_ANCHOR_UNKNOWN/);
+  });
+});
