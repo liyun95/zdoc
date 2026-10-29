@@ -25,9 +25,14 @@ test('committed lock, ledger, and ruleset parse and pin real upstream sources', 
     const ledger = loadRestUpstreamLedger(DEFAULTS.ledger)
     // Bootstrap (2026-10-28 replay): 51 external stock operations plus 3
     // deferred decisions (modifyProperties adoption, etl/merge and
-    // import/create branch attribution candidates).
-    assert.equal(ledger.entries.length, 54)
-    assert.equal(ledger.entries.filter(entry => entry.classification === 'external').length, 51)
+    // import/create branch attribution candidates); the milvus bootstrap
+    // (2026-10-29, doc-team reviewed) adds 13 external v1 operations,
+    // 9 confirmed-public + 2 field-attribution deferred, and 2 rejected
+    // internal endpoints.
+    assert.equal(ledger.entries.length, 80)
+    assert.equal(ledger.entries.filter(entry => entry.classification === 'external').length, 64)
+    assert.equal(ledger.entries.filter(entry => entry.classification === 'rejected').length, 2)
+    assert.equal(ledger.entries.filter(entry => entry.source === 'milvus-data-plane').length, 26)
     const ruleset = loadRuleset(DEFAULTS.rules)
     assert.deepEqual(ruleset.internalFieldDenylist, ['accessKey', 'secretKey', 'token', 'innerCall'])
     assert.ok(ruleset.policies.some(policy => policy.id === 'doc-design-zdoc'))
@@ -396,13 +401,13 @@ test('lifecycle-track diffs, T4 accounting, and the migration gate wire through 
         const undecidedPath = path.join(dir, 'undecided-diff.json')
         fs.writeFileSync(undecidedPath, JSON.stringify({
             ...diffDocument,
-            entries: [...diffDocument.entries, {opKey: 'post /v2/vectordb/snapshots/list', category: 'upstream-added', scope: 'operation',
+            entries: [...diffDocument.entries, {opKey: 'post /v2/vectordb/snapshots/fake_internal_op', category: 'upstream-added', scope: 'operation',
                 change: {kind: 'operation-absent-in-fragments', before: null, after: null}, evidence: '/paths/x/post', id: 'x'}],
         }, null, 2) + '\n')
         const undecided = runCli(['rest-upstream-accounting', '--diff', undecidedPath])
         assert.equal(undecided.status, 1)
         assert.match(undecided.stderr, /REST_UPSTREAM_LEDGER_ACCOUNTING_INCOMPLETE/)
-        assert.match(undecided.stderr, /post \/v2\/vectordb\/snapshots\/list/)
+        assert.match(undecided.stderr, /post \/v2\/vectordb\/snapshots\/fake_internal_op/)
         const report = runCli(['rest-upstream-accounting', '--diff', undecidedPath, '--report-only', '--out', path.join(dir, 'accounting.json')])
         assert.equal(report.status, 0, report.stderr)
         const statement = JSON.parse(fs.readFileSync(path.join(dir, 'accounting.json'), 'utf8'))
