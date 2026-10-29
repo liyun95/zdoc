@@ -143,7 +143,22 @@ test('diff refuses source-tree sources until the extractor skeleton exists, and 
         fs.writeFileSync(path.join(dir, 'spec.json'), '{"openapi":"3.0.3","paths":{}}')
         const result = runCli(['rest-upstream-diff', '--source', 'milvus-data-plane', '--spec', path.join(dir, 'spec.json'), '--out', path.join(dir, 'out')])
         assert.equal(result.status, 1)
-        assert.match(result.stderr, /REST_UPSTREAM_SOURCE_KIND_UNSUPPORTED/)
+        assert.match(result.stderr, /REST_UPSTREAM_SKELETON_REQUIRED/)
+
+        const noSpec = runCli(['rest-upstream-diff', '--source', 'zilliz-cloud-control-plane', '--out', path.join(dir, 'out')])
+        assert.equal(noSpec.status, 1)
+        assert.match(noSpec.stderr, /REST_UPSTREAM_SPEC_REQUIRED/)
+
+        fs.writeFileSync(path.join(dir, 'skeleton.json'), JSON.stringify({
+            schemaVersion: '1.0',
+            extractedFrom: {repository: 'other/repo', sourceDir: 'internal/distributed/proxy/httpserver', mountPrefix: '/v2/vectordb'},
+            operations: [{path: '/v2/vectordb/collections/list', method: 'post', handler: 'listCollections', requestStruct: 'DatabaseReq',
+                requestSchema: {$ref: '#/components/schemas/DatabaseReq'}}],
+            components: {schemas: {DatabaseReq: {type: 'object', properties: {dbName: {type: 'string'}}}}},
+        }, null, 2) + '\n')
+        const mismatch = runCli(['rest-upstream-diff', '--source', 'milvus-data-plane', '--skeleton', path.join(dir, 'skeleton.json'), '--out', path.join(dir, 'out')])
+        assert.equal(mismatch.status, 1)
+        assert.match(mismatch.stderr, /REST_UPSTREAM_SKELETON_SOURCE_MISMATCH/)
 
         const fragmentsDir = path.join(dir, 'fragments')
         fs.mkdirSync(fragmentsDir)
@@ -290,6 +305,53 @@ test('rest-upstream-prepare stages only diff-touched fragments and enforces stag
         assert.deepEqual(fs.readdirSync(path.join(staging, 'fragments')).sort(), ['21-project-operations-v2.json'])
         const manifest = JSON.parse(fs.readFileSync(path.join(staging, 'staging-manifest.json'), 'utf8'))
         assert.equal(manifest.files.some(file => file.path === 'fragments/21-project-operations-v2.json'), true)
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
+})
+
+test('diff and prepare accept a source-tree skeleton for milvus-data-plane', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-cli-skeleton-'))
+    try {
+        const fragmentsDir = path.join(dir, 'fragments')
+        fs.mkdirSync(fragmentsDir)
+        fs.writeFileSync(path.join(fragmentsDir, '05-collection-operations-v2.json'), `${JSON.stringify({
+            openapi: '3.0.1',
+            paths: {'/v2/vectordb/collections/list': {post: {
+                summary: 'List Collections',
+                parameters: [{name: 'Authorization', in: 'header', required: true}],
+                requestBody: {content: {'application/json': {schema: {type: 'object', properties: {dbName: {type: 'string', maxLength: 255}}}}}},
+                responses: {'200': {description: 'ok'}},
+            }}},
+        }, null, 2)}\n`)
+        fs.writeFileSync(path.join(dir, 'skeleton.json'), JSON.stringify({
+            schemaVersion: '1.0',
+            extractedFrom: {repository: 'milvus-io/milvus', sourceDir: 'internal/distributed/proxy/httpserver', mountPrefix: '/v2/vectordb'},
+            operations: [{path: '/v2/vectordb/collections/list', method: 'post', handler: 'listCollections', requestStruct: 'DatabaseReq',
+                requestSchema: {$ref: '#/components/schemas/DatabaseReq'}}],
+            components: {schemas: {DatabaseReq: {type: 'object', properties: {dbName: {type: 'string'}}}}},
+        }, null, 2) + '\n')
+
+        const outDir = path.join(dir, 'diff')
+        const diff = runCli(['rest-upstream-diff', '--source', 'milvus-data-plane', '--skeleton', path.join(dir, 'skeleton.json'),
+            '--fragments', fragmentsDir, '--out', outDir])
+        assert.equal(diff.status, 0, diff.stderr)
+        // Structure-only: the Authorization header and the maxLength stay doc
+        // design (zdoc-only); no prose/response/parameter drift is reportable.
+        assert.match(diff.stdout, /zdoc-only: 1/)
+        const diffDocument = JSON.parse(fs.readFileSync(path.join(outDir, 'diff.json'), 'utf8'))
+        assert.equal(diffDocument.upstreamPin, '6d833a672807e7c75c490c9383f68a42ed1142ea')
+
+        fs.writeFileSync(path.join(dir, 'titles.json'), '{\n  "list-collections": "list-collections"\n}\n')
+        fs.writeFileSync(path.join(dir, 'instructions.md'), '# Instruction pack\n')
+        const staging = path.join(dir, 'staging')
+        const prepared = runCli(['rest-upstream-prepare', '--source', 'milvus-data-plane', '--skeleton', path.join(dir, 'skeleton.json'),
+            '--staging', staging, '--allow-empty-drift', '--fragments', fragmentsDir, '--titles', path.join(dir, 'titles.json'),
+            '--instructions', path.join(dir, 'instructions.md')])
+        assert.equal(prepared.status, 0, prepared.stderr)
+        const manifest = JSON.parse(fs.readFileSync(path.join(staging, 'staging-manifest.json'), 'utf8'))
+        assert.equal(manifest.specSha256, null)
+        assert.ok(manifest.files.some(file => file.path === 'fragments/05-collection-operations-v2.json'))
     } finally {
         fs.rmSync(dir, {recursive: true, force: true})
     }

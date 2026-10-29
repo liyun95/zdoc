@@ -7,6 +7,13 @@ const {isDeepStrictEqual} = require('node:util')
 // object is treated as the UNION of all branch fields, deliberate per-branch
 // omissions are silent, and fields that NO branch covers become `unattributed`
 // ledger candidates. The diff never proposes adding fields to branches.
+//
+// Source-tree sources (design §6, e.g. the milvus data plane) diff in
+// structure-only mode: the extracted skeleton carries no prose, no parameters,
+// and no response contract, so summary/description/parameter/response
+// comparisons are skipped instead of reporting their absence as drift. What
+// remains is exactly the code-owned truth: operation presence, deprecation,
+// request-body fields, constraints, and required membership.
 
 const HTTP_METHODS = new Set(['get', 'put', 'post', 'delete', 'patch', 'options', 'head', 'trace'])
 const BRANCH_COMBINATORS = ['oneOf', 'anyOf']
@@ -18,6 +25,18 @@ function fail(code, message) {
 
 function isPlainObject(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+// API-truth projection of a schema: everything the branch-aware diff compares,
+// minus doc-owned keys (x-* authoring attributes and prose). Used to decide
+// whether two same-named fragment component variants are interchangeable
+// donors for cross-fragment reference resolution.
+function apiTruthOf(value) {
+    if (Array.isArray(value)) return value.map(apiTruthOf)
+    if (!isPlainObject(value)) return value
+    return Object.fromEntries(Object.entries(value)
+        .filter(([key]) => !key.startsWith('x-') && key !== 'description')
+        .map(([key, inner]) => [key, apiTruthOf(inner)]))
 }
 
 function normalizeText(text) {
@@ -39,21 +58,43 @@ function resolvePointer(document, pointer) {
     return value
 }
 
-// Resolve a local $ref and overlay sibling keywords (fragments attach x-* and
-// field overrides to $ref objects). Cycles fail closed.
-function resolveSchema(document, schema, depth = 0) {
+// Resolve a local $ref. Fragment documents may reference components defined in
+// a sibling fragment (the publication assembler merges fragments before
+// rendering, so cross-fragment refs are sanctioned); when the local walk
+// dangles, fall back to the shared merged-components root. Cycles fail closed.
+function resolvePointer(document, pointer, shared = null) {
+    if (!pointer.startsWith('#/')) fail('REST_UPSTREAM_REF_UNSUPPORTED', pointer)
+    const tokens = pointer.slice(2).split('/').map(token => token.replace(/~1/g, '/').replace(/~0/g, '~'))
+    const walk = root => {
+        let value = root
+        for (const token of tokens) {
+            if (value === null || typeof value !== 'object') return undefined
+            value = Array.isArray(value) ? value[Number(token)] : value[token]
+        }
+        return value
+    }
+    const value = walk(document)
+    if (value !== undefined) return value
+    if (shared) {
+        const sharedValue = walk(shared)
+        if (sharedValue !== undefined) return sharedValue
+    }
+    fail('REST_UPSTREAM_REF_DANGLING', pointer)
+}
+
+function resolveSchema(document, schema, depth = 0, shared = null) {
     if (!isPlainObject(schema)) return schema
     if (depth > 8) fail('REST_UPSTREAM_REF_CYCLE', 'depth limit exceeded')
     const {$ref, ...siblings} = schema
     if (typeof $ref === 'string') {
-        const target = resolvePointer(document, $ref)
-        return resolveSchema(document, {...(isPlainObject(target) ? target : {}), ...siblings}, depth + 1)
+        const target = resolvePointer(document, $ref, shared)
+        return resolveSchema(document, {...(isPlainObject(target) ? target : {}), ...siblings}, depth + 1, shared)
     }
     if (Array.isArray(schema.allOf)) {
         const merged = {...schema}
         delete merged.allOf
         for (const member of schema.allOf) {
-            const resolvedMember = resolveSchema(document, member, depth + 1)
+            const resolvedMember = resolveSchema(document, member, depth + 1, shared)
             if (!isPlainObject(resolvedMember)) continue
             for (const [key, value] of Object.entries(resolvedMember)) {
                 if (key === 'properties' && isPlainObject(merged.properties) && isPlainObject(value)) {
@@ -70,15 +111,15 @@ function resolveSchema(document, schema, depth = 0) {
     return schema
 }
 
-function branchesOf(document, schema) {
-    const effective = resolveSchema(document, schema)
+function branchesOf(document, schema, shared = null) {
+    const effective = resolveSchema(document, schema, 0, shared)
     for (const combinator of BRANCH_COMBINATORS) {
         const value = effective[combinator]
         if (Array.isArray(value) && value.filter(isPlainObject).length >= 2) {
             const objects = value.filter(isPlainObject)
             return {
                 combinator,
-                branches: objects.map(branch => resolveSchema(document, branch)),
+                branches: objects.map(branch => resolveSchema(document, branch, 0, shared)),
                 labels: objects.map((branch, index) => (typeof branch['x-tab-label'] === 'string' ? branch['x-tab-label'] : `branch-${index + 1}`)),
             }
         }
@@ -86,19 +127,19 @@ function branchesOf(document, schema) {
     return null
 }
 
-function propertiesOf(document, schema) {
-    const effective = resolveSchema(document, schema)
+function propertiesOf(document, schema, shared = null) {
+    const effective = resolveSchema(document, schema, 0, shared)
     const properties = isPlainObject(effective.properties) ? effective.properties : {}
-    return Object.fromEntries(Object.entries(properties).map(([name, property]) => [name, resolveSchema(document, property)]))
+    return Object.fromEntries(Object.entries(properties).map(([name, property]) => [name, resolveSchema(document, property, 0, shared)]))
 }
 
-function requiredOf(document, schema) {
-    const effective = resolveSchema(document, schema)
+function requiredOf(document, schema, shared = null) {
+    const effective = resolveSchema(document, schema, 0, shared)
     return Array.isArray(effective.required) ? effective.required : null
 }
 
-function constraintPairs(document, schema) {
-    const effective = resolveSchema(document, schema)
+function constraintPairs(document, schema, shared = null) {
+    const effective = resolveSchema(document, schema, 0, shared)
     return CONSTRAINT_KEYS.filter(key => key in effective).map(key => [key, effective[key]])
 }
 
@@ -160,12 +201,12 @@ function denylisted(ruleset, name) {
  * union-level coverage gaps are reported once by the caller.
  */
 function diffSchemaPair(context) {
-    const {upstreamDocument, upstreamSchema, fragmentDocument, fragmentSchema, ruleset} = context
+    const {upstreamDocument, upstreamSchema, fragmentDocument, fragmentSchema, ruleset, shared} = context
     const entries = []
     const upstreamProperties = propertiesOf(upstreamDocument, upstreamSchema)
-    const fragmentProperties = propertiesOf(fragmentDocument, fragmentSchema)
+    const fragmentProperties = propertiesOf(fragmentDocument, fragmentSchema, shared)
     const upstreamRequired = requiredOf(upstreamDocument, upstreamSchema)
-    const fragmentRequired = requiredOf(fragmentDocument, fragmentSchema)
+    const fragmentRequired = requiredOf(fragmentDocument, fragmentSchema, shared)
 
     for (const [name, fragmentProperty] of Object.entries(fragmentProperties)) {
         if (denylisted(ruleset, name)) continue
@@ -187,7 +228,9 @@ function diffSchemaPair(context) {
                     change: {kind: 'constraint', key, before: fragmentProperty[key], after: null}, evidence: context.upstreamEvidencePath}))
             }
         }
-        if (normalizeText(upstreamProperty.description ?? '') !== normalizeText(fragmentProperty.description ?? '')) {
+        // Structure-only sources carry no extractable prose (design §6: the
+        // fragments win prose), so field descriptions are not comparable.
+        if (!context.structureOnly && normalizeText(upstreamProperty.description ?? '') !== normalizeText(fragmentProperty.description ?? '')) {
             entries.push(makeEntry({...context.meta, category: 'upstream-modified', scope: context.scope, branch: context.branch, field: name,
                 change: {kind: 'description', before: fragmentProperty.description ?? null, after: upstreamProperty.description ?? null},
                 evidence: context.upstreamEvidencePath}))
@@ -235,14 +278,14 @@ function overlapScore(fragmentProperties, upstreamProperties) {
  * (responses: structural lane), once per field.
  */
 function diffBodied(context, fragmentContent, upstreamContent, scope) {
-    const {upstreamDocument, fragmentDocument, ruleset} = context
+    const {upstreamDocument, fragmentDocument, ruleset, shared} = context
     if (!isPlainObject(fragmentContent.schema)) return []
     if (!upstreamContent || !isPlainObject(upstreamContent.schema)) {
         return [makeEntry({...context.meta, category: 'upstream-modified', scope,
             change: {kind: 'body-schema-absent-upstream', before: 'present', after: null}, evidence: context.upstreamEvidencePath})]
     }
 
-    const fragmentBranches = branchesOf(fragmentDocument, fragmentContent.schema)
+    const fragmentBranches = branchesOf(fragmentDocument, fragmentContent.schema, shared)
     if (!fragmentBranches) {
         return diffSchemaPair({...context, fragmentSchema: fragmentContent.schema, upstreamSchema: upstreamContent.schema, scope})
     }
@@ -258,7 +301,7 @@ function diffBodied(context, fragmentContent, upstreamContent, scope) {
     const entries = []
     const coveredNames = new Set()
     for (let index = 0; index < fragmentBranches.branches.length; index++) {
-        const branchProperties = propertiesOf(fragmentDocument, fragmentBranches.branches[index])
+        const branchProperties = propertiesOf(fragmentDocument, fragmentBranches.branches[index], shared)
         for (const name of Object.keys(branchProperties)) coveredNames.add(name)
         entries.push(...diffSchemaPair({
             ...context,
@@ -277,7 +320,7 @@ function diffBodied(context, fragmentContent, upstreamContent, scope) {
             change: {kind: 'field-uncovered', before: null, after: null}, evidence: context.upstreamEvidencePath}))
     }
     if (scope === 'requestBody' && upstreamUnionRequired === null
-        && fragmentBranches.branches.some(branch => (requiredOf(fragmentDocument, branch) || []).length > 0)) {
+        && fragmentBranches.branches.some(branch => (requiredOf(fragmentDocument, branch, shared) || []).length > 0)) {
         entries.push(makeEntry({...context.meta, category: 'upstream-modified', scope,
             change: {kind: 'required-array-missing-upstream', before: 'per-branch required arrays', after: null},
             evidence: context.upstreamEvidencePath, requiresConfirmation: 'required-array'}))
@@ -304,7 +347,7 @@ function diffRequestBody(context) {
 }
 
 function diffResponses(context) {
-    const {upstreamDocument, upstreamOperation, fragmentDocument, fragmentOperation} = context
+    const {upstreamDocument, upstreamOperation, fragmentDocument, fragmentOperation, shared} = context
     const entries = []
     const fragmentResponses = isPlainObject(fragmentOperation.responses) ? fragmentOperation.responses : {}
     const upstreamResponses = isPlainObject(upstreamOperation.responses) ? upstreamOperation.responses : {}
@@ -326,7 +369,7 @@ function diffResponses(context) {
                 change: {kind: 'body-media-absent-upstream', before: 'application/json', after: null}, evidence: context.upstreamEvidencePath}))
             continue
         }
-        const fragmentBranches = branchesOf(fragmentDocument, fragmentContent.schema)
+        const fragmentBranches = branchesOf(fragmentDocument, fragmentContent.schema, shared)
         if (fragmentBranches) {
             // Match the upstream shape to the branch it most overlaps; the remaining
             // tabs (e.g. failure shapes) are preserved untouched.
@@ -334,7 +377,7 @@ function diffResponses(context) {
             let best = -1
             let bestScore = -1
             fragmentBranches.branches.forEach((branch, index) => {
-                const score = overlapScore(propertiesOf(fragmentDocument, branch), upstreamProperties)
+                const score = overlapScore(propertiesOf(fragmentDocument, branch, shared), upstreamProperties)
                 if (score > bestScore) {
                     bestScore = score
                     best = index
@@ -347,7 +390,7 @@ function diffResponses(context) {
             }
             const coveredNames = new Set()
             for (const branch of fragmentBranches.branches) {
-                for (const name of Object.keys(propertiesOf(fragmentDocument, branch))) coveredNames.add(name)
+                for (const name of Object.keys(propertiesOf(fragmentDocument, branch, shared))) coveredNames.add(name)
             }
             for (const name of Object.keys(upstreamProperties)) {
                 if (denylisted(context.ruleset, name) || coveredNames.has(name)) continue
@@ -362,10 +405,17 @@ function diffResponses(context) {
 }
 
 function diffParameters(context) {
-    const {upstreamOperation, fragmentOperation, meta, upstreamEvidencePath, ruleset} = context
+    const {upstreamDocument, upstreamOperation, fragmentDocument, fragmentOperation, meta, upstreamEvidencePath, ruleset, shared} = context
     const entries = []
-    const fragmentParams = (fragmentOperation.parameters || []).filter(isPlainObject)
-    const upstreamParams = (upstreamOperation.parameters || []).filter(isPlainObject)
+    // Fragments may reference shared parameter components ($ref); resolve them
+    // so name/in comparisons see the referenced definition.
+    const unwrap = (document, parameter, fallback = null) => {
+        if (!isPlainObject(parameter) || typeof parameter.$ref !== 'string') return parameter
+        const target = resolvePointer(document, parameter.$ref, fallback)
+        return isPlainObject(target) ? {...target} : parameter
+    }
+    const fragmentParams = (fragmentOperation.parameters || []).filter(isPlainObject).map(parameter => unwrap(fragmentDocument, parameter, shared))
+    const upstreamParams = (upstreamOperation.parameters || []).filter(isPlainObject).map(parameter => unwrap(upstreamDocument, parameter))
     const fragmentIndex = new Map()
     for (const parameter of fragmentParams) {
         const key = `${parameter.name}:${parameter.in}`
@@ -415,12 +465,12 @@ function diffParameters(context) {
 function diffOperationPair(context) {
     const {upstreamOperation, fragmentOperation} = context
     const entries = []
-    if (normalizeText(upstreamOperation.summary ?? '') !== normalizeText(fragmentOperation.summary ?? '')) {
+    if (!context.structureOnly && normalizeText(upstreamOperation.summary ?? '') !== normalizeText(fragmentOperation.summary ?? '')) {
         entries.push(makeEntry({...context.meta, category: 'upstream-modified', scope: 'operation',
             change: {kind: 'summary', before: fragmentOperation.summary ?? null, after: upstreamOperation.summary ?? null},
             evidence: context.upstreamEvidencePath}))
     }
-    if (normalizeText(upstreamOperation.description ?? '') !== normalizeText(fragmentOperation.description ?? '')) {
+    if (!context.structureOnly && normalizeText(upstreamOperation.description ?? '') !== normalizeText(fragmentOperation.description ?? '')) {
         entries.push(makeEntry({...context.meta, category: 'upstream-modified', scope: 'operation',
             change: {kind: 'description', before: fragmentOperation.description ?? null, after: upstreamOperation.description ?? null},
             evidence: context.upstreamEvidencePath}))
@@ -430,9 +480,11 @@ function diffOperationPair(context) {
             change: {kind: 'deprecated', before: Boolean(fragmentOperation.deprecated), after: Boolean(upstreamOperation.deprecated)},
             evidence: context.upstreamEvidencePath}))
     }
-    entries.push(...diffParameters(context))
+    // Structure-only sources carry no parameters and no response contract;
+    // those comparisons are skipped before they can report absence as drift.
+    if (!context.structureOnly) entries.push(...diffParameters(context))
     entries.push(...diffRequestBody(context))
-    entries.push(...diffResponses(context))
+    if (!context.structureOnly) entries.push(...diffResponses(context))
     return entries
 }
 
@@ -458,6 +510,29 @@ function diffSpecifications({source, upstreamPin, upstream, fragments, ledger, r
         }
     }
     const onSourceSurface = file => !fragmentSurfaces || fragmentSurfaces.get(file) === source.apiSurface
+    const structureOnly = source.artifact?.kind === 'source-tree'
+    // Fragment documents may reference components defined in a sibling
+    // fragment; the publication assembler merges them before rendering, so the
+    // diff resolves dangling refs through the merged view. The publication
+    // tree knowingly carries per-fragment variants of a component that differ
+    // only in doc-owned attributes (x-tab-label, x-i18n, descriptions), so the
+    // merged view tolerates variants that are API-truth equivalent and keeps
+    // the first definition in fragment file order as the donor. Definitions
+    // that differ in API truth fail closed instead of picking a winner.
+    const sharedSchemas = {}
+    for (const [file, document] of fragments) {
+        for (const [name, schema] of Object.entries(document.components?.schemas ?? {})) {
+            if (name in sharedSchemas) {
+                if (isDeepStrictEqual(sharedSchemas[name], schema)) continue
+                if (!isDeepStrictEqual(apiTruthOf(sharedSchemas[name]), apiTruthOf(schema))) {
+                    fail('REST_UPSTREAM_SHARED_SCHEMA_CONFLICT', `${name} differs in API truth across fragments (seen in ${file})`)
+                }
+            } else {
+                sharedSchemas[name] = schema
+            }
+        }
+    }
+    const shared = {components: {schemas: sharedSchemas}}
     const upstreamOps = indexOperationsFromDocument(upstream)
     const fragmentOps = indexFragmentOperations(fragments)
     const entries = []
@@ -482,6 +557,8 @@ function diffSpecifications({source, upstreamPin, upstream, fragments, ledger, r
                 fragmentOperation: fragmentRecord.operation,
                 upstreamEvidencePath,
                 ruleset,
+                structureOnly,
+                shared,
             }))
         }
     }

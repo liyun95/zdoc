@@ -235,7 +235,7 @@ run artifact 固定包含：staging 快照、diff JSON、change-set、applier �
 - [ ] watchdog 首跑：pin 一致零成本路径 + 一次人为漂移的报告路径各验一次
 - [ ] refresh 首个真实 PR：门禁全绿 + 人审合并 + lock bump 原子 + sync 链路落 dev + 双站 build 绿
 - [ ] titles/退役联动演练各一次（新增 op + 删除 op）
-- [ ] milvus 试点 reconcile 演练（P2）
+- [x] milvus 试点 reconcile 演练（P2）— pin 6d833a67 全量演练，证据 `.claude/specs/2026-10-29-rest-upstream-milvus-extractor-p2.md` + `tmp/rest-upstream-p2-milvus/`
 - [ ] receipt ledger 会计上线（P3，若 D2 采 P3）
 - [ ] operator 文档落 README（watchdog/refresh 的运行说明与报告解读）
 
@@ -272,6 +272,7 @@ run artifact 固定包含：staging 快照、diff JSON、change-set、applier �
 
 ## 变更记录
 
+- v6（2026-10-29，P2 实施后）：§6 落地于 PR #906，验收证据 `.claude/specs/2026-10-29-rest-upstream-milvus-extractor-p2.md`。实施要点与 §6.1 的差异：①骨架=最小 JSON Schema 词表（{type}/{type,items}/{type,properties,required}/$ref/{}）——首次试点含 additionalProperties/format 时 346 条 upstream-modified 中 324 条是 description 噪音，最小词表把同一 diff 收敛到 22 条实质条目；②structure-only 模式下沉进 diff（`source.artifact.kind === 'source-tree'` 跳过 summary/description/parameter/response 比对，§6.2"存量片段赢 prose"的机器表达）；③新增跨片段组件解析：片段 $ref 悬空时回退全片段合并组件视图（镜像发布装配语义），API 真值等价的同名变体容忍（x-tab-label 等文档属性差异是既有事实），真值冲突 fail-closed（REST_UPSTREAM_SHARED_SCHEMA_CONFLICT）；④watchdog 对 source-tree 源的 `pin-behind` 占位退役：漂移时下载非测试 .go 文件→go run 提取→同 diff 分类，workflow 补 actions/setup-go@v6（pinned 1.27）；⑤试点实证 pin 6d833a67：113 操作/84 组件精确对齐路由表，diff 信号分类齐全（11 upstream-added/24 added-field/9 unattributed/22 modified/48 zdoc-only），ledger bootstrap 提案 26 条待人审合并；⑥已知限制：source-tree pin 无内容摘要（P3 可选）、Go 注释 prose 不入骨架、UnmarshalJSON 覆写形状不提取（P4 流量录制候选）。
 - v5（2026-10-29，P1 code-review 评审后修订）：修复评审 2 P0/3 P1/4 P2——①refresh workflow 的 stdin heredoc 混用 require 与顶层 await 在 Node 22 触发 ERR_AMBIGUOUS_MODULE_SYNTAX，改 async IIFE（本地同版本实测）；②REPOSITORY_ROOT 差一级致默认指令包 ENOENT 且隔离扫描锚错根，改六级并加 prepare 指令包存在性断言+无 `--instructions` 回归测试；③bootstrap `--date` 默认值改为 action 内 `||`（commander coercion 仅在旗标出现时调用）；④**lock pin bump 进 refresh 提交实现原子采纳**（§3.1/§5 兑现：land 步骤写 pin.commit+contentSha256+lastVerifiedAt）；⑤**ja-JP 降范围**：ja 文本在片段 x-i18n 内而 applier 冻结全部 x-* 叶子，change-set 无法表达——规则集 `ja-jp-follows-en` 改写为"en prose 变更在 evidence 记录需跟改的 ja 页，由 ja lane 跟进"，指令包规则 8/PR 清单同步（复核项改 ja 跟进而非 ja 同步）；⑥P2 加固：私有仓身份常量 PRIVATE_TOKEN_REPOSITORIES、spec_path 由 node 写 GITHUB_OUTPUT（修扩展名硬编码）、两个 workflow checkout persist-credentials:false、base_ref 白名单 master、titles 门禁注释改指 build:zh-CN（refGen）。
 - v4（2026-10-28，P1 实施后）：P0+P1 均在 PR #906（`feat/rest-upstream-pipeline`）实现并登记验收证据（§15）。D5/D6 落定：refresh PR 由 `REST_UPSTREAM_REFRESH_PAT` 打开（bot-PR 幻影 CI 教训），上游读取 token = `REST_UPSTREAM_GITHUB_TOKEN` 回退 `PRODUCT_DOC_LINKS_GITHUB_TOKEN`（同权限面，D6 推荐采纳）。一处对 §7 T1 的修订：watchdog 对"无漂移"**不**回写 lock 的 `lastVerifiedAt`（master 只经评审 PR 写入；该字段随 refresh PR 的 pin bump 一并推进），watchdog 报告工件内记录本次核验日期。
 - v3（2026-10-28，code-reviewer 评审后修订）：§8.2 对账从"引用 id 存在"升级为"绑定被引用条目"（kind/叶子/位置/值 + override 日志）；diff 条目 id 加入 fragment 与 response status 分量；required 放宽一律 `requiresConfirmation: required-relaxation`（决策 9 的成员级覆盖）；登记 P0 已知限制（嵌套属性内分支不比对、描述空白折叠、上游自身分支化时 required 不比对）。

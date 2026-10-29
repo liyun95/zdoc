@@ -11,6 +11,7 @@ const {loadChangeSet, diffDigestOf} = require('./changeSet')
 const {applyChangeSet, reconcile, writeCanonicalOutputs} = require('./applier')
 const {buildLedgerProposal, parseRestUpstreamLedgerProposal, mergeLedgerProposal} = require('./ledgerBootstrap')
 const {prepareRestUpstreamStaging} = require('./staging')
+const {loadRestUpstreamSkeleton, skeletonToUpstreamDocument, assertSkeletonMatchesSource} = require('./sourceTree')
 
 // Six levels up from upstreamDiff/: rest → reference → src → docs-tooling → packages → repo root.
 const REPOSITORY_ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..', '..')
@@ -54,21 +55,37 @@ function loadSpecFile(filePath) {
 
 // Shared loading + diff path for rest-upstream-diff and rest-upstream-prepare:
 // one authority for lock/ledger/ruleset/fragment/spec validation ordering.
+// spec-file sources load --spec; source-tree sources load --skeleton, the
+// document produced by the Go extractor from the pinned checkout (design §6).
 function computeUpstreamDiff(opts) {
     const lock = loadRestUpstreamLock(opts.lock)
     const source = findLockSource(lock, opts.source)
-    if (source.artifact.kind !== 'spec-file') fail('REST_UPSTREAM_SOURCE_KIND_UNSUPPORTED', `${source.id}: only spec-file sources diff directly; source-tree sources need the extractor skeleton`)
     const ledger = loadRestUpstreamLedger(opts.ledger)
     const ruleset = loadRuleset(opts.rules)
     const fragments = loadCanonicalFragments(opts.fragments)
     const fragmentSurfaces = loadFragmentSurfaces(opts.migration)
-    const {document, contentSha256} = loadSpecFile(opts.spec)
-    if (opts.expectPinned && source.pin.contentSha256 && source.pin.contentSha256 !== contentSha256) {
-        fail('REST_UPSTREAM_SPEC_DIGEST_MISMATCH', `${opts.spec} sha256 ${contentSha256} != lock ${source.pin.contentSha256}`)
+    let upstream
+    let contentSha256 = null
+    if (source.artifact.kind === 'spec-file') {
+        if (!opts.spec) fail('REST_UPSTREAM_SPEC_REQUIRED', `${source.id}: spec-file sources need --spec`)
+        const loaded = loadSpecFile(opts.spec)
+        contentSha256 = loaded.contentSha256
+        if (opts.expectPinned && source.pin.contentSha256 && source.pin.contentSha256 !== contentSha256) {
+            fail('REST_UPSTREAM_SPEC_DIGEST_MISMATCH', `${opts.spec} sha256 ${contentSha256} != lock ${source.pin.contentSha256}`)
+        }
+        upstream = downgradeDocument(loaded.document)
+    } else if (source.artifact.kind === 'source-tree') {
+        if (!opts.skeleton) {
+            fail('REST_UPSTREAM_SKELETON_REQUIRED', `${source.id}: extract the skeleton from the pinned checkout (go run upstreamDiff/milvus/extractor.go) and pass --skeleton`)
+        }
+        const skeleton = loadRestUpstreamSkeleton(opts.skeleton)
+        assertSkeletonMatchesSource(skeleton, source)
+        upstream = downgradeDocument(skeletonToUpstreamDocument(skeleton))
+    } else {
+        fail('REST_UPSTREAM_SOURCE_KIND_UNSUPPORTED', `${source.id}: unsupported artifact kind ${source.artifact.kind}`)
     }
     const upstreamCommit = opts.upstreamCommit || source.pin.commit
     if (!/^[a-f0-9]{40}$/.test(upstreamCommit)) fail('REST_UPSTREAM_COMMIT_INVALID', upstreamCommit)
-    const upstream = downgradeDocument(document)
     const diff = diffSpecifications({source, upstreamPin: upstreamCommit, upstream, fragments, ledger, ruleset, fragmentSurfaces})
     return {diff, specSha256: contentSha256, source, ruleset, lock}
 }
@@ -154,9 +171,10 @@ function registerFormatCommand(command) {
 
 function registerDiffCommand(command) {
     command
-        .description('Diff a fetched upstream spec against the REST fragments (branch-aware, deterministic)')
+        .description('Diff a fetched upstream spec (spec-file sources: --spec) or an extracted source-tree skeleton (--skeleton) against the REST fragments (branch-aware, deterministic)')
         .requiredOption('--source <id>', 'Source id from the lock file')
-        .requiredOption('--spec <path>', 'Upstream spec file (.yaml/.yml/.json) fetched at the commit under review')
+        .option('--spec <path>', 'Upstream spec file (.yaml/.yml/.json) fetched at the commit under review; required for spec-file sources')
+        .option('--skeleton <path>', 'Source-tree skeleton JSON produced by the Go extractor; required for source-tree sources')
         .requiredOption('--out <dir>', 'Output directory for diff.json and diff.md')
         .option('--upstream-commit <sha>', 'Commit the spec was fetched from; defaults to the lock pin')
         .option('--expect-pinned', 'Fail unless the spec bytes match the lock contentSha256', false)
@@ -241,7 +259,8 @@ function registerPrepareCommand(command) {
     command
         .description('Build the isolated agent staging directory (diff + touched fragment copies + ruleset + instructions)')
         .requiredOption('--source <id>', 'Source id from the lock file')
-        .requiredOption('--spec <path>', 'Upstream spec file (.yaml/.yml/.json) fetched at the commit under review')
+        .option('--spec <path>', 'Upstream spec file (.yaml/.yml/.json) fetched at the commit under review; required for spec-file sources')
+        .option('--skeleton <path>', 'Source-tree skeleton JSON produced by the Go extractor; required for source-tree sources')
         .requiredOption('--staging <dir>', 'Staging directory to create (must be absent or empty)')
         .option('--upstream-commit <sha>', 'Commit the spec was fetched from; defaults to the lock pin')
         .option('--expect-pinned', 'Fail unless the spec bytes match the lock contentSha256', false)

@@ -48,20 +48,51 @@ test('resolveHeadSha returns the tracked ref head', async () => {
     await assert.rejects(() => resolveHeadSha(fetchStub([['/repos/o/r/commits', {ok: false, status: 404}]]), {repository: 'o/r', ref: 'master'}), /GITHUB_API_FAILED/)
 })
 
-test('watchdog reports no-drift, pin-behind, and classified drift per source', async () => {
+test('watchdog reports no-drift and classified drift per source, including source-tree extraction', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-watchdog-'))
     try {
         const lockPath = writeLock(dir, [
             lockSource(),
-            lockSource({id: 'milvus-data-plane', repository: 'milvus-io/milvus', artifact: {kind: 'source-tree', paths: ['x/']}, pin: {commit: 'd'.repeat(40)}, apiSurface: 'data-plane', publicationTarget: 'milvus'}),
+            lockSource({id: 'milvus-data-plane', repository: 'milvus-io/milvus', artifact: {kind: 'source-tree', paths: ['internal/distributed/proxy/httpserver/']}, pin: {commit: 'd'.repeat(40)}, apiSurface: 'data-plane', publicationTarget: 'milvus'}),
             lockSource({id: 'zilliz-cloud-control-plane-at-pin', repository: 'example/at-pin', pin: {commit: 'a'.repeat(40), contentSha256: 'b'.repeat(64)}}),
         ])
+        const goFile = (name, body) => ({type: 'file', name, path: `internal/distributed/proxy/httpserver/${name}`})
+        const raw = body => ({ok: true, status: 200, json: async () => ({}), arrayBuffer: async () => Buffer.from(body)})
         const routes = [
             ['zilliztech/zilliz-cloud/commits', jsonResponse({sha: 'e'.repeat(40)})],
             ['milvus-io/milvus/commits', jsonResponse({sha: 'f'.repeat(40)})],
             ['example/at-pin/commits', jsonResponse({sha: 'a'.repeat(40)})],
             ['contents/vdc', {ok: true, status: 200, json: async () => ({}), arrayBuffer: async () => Buffer.from('openapi: 3.1.0\ninfo: {title: t, version: v1}\npaths: {}\n')}],
-            ['contents/vdc', {ok: true, status: 200, json: async () => ({}), arrayBuffer: async () => Buffer.from('openapi: 3.1.0\ninfo: {title: t, version: v1}\npaths: {}\n')}],
+            ['milvus-io/milvus/contents/internal/distributed/proxy/httpserver?', jsonResponse([
+                goFile('handler_v2.go'),
+                goFile('request_v2.go'),
+                goFile('handler_v2_test.go'),
+            ])],
+            ['milvus-io/milvus/contents/internal/distributed/proxy/httpserver/handler_v2.go?', raw([
+                'package httpserver',
+                '',
+                'import "github.com/gin-gonic/gin"',
+                '',
+                'const CollectionCategory = "/collections/"',
+                'const ListAction = "list"',
+                '',
+                'type HandlersV2 struct{}',
+                '',
+                'func (h *HandlersV2) RegisterRoutesToV2(router gin.IRouter) {',
+                '\trouter.POST(CollectionCategory+ListAction, timeoutMiddleware(wrapperPost(func() any { return &DatabaseReq{} }, h.listCollections)))',
+                '}',
+                '',
+                'func timeoutMiddleware(h gin.HandlerFunc) gin.HandlerFunc { return h }',
+                '',
+                'func (h *HandlersV2) listCollections(c *gin.Context) {}',
+            ].join('\n'))],
+            ['milvus-io/milvus/contents/internal/distributed/proxy/httpserver/request_v2.go?', raw([
+                'package httpserver',
+                '',
+                'type DatabaseReq struct {',
+                '\tDbName string `json:"dbName"`',
+                '}',
+            ].join('\n'))],
         ]
         const outDir = path.join(dir, 'out')
         const report = await runWatchdog({
@@ -73,12 +104,18 @@ test('watchdog reports no-drift, pin-behind, and classified drift per source', a
         })
         assert.deepEqual(report.sources.map(source => [source.id, source.status]), [
             ['zilliz-cloud-control-plane', 'drift'],
-            ['milvus-data-plane', 'pin-behind'],
+            ['milvus-data-plane', 'drift'],
             ['zilliz-cloud-control-plane-at-pin', 'no-drift'],
         ])
-        // The drift source ran the deterministic diff through the real CLI.
+        // The drift sources ran the deterministic diff through the real CLI;
+        // the source-tree one extracted its skeleton with the real Go toolchain.
         const diffDocument = JSON.parse(fs.readFileSync(path.join(outDir, 'zilliz-cloud-control-plane', 'diff', 'diff.json'), 'utf8'))
         assert.equal(diffDocument.upstreamPin, 'e'.repeat(40))
+        const treeDiff = JSON.parse(fs.readFileSync(path.join(outDir, 'milvus-data-plane', 'diff', 'diff.json'), 'utf8'))
+        assert.equal(treeDiff.source, 'milvus-data-plane')
+        assert.equal(treeDiff.upstreamPin, 'f'.repeat(40))
+        assert.ok(treeDiff.entries.length > 0)
+        assert.ok(fs.existsSync(path.join(outDir, 'milvus-data-plane', 'skeleton.json')))
         assert.match(fs.readFileSync(path.join(outDir, 'watchdog-report.md'), 'utf8'), /⚠️ drift/)
         assert.match(fs.readFileSync(path.join(outDir, 'watchdog-report.md'), 'utf8'), /✅ no drift/)
         assert.equal(watchdogCardStatus(report), 'fail')

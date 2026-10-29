@@ -202,21 +202,25 @@ Japanese localization provenance.
 
 The REST fragments are kept aligned with their upstream specs through two
 workflows driven by `packages/docs-tooling/src/reference/rest/meta/upstream/rest-upstream-lock.json`.
-The lock pins one commit per upstream source (`zilliz-cloud-control-plane`
-spec-file source today; the milvus data-plane source waits on its extractor
-skeleton). See
-[the pipeline design](.claude/specs/2026-10-28-rest-upstream-pipeline-design.md)
-and [the 10-21 replay alignment report](.claude/specs/2026-10-28-rest-upstream-replay-10-21-alignment.md)
+The lock pins one commit per upstream source: `zilliz-cloud-control-plane` (a
+spec-file source) and `milvus-data-plane` (a source-tree source, classified by
+the vendored Go extractor). See
+[the pipeline design](.claude/specs/2026-10-28-rest-upstream-pipeline-design.md),
+[the 10-21 replay alignment report](.claude/specs/2026-10-28-rest-upstream-replay-10-21-alignment.md)
+(P1), and [the P2 milvus extractor report](.claude/specs/2026-10-29-rest-upstream-milvus-extractor-p2.md)
 for the acceptance evidence.
 
 `rest-upstream-drift-watchdog.yml` runs daily and on demand. It is read-only:
-for each spec-file source it compares the tracked ref HEAD with the pin and,
-on drift, downloads the spec at HEAD and runs the deterministic diff. The
+for each source it compares the tracked ref HEAD with the pin and, on drift,
+runs the deterministic diff at HEAD — spec-file sources download the upstream
+spec, source-tree sources download the non-test Go files of the pinned
+directory and extract the skeleton with the vendored extractor (the workflow
+installs Go 1.27 via `actions/setup-go`; locally, `go` must be on PATH). The
 report artifact (`rest-upstream-drift-<run_id>`) carries
-`watchdog-report.{md,json}` plus the raw `diff.json`/`diff.md` per drifting
-source; the Feishu card fires only when drift exists. A `pin-behind` status on
-`milvus-data-plane` is expected until the P2 extractor lands. The lock file is
-never written by the watchdog; pins move only through reviewed refresh PRs.
+`watchdog-report.{md,json}` plus the raw `diff.json`/`diff.md` (and the
+extracted `skeleton.json`) per drifting source; the Feishu card fires only
+when drift exists. The lock file is never written by the watchdog; pins move
+only through reviewed refresh PRs.
 
 `rest-upstream-refresh.yml` is dispatched by an operator after a watchdog
 report (inputs: `source`, optional `upstream_commit`, `base_ref`,
@@ -267,6 +271,23 @@ node packages/docs-tooling/src/reference/rest/index.js rest-upstream-ledger-boot
 rehearsals (add `--allow-empty-drift` when no drift exists). The agent runner
 (`scripts/rest-upstream/rest-refresh-agent.js`) requires the staging directory
 from prepare, so it never needs the repository.
+
+Source-tree sources (milvus) diff against an extracted skeleton instead of a
+spec file. Produce one from a pinned checkout of the upstream directory and
+pass it with `--skeleton`:
+
+```bash
+go run packages/docs-tooling/src/reference/rest/upstreamDiff/milvus/extractor.go \
+  --dir <checkout>/internal/distributed/proxy/httpserver --out skeleton.json
+node packages/docs-tooling/src/reference/rest/index.js rest-upstream-diff \
+  --source milvus-data-plane --skeleton skeleton.json --out diff-out
+```
+
+The extractor reads the route table and request structs of the pinned Go
+package and emits structural truth only (paths, handler names, request
+fields, Go-level types, `binding:"required"` membership); prose, response
+shapes, and doc-layer constraints are documentation territory and stay out of
+the skeleton.
 
 ## Production publication runbook
 

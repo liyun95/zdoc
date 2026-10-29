@@ -29,6 +29,14 @@ jobs:
 
       - uses: pnpm/action-setup@v5
 
+      # Source-tree sources (milvus) are classified by running the vendored Go
+      # extractor (design §6.1, decision D3): Go is installed only here and in
+      # the refresh workflow, never in the regular build chain.
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27'
+
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:

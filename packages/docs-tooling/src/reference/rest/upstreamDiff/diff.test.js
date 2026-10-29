@@ -273,3 +273,189 @@ test('relaxing a requirement is flagged for R&D confirmation; tightening is adop
         ['b', 'required', true, undefined],
     ])
 })
+
+// --- Source-tree structure-only mode (design §6) ----------------------------
+
+const TREE_SOURCE = {id: 'milvus-data-plane', repository: 'milvus-io/milvus', publicationTarget: 'milvus', artifact: {kind: 'source-tree'}}
+
+function treeFragment() {
+    return {
+        openapi: '3.0.1',
+        info: {title: 'REST', version: 'v2'},
+        paths: {
+            '/v2/vectordb/collections/list': {
+                post: {
+                    summary: 'List Collections',
+                    description: 'Lists all collections.',
+                    parameters: [{name: 'Authorization', in: 'header', required: true}],
+                    requestBody: {content: {'application/json': {schema: {type: 'object', required: ['collectionName'], properties: {
+                        dbName: {type: 'string', description: 'The name of the database.', maxLength: 255},
+                        collectionName: {type: 'string'},
+                        projection: {type: 'object'},
+                    }}}}},
+                    responses: {'200': {description: 'ok', content: {'application/json': {schema: {type: 'object', properties: {code: {type: 'integer'}}}}}}},
+                },
+            },
+        },
+    }
+}
+
+// What the Go extractor converts to: no prose, no parameters, no responses.
+function treeUpstream() {
+    return {
+        openapi: '3.0.3',
+        info: {title: 'REST upstream source-tree skeleton', version: '/v2/vectordb'},
+        components: {schemas: {CollectionNameReq: {type: 'object', properties: {
+            dbName: {type: 'string'},
+            collectionName: {type: 'string'},
+            projection: {type: 'object'},
+        }, required: ['collectionName']}}},
+        paths: {
+            '/v2/vectordb/collections/list': {
+                post: {
+                    'x-milvus-handler': 'listCollections',
+                    'x-milvus-request-struct': 'CollectionNameReq',
+                    requestBody: {content: {'application/json': {schema: {$ref: '#/components/schemas/CollectionNameReq'}}}},
+                },
+            },
+        },
+    }
+}
+
+test('structure-only sources compare request bodies but skip prose, parameters, and responses', () => {
+    const result = diffSpecifications({
+        source: TREE_SOURCE,
+        upstreamPin: SHA,
+        upstream: treeUpstream(),
+        fragments: new Map([['05-collection-operations-v2.json', treeFragment()]]),
+        ledger: EMPTY_LEDGER,
+        ruleset: RULESET,
+    })
+    const categories = new Set(result.entries.map(entry => entry.category))
+    // Field-level truth still compares: fragment maxLength is zdoc-only design,
+    // the upstream union covers every documented field, and required matches.
+    assert.deepEqual(result.summary, {'zdoc-only': 1})
+    assert.deepEqual(result.entries.map(entry => [entry.scope, entry.field, entry.change.kind]), [
+        ['requestBody', 'dbName', 'constraint'],
+    ])
+    assert.ok(!categories.has('upstream-modified'))
+})
+
+test('structure-only sources still report operation presence, deprecation, type, and required drift', () => {
+    const upstream = treeUpstream()
+    upstream.paths['/v2/vectordb/collections/list'].post.deprecated = true
+    upstream.components.schemas.CollectionNameReq.required = ['dbName']
+    upstream.components.schemas.CollectionNameReq.properties.projection = {type: 'array', items: {type: 'string'}}
+    const result = diffSpecifications({
+        source: TREE_SOURCE,
+        upstreamPin: SHA,
+        upstream,
+        fragments: new Map([['05-collection-operations-v2.json', treeFragment()]]),
+        ledger: EMPTY_LEDGER,
+        ruleset: RULESET,
+    })
+    // The fragment-side maxLength stays (zdoc-only, sorted last): doc design.
+    assert.deepEqual(result.entries.map(entry => [entry.category, entry.scope, entry.field ?? null, entry.change.kind, entry.change.after, entry.requiresConfirmation ?? null]), [
+        ['upstream-modified', 'operation', null, 'deprecated', true, null],
+        ['upstream-modified', 'requestBody', 'collectionName', 'required', false, 'required-relaxation'],
+        ['upstream-modified', 'requestBody', 'dbName', 'required', true, null],
+        ['upstream-modified', 'requestBody', 'projection', 'constraint', 'array', null],
+        ['zdoc-only', 'requestBody', 'dbName', 'constraint', null, null],
+    ])
+})
+
+test('unattributed fields work for structure-only branched bodies', () => {
+    const fragment = treeFragment()
+    fragment.paths['/v2/vectordb/collections/list'].post.requestBody.content['application/json'].schema = {oneOf: [
+        {'x-tab-label': 'quick', type: 'object', required: ['collectionName'], properties: {collectionName: {type: 'string'}}},
+        {'x-tab-label': 'custom', type: 'object', properties: {dbName: {type: 'string'}}},
+    ]}
+    const result = diffSpecifications({
+        source: TREE_SOURCE,
+        upstreamPin: SHA,
+        upstream: treeUpstream(),
+        fragments: new Map([['05-collection-operations-v2.json', fragment]]),
+        ledger: EMPTY_LEDGER,
+        ruleset: RULESET,
+    })
+    // Branch-level upstream-only fields stay silent; the union-level gap is
+    // one `unattributed` ledger candidate (requestBody scope).
+    assert.deepEqual(result.entries.map(entry => [entry.category, entry.branch ?? null, entry.field ?? null, entry.change.kind]), [
+        ['unattributed', null, 'projection', 'field-uncovered'],
+    ])
+})
+
+test('cross-fragment component references resolve through the shared view; API-truth conflicts fail closed', () => {
+    const donor = {
+        openapi: '3.0.1',
+        components: {schemas: {Commons: {type: 'object', properties: {dbName: {type: 'string', description: 'Database name.'}}}}},
+        paths: {},
+    }
+    const borrower = {
+        openapi: '3.0.1',
+        paths: {'/v2/vectordb/collections/drop': {post: {
+            requestBody: {content: {'application/json': {schema: {$ref: '#/components/schemas/Commons'}}}},
+            responses: {},
+        }}},
+    }
+    const upstream = {
+        openapi: '3.0.3',
+        components: {schemas: {Commons: {type: 'object', properties: {dbName: {type: 'string'}}}}},
+        paths: {'/v2/vectordb/collections/drop': {post: {
+            requestBody: {content: {'application/json': {schema: {$ref: '#/components/schemas/Commons'}}}},
+        }}},
+    }
+    const resolved = diffSpecifications({
+        source: TREE_SOURCE,
+        upstreamPin: SHA,
+        upstream,
+        fragments: new Map([['05-collection-operations-v2.json', donor], ['07-index-operations-v2.json', borrower]]),
+        ledger: EMPTY_LEDGER,
+        ruleset: RULESET,
+    })
+    // The shared view resolves the borrower's dangling ref: dbName matches, no drift.
+    assert.deepEqual(resolved.entries, [])
+
+    const conflicting = structuredClone(donor)
+    conflicting.components.schemas.Commons.properties.dbName = {type: 'integer'}
+    assert.throws(() => diffSpecifications({
+        source: TREE_SOURCE,
+        upstreamPin: SHA,
+        upstream,
+        fragments: new Map([['05-collection-operations-v2.json', donor], ['08-partition-operations-v2.json', conflicting], ['07-index-operations-v2.json', borrower]]),
+        ledger: EMPTY_LEDGER,
+        ruleset: RULESET,
+    }), /REST_UPSTREAM_SHARED_SCHEMA_CONFLICT/)
+})
+
+test('doc-design-only component variants are interchangeable donors', () => {
+    const plain = {
+        openapi: '3.0.1',
+        components: {schemas: {EmptyResponse: {type: 'object', properties: {code: {type: 'integer'}, message: {type: 'string'}}}}},
+        paths: {},
+    }
+    const labelled = structuredClone(plain)
+    labelled.components.schemas.EmptyResponse['x-tab-label'] = 'success'
+    labelled.components.schemas.EmptyResponse.properties.code.description = '响应代码。'
+    const upstream = {
+        openapi: '3.0.3',
+        components: {schemas: {EmptyResponse: {type: 'object', properties: {code: {type: 'integer'}, message: {type: 'string'}}}}},
+        paths: {'/v2/vectordb/collections/truncate': {post: {
+            requestBody: {content: {'application/json': {schema: {$ref: '#/components/schemas/EmptyResponse'}}}},
+        }}},
+    }
+    const consumer = structuredClone(plain)
+    consumer.paths = {'/v2/vectordb/collections/truncate': {post: {
+        requestBody: {content: {'application/json': {schema: {$ref: '#/components/schemas/EmptyResponse'}}}},
+        responses: {},
+    }}}
+    const result = diffSpecifications({
+        source: TREE_SOURCE,
+        upstreamPin: SHA,
+        upstream,
+        fragments: new Map([['05-collection-operations-v2.json', labelled], ['37-file-resource-operations-v2.json', consumer]]),
+        ledger: EMPTY_LEDGER,
+        ruleset: RULESET,
+    })
+    assert.deepEqual(result.entries, [])
+})
