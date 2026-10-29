@@ -1126,7 +1126,7 @@ test('receipt notes deterministically retain current metadata through source sea
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(options.repositoryRoot, 'generated/en/manifests/shared-pages/guides/sample.json'))).notes, draft.notes)
 })
 test('selected shared work requires an explicit valid image base before services or outputs; ordinary work stays inert', {timeout: 120000}, async t => {
-  const options = await fixture(t)
+  const options = await fixture(t, {old: false})
   for (const imageBaseUrl of [undefined, '', 'http://images.test', 'https://user:secret@images.test', 'https://images.test/?query=1', 'https://images.test/#fragment']) {
     await assert.rejects(generateSharedSources({...options, imageBaseUrl}, {fetchOld() {throw Error('Must not read')}}), /IMAGE_BED_URL/)
     assert.equal(fs.existsSync(options.out), false)
@@ -1138,10 +1138,14 @@ test('selected shared work requires an explicit valid image base before services
   const env = {...process.env}; delete env.IMAGE_BED_URL
   const args = ['--preparation', prep, '--workspace', options.repositoryRoot, '--baseline', options.baselineRoot, '--repo', options.repo,
     '--source-dir', options.sourceDir, '--snapshot', snapshot, '--root-token', rootToken, '--out', options.out, '--scratch', options.scratch, '--run-id', '123']
-  for (const value of [undefined, 'http://invalid.test']) {
-    const result = spawnSync(process.execPath, [path.join(__dirname, 'guides-shared-sources.js'), ...args], {env: value ? {...env, IMAGE_BED_URL: value} : env, encoding: 'utf8'})
+  let cliCase = 0
+  for (const value of [undefined, 'http://invalid.test', 'https:images.test', 'https:/images.test', 'https://images.test/\npath']) await t.test(`CLI rejects ${JSON.stringify(value)}`, () => {
+    const cliOut = path.join(options.root, `invalid-cli-${cliCase++}`)
+    const cliArgs = args.map(arg => arg === options.out ? cliOut : arg)
+    const result = spawnSync(process.execPath, [path.join(__dirname, 'guides-shared-sources.js'), ...cliArgs], {env: value ? {...env, IMAGE_BED_URL: value} : env, encoding: 'utf8'})
     assert.equal(result.status, 1); assert.match(result.stderr, /IMAGE_BED_URL/)
-  }
+    assert.equal(fs.existsSync(cliOut), false)
+  })
 })
 
 async function nextMetadata(options) {

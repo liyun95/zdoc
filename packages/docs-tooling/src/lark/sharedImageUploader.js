@@ -6,7 +6,8 @@ const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex')
 const missing = error => error.$metadata?.httpStatusCode === 404 || ['NoSuchKey', 'NotFound'].includes(error.name)
 function validateImageBaseUrl(baseUrl) {
   try {
-    if (typeof baseUrl !== 'string' || !baseUrl || baseUrl.trim() !== baseUrl) throw new Error('missing URL')
+    // URL parsing repairs malformed schemes and strips controls; reject those raw inputs before publication.
+    if (typeof baseUrl !== 'string' || !/^https:\/\/[^/]/i.test(baseUrl) || /[\s\\\u0000-\u001f\u007f?#]/u.test(baseUrl)) throw new Error('invalid URL syntax')
     const url = new URL(baseUrl)
     if (url.protocol !== 'https:' || url.search || url.hash || url.username || url.password) throw new Error('invalid URL')
     return baseUrl.replace(/\/$/, '')

@@ -81,3 +81,10 @@ test('shared uploader requires an explicit valid image base even in skip mode', 
     assert.equal(new SharedImageUploader({mode: 'skip'}).baseUrl, 'https://environment.test')
   } finally {if (previous === undefined) delete process.env.IMAGE_BED_URL; else process.env.IMAGE_BED_URL = previous}
 })
+
+for (const baseUrl of ['https:images.test', 'https:/images.test', 'https:///images.test', 'https://images.test/\npath',
+  'https://images.test/\rpath', 'https://images.test/\tpath', 'https://images.test/\\path', 'https://images.test/?', 'https://images.test/#']) {
+  test(`shared image base rejects malformed raw URL ${JSON.stringify(baseUrl)}`, () => {
+    assert.throws(() => new SharedImageUploader({baseUrl, mode: 'skip'}), /IMAGE_BED_URL/)
+  })
+}
