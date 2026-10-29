@@ -9,10 +9,16 @@ const spaRedirectMapPlugin = require('./index');
 
 const REPO_ROOT = path.join(__dirname, '..', '..', '..', '..');
 
-function buildPlugin(rules) {
-  return spaRedirectMapPlugin({}, {rules});
+function buildPlugin(rules, context = {}) {
+  return spaRedirectMapPlugin(context, {rules});
 }
 
+const EN_JA_I18N = {currentLocale: 'en', defaultLocale: 'en', locales: ['en', 'ja-JP']};
+const JA_I18N = {currentLocale: 'ja-JP', defaultLocale: 'en', locales: ['en', 'ja-JP']};
+const MIXED_RULES = [
+  {from: '/docs/old', to: '/docs/new'},
+  {from: '/ja-JP/docs/setup-a-private-link', to: '/ja-JP/docs/setup-a-private-link-aws'},
+];
 test('keeps the plugin name in sync with the docs-ui redirect helper', () => {
   const helper = fs.readFileSync(
     path.join(REPO_ROOT, 'packages', 'docs-ui', 'src', 'shared', 'theme', 'NotFound', 'Content', 'spaRedirectMap.ts'),
@@ -83,4 +89,39 @@ test('resolves targets against routes under a non-root baseUrl', async () => {
     () => plugin.postBuild({routesPaths: ['/preview/docs/other'], baseUrl: '/preview/'}),
     /targets a route the site does not serve/,
   );
+});
+
+test('locale-prefixed targets validate against prefix-less locale build routes', async () => {
+  // Regression x2: postBuild hands out routes WITHOUT the locale prefix in
+  // every locale build, so both the en and the ja-JP build must compare the
+  // /ja-JP target after stripping its prefix. Untranslated pages fall back to
+  // the default locale's content, so the route inventories are equivalent.
+  for (const i18n of [EN_JA_I18N, JA_I18N]) {
+    const plugin = buildPlugin(MIXED_RULES, {i18n});
+    await plugin.postBuild({routesPaths: ['/docs/new', '/docs/setup-a-private-link-aws'], baseUrl: '/'});
+  }
+});
+
+test('a missing target still fails in any locale build', async () => {
+  for (const i18n of [EN_JA_I18N, JA_I18N]) {
+    const plugin = buildPlugin(MIXED_RULES, {i18n});
+    await assert.rejects(
+      () => plugin.postBuild({routesPaths: ['/docs/new'], baseUrl: '/'}),
+      /redirect \/ja-JP\/docs\/setup-a-private-link -> \/ja-JP\/docs\/setup-a-private-link-aws targets a route/,
+    );
+  }
+});
+
+test('global data keeps the full map in every locale build', async () => {
+  for (const i18n of [EN_JA_I18N, JA_I18N]) {
+    const plugin = buildPlugin(MIXED_RULES, {i18n});
+    let globalData;
+    plugin.contentLoaded({
+      content: await plugin.loadContent(),
+      actions: {setGlobalData: data => {
+        globalData = data;
+      }},
+    });
+    assert.deepEqual(globalData, MIXED_RULES);
+  }
 });

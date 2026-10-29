@@ -49,8 +49,23 @@ function stripTrailingSlash(path) {
   return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
 }
 
-module.exports = function spaRedirectMapPlugin(_context, options) {
+// postBuild hands out routes without the locale prefix in every locale build
+// (the prefix lives outside the route paths), while redirect targets in the
+// profile are final URLs like /ja-JP/docs/.... Strip a known non-default
+// locale prefix before comparing: untranslated pages fall back to the default
+// locale's content, so every locale build serves the same route inventory.
+function routeTargetOf(target, i18n) {
+  const defaultLocale = i18n?.defaultLocale;
+  const prefixes = (i18n?.locales ?? [])
+    .filter(locale => locale !== defaultLocale)
+    .map(locale => `/${locale}/`);
+  const prefix = prefixes.find(candidate => target.startsWith(candidate));
+  return prefix ? target.slice(prefix.length - 1) : target;
+}
+
+module.exports = function spaRedirectMapPlugin(context, options) {
   const rules = normalizeRules(options.rules);
+  const i18n = context.i18n;
   return {
     name: PluginName,
     async loadContent() {
@@ -63,7 +78,7 @@ module.exports = function spaRedirectMapPlugin(_context, options) {
       const served = new Set(routesPaths.map(stripTrailingSlash));
       const basePrefix = baseUrl === '/' ? '' : baseUrl.replace(/\/+$/, '');
       for (const {from, to} of rules) {
-        const target = `${basePrefix}${to}`;
+        const target = `${basePrefix}${routeTargetOf(to, i18n)}`;
         if (!served.has(stripTrailingSlash(target))) {
           throw new Error(
             `[${PluginName}] redirect ${from} -> ${to} targets a route the site does not serve; `
