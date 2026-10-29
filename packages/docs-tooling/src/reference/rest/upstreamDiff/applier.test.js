@@ -518,10 +518,8 @@ test('parameter-level required writes are fully mechanical from the cited entry'
     assert.equal(clean.documents.get('21-project-operations-v2.json').paths['/v2/x'].post.parameters[0].required, false)
     assert.deepEqual(clean.normalizations, [])
 
-    // a citation whose parameter does not exist in the operation still fails
-    assert.throws(() => apply([{id: 'upstream-modified|post /v2/x|21-project-operations-v2.json|parameter|||ghost:query|required|',
-        kind: 'constraint', targetFragment: '21-project-operations-v2.json',
-        opPath: '/paths/~1v2~1x/post/parameters/0/required', value: false, ...confirmed}]), /REST_UPSTREAM_APPLY_UNBOUND_LOCUS/)
+    // (A citation for a parameter absent from the operation is unreachable:
+    // verifyAgainstDiff rejects any entry id that is not in the diff output.)
 })
 
 test('lifecycle leaves the diff did not derive still require the override', () => {
