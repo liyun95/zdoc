@@ -533,13 +533,15 @@ function diffSpecifications({source, upstreamPin, upstream, fragments, ledger, r
     const onSourceSurface = file => !fragmentSurfaces || fragmentSurfaces.get(file) === source.apiSurface
     const structureOnly = source.artifact?.kind === 'source-tree'
     // Fragment documents may reference components defined in a sibling
-    // fragment; the publication assembler merges them before rendering, so the
-    // diff resolves dangling refs through the merged view. The publication
-    // tree knowingly carries per-fragment variants of a component that differ
-    // only in doc-owned attributes (x-tab-label, x-i18n, descriptions), so the
-    // merged view tolerates variants that are API-truth equivalent and keeps
-    // the first definition in fragment file order as the donor. Definitions
-    // that differ in API truth fail closed instead of picking a winner.
+    // fragment; the publication assembler merges fragments before rendering,
+    // so the diff resolves dangling refs through a merged view of its own.
+    // The publication tree knowingly carries per-fragment variants of a
+    // component that differ only in doc-owned attributes (x-tab-label,
+    // x-i18n, descriptions). This merged view is a close approximation of the
+    // assembler, not a mirror: it tolerates API-truth-equivalent variants and
+    // keeps the first definition in fragment file order as the donor, while
+    // the assembler merges by service id order and fails closed on ANY byte
+    // difference. Definitions that differ in API truth fail closed here too.
     const sharedSchemas = {}
     for (const [file, document] of fragments) {
         for (const [name, schema] of Object.entries(document.components?.schemas ?? {})) {

@@ -65,6 +65,35 @@ test('skeleton rejects schema violations and broken invariants', () => {
     const offMount = validSkeleton()
     offMount.operations[0].path = '/v1/vector/collections'
     assert.throws(() => parseRestUpstreamSkeleton(JSON.stringify(offMount)), /REST_UPSTREAM_SKELETON_MOUNT_PREFIX/)
+
+    // a bare-startsWith trap: a sibling directory sharing the prefix characters
+    // is not mounted under the prefix
+    const prefixSmuggle = validSkeleton()
+    prefixSmuggle.operations[1].path = '/v2/vectordbzzzentities/list'
+    assert.throws(() => parseRestUpstreamSkeleton(JSON.stringify(prefixSmuggle)), /REST_UPSTREAM_SKELETON_MOUNT_PREFIX/)
+
+    // duplicate (path, method) neighbors fail with their own code
+    const duplicated = validSkeleton()
+    duplicated.operations = [duplicated.operations[0], {...duplicated.operations[0]}]
+    assert.throws(() => parseRestUpstreamSkeleton(JSON.stringify(duplicated)), /REST_UPSTREAM_SKELETON_DUPLICATE_ROUTE/)
+
+    // a dangling $ref below the first items level must not slip through the
+    // vocabulary ([][]Struct is legal; the ref walk has to recurse)
+    const deepDangling = validSkeleton()
+    deepDangling.components.schemas.DatabaseReq.properties.aliases = {
+        type: 'array',
+        items: {type: 'array', items: {$ref: '#/components/schemas/Missing'}},
+    }
+    assert.throws(() => parseRestUpstreamSkeleton(JSON.stringify(deepDangling)), /REST_UPSTREAM_SKELETON_REF_DANGLING/)
+
+    // a legal deep $ref chain still passes
+    const deepOk = validSkeleton()
+    deepOk.components.schemas.Alias = {type: 'string'}
+    deepOk.components.schemas.DatabaseReq.properties.aliases = {
+        type: 'array',
+        items: {type: 'array', items: {$ref: '#/components/schemas/Alias'}},
+    }
+    assert.doesNotThrow(() => parseRestUpstreamSkeleton(JSON.stringify(deepOk)))
 })
 
 test('skeleton converts into the OpenAPI shape the diff consumes', () => {

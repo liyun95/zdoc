@@ -98,6 +98,16 @@ this one waits for the same.
 
 ## 5. Known limitations
 
+- **Single registration point (post-review hardening, 2026-10-29).** The
+  extractor only sees routes registered inside `RegisterRoutesToV2`. A `router`
+  handed to a helper from that body would silently hide those registrations
+  (upstream additions never surfacing; relocated documented operations
+  degrading to fragment-only and absorbed as external). That shape now fails
+  closed with `REST_UPSTREAM_EXTRACT_ROUTER_DELEGATED`; the real pin was
+  re-extracted after the change and is byte-identical (113 operations / 84
+  components), so the current upstream shape triggers no false positive.
+  A `registerGroupRoutes(router)`-style delegation in a future upstream is a
+  deliberate extraction change, not a silent gap.
 - The skeleton pins the source checkout by commit only (no content digest —
   the lock deliberately carries no `contentSha256` for source-tree sources).
   Digest-pinning the skeleton at bump time is a P3 option if replay needs it.

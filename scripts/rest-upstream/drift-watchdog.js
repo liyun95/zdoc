@@ -77,10 +77,16 @@ async function fetchSourceTreeFiles(fetchImpl, {repository, sourceDir, ref, toke
     const listing = await githubJson(fetchImpl, `${GITHUB_API}/repos/${repository}/contents/${dirPath.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(ref)}`, token)
     if (!Array.isArray(listing)) fail(`GITHUB_API_UNEXPECTED: contents listing for ${repository}:${dirPath} is not a list`)
     const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-source-tree-'))
-    for (const entry of listing) {
-        if (entry.type !== 'file' || !entry.name.endsWith('.go') || entry.name.endsWith('_test.go')) continue
-        const bytes = await fetchSpecBytes(fetchImpl, {repository, specPath: entry.path, ref, token})
-        fs.writeFileSync(path.join(outDir, entry.name), bytes)
+    try {
+        for (const entry of listing) {
+            if (entry.type !== 'file' || !entry.name.endsWith('.go') || entry.name.endsWith('_test.go')) continue
+            const bytes = await fetchSpecBytes(fetchImpl, {repository, specPath: entry.path, ref, token})
+            fs.writeFileSync(path.join(outDir, entry.name), bytes)
+        }
+    } catch (error) {
+        // A failed download must not leak the partial checkout directory.
+        fs.rmSync(outDir, {recursive: true, force: true})
+        throw error
     }
     if (fs.readdirSync(outDir).length === 0) {
         fs.rmSync(outDir, {recursive: true, force: true})
@@ -107,13 +113,19 @@ async function runWatchdog({lockPath, outDir, tokens, fetchImpl = globalThis.fet
             fs.mkdirSync(sourceDir, {recursive: true})
             const diffArgs = ['rest-upstream-diff', '--source', source.id, '--upstream-commit', check.head, '--out', path.join(sourceDir, 'diff')]
             if (source.artifact.kind === 'source-tree') {
+                // Multi-directory sources are a lock contract the watchdog has
+                // never exercised: fail loudly instead of silently diffing a
+                // subset of the upstream surface.
+                if (source.artifact.paths.length !== 1) {
+                    fail(`REST_UPSTREAM_WATCHDOG_PATHS_UNSUPPORTED: ${source.id}: source-tree sources support exactly one directory, lock declares ${source.artifact.paths.length}`)
+                }
                 const goFilesDir = await fetchSourceTreeFiles(fetchImpl, {repository: source.repository, sourceDir: source.artifact.paths[0], ref: check.head, token: PRIVATE_TOKEN_REPOSITORIES.has(source.repository) ? tokens.private : tokens.public})
                 try {
                     const skeletonPath = path.join(sourceDir, 'skeleton.json')
                     extractSourceTreeSkeleton(goFilesDir, skeletonPath)
                     diffArgs.push('--skeleton', skeletonPath)
                     const result = spawnSync(process.execPath, [REST_UPSTREAM_ENTRY, ...diffArgs], {encoding: 'utf8'})
-                    if (result.status !== 0) fail(`REST_UPSTREAM_WATCHDOG_DIFF_FAILED: ${source.id}: ${result.stderr.slice(0, 1000)}`)
+                    if (result.status !== 0) fail(`REST_UPSTREAM_WATCHDOG_DIFF_FAILED: ${source.id}: ${(result.stderr || String(result.error) || 'no stderr').slice(0, 1000)}`)
                 } finally {
                     fs.rmSync(goFilesDir, {recursive: true, force: true})
                 }
@@ -123,7 +135,7 @@ async function runWatchdog({lockPath, outDir, tokens, fetchImpl = globalThis.fet
                 fs.writeFileSync(specPath, await fetchSpecBytes(fetchImpl, {repository: source.repository, specPath: check.artifactPath, ref: check.head, token: PRIVATE_TOKEN_REPOSITORIES.has(source.repository) ? tokens.private : tokens.public}))
                 diffArgs.push('--spec', specPath)
                 const result = spawnSync(process.execPath, [REST_UPSTREAM_ENTRY, ...diffArgs], {encoding: 'utf8'})
-                if (result.status !== 0) fail(`REST_UPSTREAM_WATCHDOG_DIFF_FAILED: ${source.id}: ${result.stderr.slice(0, 1000)}`)
+                if (result.status !== 0) fail(`REST_UPSTREAM_WATCHDOG_DIFF_FAILED: ${source.id}: ${(result.stderr || String(result.error) || 'no stderr').slice(0, 1000)}`)
             }
             const diffDocument = JSON.parse(fs.readFileSync(path.join(sourceDir, 'diff', 'diff.json'), 'utf8'))
             const driftEntries = substantiveDriftEntries(diffDocument)

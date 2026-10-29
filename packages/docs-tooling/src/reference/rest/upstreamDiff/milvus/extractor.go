@@ -523,6 +523,7 @@ func extractSkeleton(dir, repository, sourceDir, mountPrefix string) (*skeleton,
 		fullPath := mountPrefix + relative
 		var requestWrapper *ast.CallExpr
 		var handler ast.Expr
+		var fatal error
 		ast.Inspect(call, func(node ast.Node) bool {
 			inner, ok := node.(*ast.CallExpr)
 			if !ok || inner == call {
@@ -532,12 +533,21 @@ func extractSkeleton(dir, repository, sourceDir, mountPrefix string) (*skeleton,
 			if !ok || ident.Name != "wrapperPost" {
 				return true
 			}
+			// Two wrapperPost calls in one route registration are ambiguous:
+			// picking one silently would extract an arbitrary contract.
+			if requestWrapper != nil {
+				fatal = fail("REST_UPSTREAM_EXTRACT_WRAPPER_AMBIGUOUS", "%s %s: route registers more than one wrapperPost", strings.ToUpper(method), fullPath)
+				return false
+			}
 			if len(inner.Args) >= 2 {
 				requestWrapper = inner
 				handler = inner.Args[len(inner.Args)-1]
 			}
 			return false
 		})
+		if fatal != nil {
+			return nil, fatal
+		}
 		if requestWrapper == nil {
 			return nil, fail("REST_UPSTREAM_EXTRACT_WRAPPER_MISSING", "%s %s: route is not registered through wrapperPost", strings.ToUpper(method), fullPath)
 		}

@@ -76,6 +76,9 @@ test('extractor fails closed on unknown path constants, external types, a missin
         // A router handed to a helper hides registrations outside the parsed
         // body: the route set would silently under-report upstream additions.
         ['delegated-router', 'REST_UPSTREAM_EXTRACT_ROUTER_DELEGATED'],
+        // Two wrapperPost calls in one registration are ambiguous; picking
+        // one would extract an arbitrary request contract.
+        ['ambiguous-wrapper', 'REST_UPSTREAM_EXTRACT_WRAPPER_AMBIGUOUS'],
     ]) {
         const {result, outDir} = extract(path.join(TESTDATA, fixture))
         fs.rmSync(outDir, {recursive: true, force: true})

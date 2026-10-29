@@ -28,16 +28,23 @@ function assertSkeletonInvariants(skeleton) {
     // The extractor sorts by the (path, method) tuple; compare the same way.
     // String order on "method path" would invert the tuple order across methods
     // ("get /z" sorts before "post /a"; the tuple puts /a first) and reject a
-    // correctly sorted mixed-method skeleton.
+    // correctly sorted mixed-method skeleton. Equal neighbors are a duplicated
+    // route, not a sort order, and fail with their own code.
     for (let index = 1; index < skeleton.operations.length; index++) {
         const previous = skeleton.operations[index - 1]
         const current = skeleton.operations[index]
+        if (previous.path === current.path && previous.method === current.method) {
+            fail('REST_UPSTREAM_SKELETON_DUPLICATE_ROUTE', `${current.method} ${current.path}`)
+        }
         const ordered = previous.path < current.path || (previous.path === current.path && previous.method <= current.method)
         if (!ordered) fail('REST_UPSTREAM_SKELETON_ORDER', `${current.method} ${current.path} follows ${previous.method} ${previous.path}: operations must be sorted by (path, method)`)
     }
     for (const op of skeleton.operations) {
-        if (!op.path.startsWith(skeleton.extractedFrom.mountPrefix)) {
-            fail('REST_UPSTREAM_SKELETON_MOUNT_PREFIX', `${op.path} does not start with ${skeleton.extractedFrom.mountPrefix}`)
+        // The extractor always composes prefix + relative, and the relative
+        // path starts with "/" — a bare startsWith would let "/v2/vectordbentities"
+        // through as if it were mounted under "/v2/vectordb".
+        if (op.path !== skeleton.extractedFrom.mountPrefix && !op.path.startsWith(`${skeleton.extractedFrom.mountPrefix}/`)) {
+            fail('REST_UPSTREAM_SKELETON_MOUNT_PREFIX', `${op.path} is not mounted under ${skeleton.extractedFrom.mountPrefix}`)
         }
         const ref = op.requestSchema?.$ref
         if (ref) {
@@ -51,16 +58,26 @@ function assertSkeletonInvariants(skeleton) {
                 fail('REST_UPSTREAM_SKELETON_REQUIRED_DANGLING', `${name}: required member ${member} has no property`)
             }
         }
-        for (const [field, property] of Object.entries(schema.properties ?? {})) {
-            const ref = property.$ref
-            if (ref && !schemas[ref.replace('#/components/schemas/', '')]) {
-                fail('REST_UPSTREAM_SKELETON_REF_DANGLING', `${name}.${field}: ${ref}`)
-            }
-            if (property.items?.$ref && !schemas[property.items.$ref.replace('#/components/schemas/', '')]) {
-                fail('REST_UPSTREAM_SKELETON_REF_DANGLING', `${name}.${field}: ${property.items.$ref}`)
+        // The minimal vocabulary allows arbitrarily nested items ([][]Struct is
+        // golden coverage), so ref collection must recurse the whole subtree —
+        // a dangling $ref below the first items level would otherwise slip through.
+        for (const ref of collectRefs(schema)) {
+            if (!schemas[ref.replace('#/components/schemas/', '')]) {
+                fail('REST_UPSTREAM_SKELETON_REF_DANGLING', `${name}: ${ref}`)
             }
         }
     }
+}
+
+function collectRefs(value, seen = new Set()) {
+    if (Array.isArray(value)) {
+        for (const item of value) collectRefs(item, seen)
+        return seen
+    }
+    if (!value || typeof value !== 'object') return seen
+    if (typeof value.$ref === 'string') seen.add(value.$ref)
+    for (const child of Object.values(value)) collectRefs(child, seen)
+    return seen
 }
 
 function parseRestUpstreamSkeleton(text, label = 'skeleton.json') {
