@@ -294,7 +294,6 @@ function writePrepareFixture(dir, {specMaxLength, specSummary}) {
         "        '200': {description: ok}",
         '',
     ].join('\n'))
-    fs.writeFileSync(path.join(dir, 'instructions.md'), '# Instruction pack\n')
 }
 
 test('rest-upstream-ledger-bootstrap --from-diff defaults --date to today', () => {
@@ -328,46 +327,23 @@ test('rest-upstream-prepare stages an isolated agent workspace and fails closed 
         writePrepareFixture(dir, {specMaxLength: 50, specSummary: 'Create Project.'})
         const staging = path.join(dir, 'staging')
         const noDrift = runCli(['rest-upstream-prepare', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
-            '--staging', staging, '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json'),
-            '--instructions', path.join(dir, 'instructions.md')])
+            '--staging', staging, '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json')])
         assert.equal(noDrift.status, 1)
         assert.match(noDrift.stderr, /REST_UPSTREAM_PREPARE_NO_DRIFT/)
 
         const rehearsed = runCli(['rest-upstream-prepare', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
-            '--staging', staging, '--allow-empty-drift', '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json'),
-            '--instructions', path.join(dir, 'instructions.md')])
+            '--staging', staging, '--allow-empty-drift', '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json')])
         assert.equal(rehearsed.status, 0, rehearsed.stderr)
-        assert.deepEqual(fs.readdirSync(staging).sort(), ['INSTRUCTIONS.md', 'diff', 'meta', 'rules', 'staging-manifest.json'])
+        assert.deepEqual(fs.readdirSync(staging).sort(), ['diff', 'meta', 'rules', 'staging-manifest.json'])
         assert.deepEqual(fs.readdirSync(path.join(staging, 'diff')).sort(), ['diff.json', 'diff.md'])
         const manifest = JSON.parse(fs.readFileSync(path.join(staging, 'staging-manifest.json'), 'utf8'))
         assert.equal(manifest.source, 'zilliz-cloud-control-plane')
-        assert.deepEqual(manifest.files.map(file => file.path), ['INSTRUCTIONS.md', 'diff/diff.json', 'diff/diff.md', 'meta/ledger.json', 'meta/lock.json', 'meta/titles.json', 'rules/refresh-rules.json'])
-        assert.equal(fs.readFileSync(path.join(staging, 'INSTRUCTIONS.md'), 'utf8'), '# Instruction pack\n')
+        assert.deepEqual(manifest.files.map(file => file.path), ['diff/diff.json', 'diff/diff.md', 'meta/ledger.json', 'meta/lock.json', 'meta/titles.json', 'rules/refresh-rules.json'])
 
         const occupied = runCli(['rest-upstream-prepare', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
-            '--staging', staging, '--allow-empty-drift', '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json'),
-            '--instructions', path.join(dir, 'instructions.md')])
+            '--staging', staging, '--allow-empty-drift', '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json')])
         assert.equal(occupied.status, 1)
         assert.match(occupied.stderr, /REST_UPSTREAM_STAGING_EXISTS/)
-    } finally {
-        fs.rmSync(dir, {recursive: true, force: true})
-    }
-})
-
-test('rest-upstream-prepare resolves the committed instruction pack from REPOSITORY_ROOT without --instructions', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-prepare-default-'))
-    try {
-        writePrepareFixture(dir, {specMaxLength: 50, specSummary: 'Create Project.'})
-        const staging = path.join(dir, 'staging')
-        const prepare = runCli(['rest-upstream-prepare', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
-            '--staging', staging, '--allow-empty-drift', '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json')])
-        assert.equal(prepare.status, 0, prepare.stderr)
-        assert.equal(fs.readFileSync(path.join(staging, 'INSTRUCTIONS.md'), 'utf8').includes('REST Upstream Refresh Agent'), true)
-        const missing = runCli(['rest-upstream-prepare', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
-            '--staging', path.join(dir, 'staging-2'), '--allow-empty-drift', '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json'),
-            '--instructions', path.join(dir, 'absent.md')])
-        assert.equal(missing.status, 1)
-        assert.match(missing.stderr, /REST_UPSTREAM_INSTRUCTIONS_MISSING/)
     } finally {
         fs.rmSync(dir, {recursive: true, force: true})
     }
@@ -377,18 +353,19 @@ test('rest-upstream-prepare stages only diff-touched fragments and enforces stag
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-prepare-drift-'))
     try {
         writePrepareFixture(dir, {specMaxLength: 50, specSummary: 'Create Project'})
-        const instructions = ['# Instruction pack', '', `Repository root marker: ${REPOSITORY_ROOT}`, ''].join('\n')
-        fs.writeFileSync(path.join(dir, 'instructions-leak.md'), instructions)
+        // The isolation sweep guards every staged file; the ruleset is the
+        // easiest staged input to poison from the test.
+        const leakyRules = {internalFieldDenylist: ['token'], note: `Repository root marker: ${REPOSITORY_ROOT}`}
+        fs.writeFileSync(path.join(dir, 'rules-leak.json'), `${JSON.stringify(leakyRules, null, 2)}\n`)
         const staging = path.join(dir, 'staging')
         const leaked = runCli(['rest-upstream-prepare', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
             '--staging', staging, '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json'),
-            '--instructions', path.join(dir, 'instructions-leak.md')])
+            '--rules', path.join(dir, 'rules-leak.json')])
         assert.equal(leaked.status, 1)
         assert.match(leaked.stderr, /REST_UPSTREAM_STAGING_ISOLATION_LEAK/)
 
         const prepare = runCli(['rest-upstream-prepare', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
-            '--staging', staging, '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json'),
-            '--instructions', path.join(dir, 'instructions.md')])
+            '--staging', staging, '--fragments', path.join(dir, 'fragments'), '--titles', path.join(dir, 'titles.json')])
         assert.equal(prepare.status, 0, prepare.stderr)
         assert.match(prepare.stdout, /staged 1 fragment\(s\), 1 substantive drift entr\(ies\)/)
         assert.deepEqual(fs.readdirSync(path.join(staging, 'fragments')).sort(), ['21-project-operations-v2.json'])
@@ -432,11 +409,9 @@ test('diff and prepare accept a source-tree skeleton for milvus-data-plane', () 
         assert.equal(diffDocument.upstreamPin, '6d833a672807e7c75c490c9383f68a42ed1142ea')
 
         fs.writeFileSync(path.join(dir, 'titles.json'), '{\n  "list-collections": "list-collections"\n}\n')
-        fs.writeFileSync(path.join(dir, 'instructions.md'), '# Instruction pack\n')
         const staging = path.join(dir, 'staging')
         const prepared = runCli(['rest-upstream-prepare', '--source', 'milvus-data-plane', '--skeleton', path.join(dir, 'skeleton.json'),
-            '--staging', staging, '--allow-empty-drift', '--fragments', fragmentsDir, '--titles', path.join(dir, 'titles.json'),
-            '--instructions', path.join(dir, 'instructions.md')])
+            '--staging', staging, '--allow-empty-drift', '--fragments', fragmentsDir, '--titles', path.join(dir, 'titles.json')])
         assert.equal(prepared.status, 0, prepared.stderr)
         const manifest = JSON.parse(fs.readFileSync(path.join(staging, 'staging-manifest.json'), 'utf8'))
         assert.equal(manifest.specSha256, null)

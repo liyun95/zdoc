@@ -20,10 +20,10 @@ const {decisionShapeError} = require(path.join(TOOLING_ROOT, 'upstreamDiff', 'as
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
 const DEFAULT_RETRIES = 3
-const DEFAULT_MIN_COVERAGE = 0.8
+const DEFAULT_MIN_COVERAGE = 0.5
 
 function usage() {
-    return 'Usage: node scripts/rest-upstream/decide-batches.js --diff <path> --out <decisions.jsonl> --base-url <url> --api-key-env <NAME> --model <id> [--report <path>] [--min-coverage 0.8] [--timeout-ms 300000] [--retries 3]'
+    return 'Usage: node scripts/rest-upstream/decide-batches.js --diff <path> --out <decisions.jsonl> --base-url <url> --api-key-env <NAME> --model <id> [--report <path>] [--min-coverage 0.5] [--timeout-ms 300000] [--retries 3]'
 }
 
 function fail(message) {

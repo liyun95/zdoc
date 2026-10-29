@@ -19,7 +19,6 @@ const {loadDecisions, assembleChangeSet} = require('./assembler')
 
 // Six levels up from upstreamDiff/: rest → reference → src → docs-tooling → packages → repo root.
 const REPOSITORY_ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..', '..')
-const DEFAULT_INSTRUCTIONS = path.join(REPOSITORY_ROOT, '.github', 'prompts', 'codex-rest-refresh-agent.md')
 
 const REST_ROOT = path.join(__dirname, '..')
 const DEFAULTS = {
@@ -281,7 +280,6 @@ function registerPrepareCommand(command) {
         .option('--upstream-commit <sha>', 'Commit the spec was fetched from; defaults to the lock pin')
         .option('--expect-pinned', 'Fail unless the spec bytes match the lock contentSha256', false)
         .option('--allow-empty-drift', 'Stage even when no substantive drift exists (rehearsal escape hatch)', false)
-        .option('--instructions <path>', 'Agent instruction pack', path.join(REPOSITORY_ROOT, '.github', 'prompts', 'codex-rest-refresh-agent.md'))
         .option('--lock <path>', 'Lock file path', DEFAULTS.lock)
         .option('--ledger <path>', 'Ledger file path', DEFAULTS.ledger)
         .option('--rules <path>', 'Refresh ruleset path', DEFAULTS.rules)
@@ -290,11 +288,6 @@ function registerPrepareCommand(command) {
         .option('--migration <path>', 'fragment-migration.json used to scope fragment-only reporting by api surface', DEFAULTS.migration)
         .option('--lifecycle-track <track>', 'Derive lifecycle suggestions into the staged diff (data-plane sources only, design §6.3)')
         .action(opts => {
-            // The default pack anchors REPOSITORY_ROOT; a wrong root would
-            // only surface as an ENOENT deep in staging. Trip here instead.
-            if (!fs.existsSync(opts.instructions)) {
-                fail('REST_UPSTREAM_INSTRUCTIONS_MISSING', `${opts.instructions}: instruction pack not found (REPOSITORY_ROOT=${REPOSITORY_ROOT})`)
-            }
             const {diff, specSha256, source} = computeUpstreamDiff(opts)
             const drift = substantiveDriftEntries(diff)
             if (drift.length === 0 && !opts.allowEmptyDrift) {
@@ -318,7 +311,6 @@ function registerPrepareCommand(command) {
                 titlesPath: opts.titles,
                 ledgerPath: opts.ledger,
                 lockPath: opts.lock,
-                instructionsPath: opts.instructions,
             })
             console.log(`staged ${touchedFiles.length} fragment(s), ${drift.length} substantive drift entr(ies) -> ${opts.staging}`)
             console.log(`diff ${manifest.diffDigest}`)

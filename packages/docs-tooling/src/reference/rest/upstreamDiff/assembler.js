@@ -221,7 +221,7 @@ function lifecycleEntries({entry, context}) {
 function ledgerEntry({decision, entry}) {
     const base = evidenceBase(entry)
     return {diffEntryId: entry.id, kind: 'ledgerDraft',
-        ledgerDraft: {opKey: entry.opKey, classification: decision.classification, reason: decision.reason, owner: 'codex-rest-refresh-agent', ...(entry.fragment ? {fragment: entry.fragment} : {})},
+        ledgerDraft: {opKey: entry.opKey, classification: decision.classification, reason: decision.reason, owner: 'rest-decision-stage', ...(entry.fragment ? {fragment: entry.fragment} : {})},
         evidence: `${base}: ledger proposal (${decision.reason})`}
 }
 
