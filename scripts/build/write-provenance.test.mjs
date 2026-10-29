@@ -271,12 +271,15 @@ test('localization inputs reject untracked files and symlinks', () => {
 test('build-derived ja sidebar translation JSON on disk does not fail provenance and stays unattested', () => {
   const root = fixture();
   fs.appendFileSync(path.join(root, '.gitignore'), '/i18n/ja-JP/docusaurus-plugin-content-docs/current.json\n/i18n/ja-JP/docusaurus-plugin-content-docs-byoc/current.json\n');
+  execFileSync('git', ['add', '.gitignore'], {cwd: root});
+  execFileSync('git', ['commit', '-qm', 'ignore derived sidebar translations'], {cwd: root});
   write(root, 'i18n/ja-JP/docusaurus-plugin-content-docs/current.json', '{"sidebar.default.category.category:x":{"message":"あ"}}\n');
   write(root, 'i18n/ja-JP/docusaurus-plugin-content-docs-byoc/current.json', '{}\n');
 
   const result = run(root);
-  const recorded = JSON.parse(fs.readFileSync(result.outputPath, 'utf8'))
-    .localizationInputs.records.map(record => record.path);
+  const manifest = JSON.parse(fs.readFileSync(result.outputPath, 'utf8'));
+  assert.equal(manifest.workingTree, 'clean');
+  const recorded = manifest.localizationInputs.records.map(record => record.path);
   assert.deepEqual(recorded, [
     '.translation-cache/ja-JP.json',
     'generated/en/sidebars/guides.sidebar.js',

@@ -37,6 +37,10 @@ test('excluded paths are never localization inputs even when tracked or present 
 test('.gitignore ignores the derived ja sidebar translations so git-side checks stay clean', () => {
   const gitignore = fs.readFileSync(path.join(repositoryRoot, '.gitignore'), 'utf8');
   for (const relativePath of DERIVED_SIDEBAR_TRANSLATIONS) {
-    assert.ok(gitignore.includes(`/${relativePath}`), `.gitignore must ignore ${relativePath}`);
+    assert.match(
+      gitignore,
+      new RegExp(`^/${relativePath.replace(/[.]/g, '\\.')}$`, 'm'),
+      `.gitignore must carry an uncommented ignore line for ${relativePath}`,
+    );
   }
 });

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 'use strict'
 
+const { execFileSync } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
 
@@ -93,9 +94,11 @@ function loadDictionary(workspace, fsImpl = fs) {
   return parsed.labels
 }
 
+// Code-point order, not localeCompare: the output must be byte-identical
+// regardless of the ICU data on the machine that runs the build.
 function sortEntries(entries) {
   const sorted = {}
-  for (const key of Object.keys(entries).sort((a, b) => a.localeCompare(b))) sorted[key] = entries[key]
+  for (const key of Object.keys(entries).sort()) sorted[key] = entries[key]
   return sorted
 }
 
@@ -103,6 +106,23 @@ function formatMissing(missing) {
   return missing
     .map(m => `  - [${m.pluginLabel}] sidebar.${m.sidebarName}.${m.type}.${m.key} (English: "${m.englishLabel}")`)
     .join('\n')
+}
+
+// The offline ja translation lane (offline-guides-publication.js SIDEBAR_PATHS) is
+// the only writer allowed to publish these files as tracked dev content. If one
+// ever lands tracked, build-time generation would silently shadow it on every
+// build:en, so refuse instead.
+function assertOutputsUntracked(workspace, execImpl = execFileSync) {
+  for (const target of PLUGIN_TARGETS) {
+    try {
+      execImpl('git', ['ls-files', '--error-unmatch', '--', target.outputPath], { cwd: workspace, stdio: 'ignore' })
+    } catch {
+      continue
+    }
+    throw new Error(
+      `${target.outputPath} is git-tracked; build-time generation refuses to shadow a publication-lane-owned file`,
+    )
+  }
 }
 
 // `loadSidebars` is injected (rather than requiring `../lib/load-typescript.js`
@@ -163,6 +183,7 @@ if (require.main === module) {
       throw new Error(`Unknown argument(s): ${unknown.join(', ')}; supported: --allow-missing`)
     }
     const { loadTypeScript } = require('../lib/load-typescript.js')
+    assertOutputsUntracked(DEFAULT_WORKSPACE)
     const result = generateJaSidebarLabels({
       workspace: DEFAULT_WORKSPACE,
       loadSidebars: loadTypeScript,
@@ -193,5 +214,6 @@ module.exports = {
   buildPluginTranslations,
   loadDictionary,
   sortEntries,
+  assertOutputsUntracked,
   generateJaSidebarLabels,
 }

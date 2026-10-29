@@ -9,6 +9,7 @@ const {
   buildPluginTranslations,
   loadDictionary,
   sortEntries,
+  assertOutputsUntracked,
   generateJaSidebarLabels,
 } = require('./generate-ja-sidebar-labels')
 
@@ -245,5 +246,27 @@ test('the en site build regenerates ja sidebar translations before docusaurus bu
   assert.match(
     pkg.scripts['build:en'],
     /node \.\.\/\.\.\/scripts\/docs-workflow\/generate-ja-sidebar-labels\.js --allow-missing && /,
+  )
+})
+
+test('assertOutputsUntracked probes every output and passes when none is tracked', () => {
+  const probed = []
+  assert.doesNotThrow(() => assertOutputsUntracked('/repo', (command, args) => {
+    probed.push(args[3])
+    throw new Error('untracked')
+  }))
+  assert.deepEqual(probed, [
+    'i18n/ja-JP/docusaurus-plugin-content-docs/current.json',
+    'i18n/ja-JP/docusaurus-plugin-content-docs-byoc/current.json',
+  ])
+})
+
+test('assertOutputsUntracked fails loud when a publication lane already owns an output as tracked', () => {
+  assert.throws(
+    () => assertOutputsUntracked('/repo', (command, args) => {
+      if (args[3] === 'i18n/ja-JP/docusaurus-plugin-content-docs/current.json') return Buffer.alloc(0)
+      throw new Error('untracked')
+    }),
+    /is git-tracked/,
   )
 })
