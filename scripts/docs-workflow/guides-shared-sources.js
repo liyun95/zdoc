@@ -16,6 +16,7 @@ const {resolveManualPublication} = loadTypeScript(path.resolve(__dirname, '../..
 const {createGuidesNavigationState} = require('../../packages/docs-tooling/src/lark/sourceSnapshot')
 const {validateImageBaseUrl} = require('../../packages/docs-tooling/src/lark/sharedImageUploader')
 const {HttpImageFetcher} = loadTypeScript(path.resolve(__dirname, '../../packages/docs-tooling/src/shared-docs/adapters/images.ts'))
+const regeneration = require('./guides-shared-regeneration')
 const sharedRoot = 'shared-docs/guides'
 function write(root, relative, bytes) {
   if (!safeHandoffPath(relative)) throw new Error('Unsafe source output path')
@@ -120,7 +121,7 @@ function baselineFallback(data, recordId, baselineRoot, out, source = {}) {
   }
   return {outputs, receipt, active}
 }
-function receiptDraft({page, input, upstream, lock, outputs, images, channel, imageBaseUrl, notes = []}) {
+function receiptDraft({page, input, upstream, lock, outputs, images, channel, imageBaseUrl, renderTargets, notes = []}) {
   const byPath = new Map()
   for (const version of ['current', 'next']) for (const file of upstream[version]) {
     if (!byPath.has(file.path)) byPath.set(file.path, {path: file.path, current: null, next: null})
@@ -138,7 +139,7 @@ function receiptDraft({page, input, upstream, lock, outputs, images, channel, im
     milvus_docs: {repository: 'milvus-io/milvus-docs', current: lock.current, next: lock.next, files: [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path))},
     zdoc: {repository: 'zilliztech/zdoc', commit: input.evidence.master_commit, files: input.evidence.files.map(({path, sha256}) => ({path, sha256}))},
     dev: {commit: input.evidence.dev_commit, files: input.evidence.dev_files.map(({path, sha256}) => ({path, sha256}))},
-    fetch: {navigation: fetch.digest(JSON.stringify(input.evidence.navigation)), image_base_url: imageBaseUrl},
+    fetch: {navigation: fetch.digest(JSON.stringify(input.evidence.navigation)), image_base_url: imageBaseUrl, render_targets: {schema_version: 1, targets: renderTargets}},
     tools: {zdoc: input.evidence.master_commit, md2md: md2mdPackage.version},
     images: images.map(image => ({source: image.original, sha256: image.sha256, object: image.address})),
   }, outputs, channel: channel === 'current' ? null : channel, notes}
@@ -217,6 +218,7 @@ async function generateSharedSources(options, dependencies = {}) {
         const base = validateImageBaseUrl(previousReceipt.inputs.fetch.image_base_url)
         return (dependencies.readAcceptedImage || (url => acceptedFetcher.fetch(url)))(`${base}/${image.object}`)
       }
+      const renderTargets = structuredClone(targets)
       const fetchContext = {page, targets, recordedImages, records: data.navigation.navigationRecords.map(row => ({record_id: row.record_id, slug: row.slug,
         placement_type: row.placement_type, publish_targets: row.targets, output_paths: {}}))}
       let built, log = ''
@@ -248,15 +250,21 @@ async function generateSharedSources(options, dependencies = {}) {
         path: `${resolveManualPublication(output.manual, 'en').publication.contentRoot}/${output.path}${output.extension}`,
         sha256: fetch.digest(Buffer.from(output.mdx))}))
       const receipt = receiptDraft({page, input, upstream, lock, outputs, images, channel: targets[0].channel,
-        imageBaseUrl, notes: receiptNotes(built)})
+        imageBaseUrl, renderTargets, notes: receiptNotes(built)})
       validateSharedReceipt(receipt, input.identity)
+      for (const [sha, bytes] of imageBytes) if (!fs.existsSync(path.join(scratchRoot, 'images', sha))) write(scratchRoot, `images/${sha}`, bytes)
+      const proof = await regeneration.regenerateReceipt({receipt, navigation: data.navigation, repositoryRoot, baselineRoot, repo, scratch: scratchRoot,
+        outputs: built.map((output, index) => ({...outputs[index], bytes: Buffer.from(output.mdx)})),
+        readAcceptedImage: async (source, sha) => {
+          if (!receipt.inputs.images.some(image => image.source === source && image.sha256 === sha)) throw new Error(`Missing accepted scratch image: ${source}`)
+          return fetch.regularBytes(scratchRoot, `images/${sha}`)
+        }}, {assertToolIdentity: dependencies.assertToolIdentity})
       const identity = {...input.identity, inputs_sha256: fetch.digest(JSON.stringify(receipt.inputs))}
       const files = []
       for (const [index, output] of built.entries()) {
         const file = `pages/${page}/${output.manual}${output.extension}`
         write(out, file, output.mdx); files.push({...outputs[index], file})
       }
-      for (const [sha, bytes] of imageBytes) if (!fs.existsSync(path.join(scratchRoot, 'images', sha))) write(scratchRoot, `images/${sha}`, bytes)
       write(out, `pages/${page}/receipt-draft.json`, JSON.stringify(receipt, null, 2) + '\n')
       const previousActive = effectiveActive.pages.findIndex(entry => entry.record === record.record_id)
       if (previousActive >= 0) effectiveActive.pages[previousActive] = activation.entry
@@ -274,7 +282,7 @@ async function generateSharedSources(options, dependencies = {}) {
         imageNotices.set(JSON.stringify(row), row)
       }
       outcomes.push({record_id: record.record_id, page, status: 'success', identity, outputs: files, images,
-        receipt: `pages/${page}/receipt-draft.json`, activation, targets, image_base_url: imageBaseUrl, input_context: {...input.evidence, upstream}})
+        receipt: `pages/${page}/receipt-draft.json`, regeneration: proof, activation, targets, image_base_url: imageBaseUrl, input_context: {...input.evidence, upstream}})
     } catch (error) {
       if (error.hardStop) throw error
       outcomes.push({record_id: record.record_id, page, status: 'fallback', code: error.code || 'SHARED_BUILD_FAILED', message: error.message,
@@ -327,7 +335,7 @@ async function generateSharedSources(options, dependencies = {}) {
   write(out, 'bundle.json', JSON.stringify(bundle, null, 2) + '\n')
   return bundle
 }
-async function main(argv) {
+async function main(argv, dependencies = {}) {
   const options = Object.fromEntries(argv.reduce((pairs, arg, index) => arg.startsWith('--') ? [...pairs, [arg.slice(2), argv[index + 1]]] : pairs, []))
   const preparationFile = options.preparation
   if (!preparationFile || !fs.existsSync(preparationFile)) return
@@ -352,7 +360,7 @@ async function main(argv) {
   const bundle = await generateSharedSources({preparation, upstreamStatus, repositoryRoot: options.workspace, baselineRoot: options.baseline,
     repo: options.repo, sourceDir: options['source-dir'], candidate, plan, rootToken: options['root-token'],
     out: options.out, scratch: options.scratch, runId: options['run-id'], imageTimeout: Number(options['image-timeout'] || 120), imageBaseUrl: process.env.IMAGE_BED_URL},
-  {fetchOld: token => fetch.fetchActivationHeadings(scraper, token, preparation.previous_snapshot?.records?.find(record => record.doc_token === token)?.doc_link)})
+  {fetchOld: token => fetch.fetchActivationHeadings(scraper, token, preparation.previous_snapshot?.records?.find(record => record.doc_token === token)?.doc_link), ...dependencies})
   if (bundle) {
     fs.writeFileSync(options.snapshot, JSON.stringify(candidate, null, 2) + '\n')
     if (options.plan) fs.writeFileSync(options.plan, JSON.stringify(plan, null, 2) + '\n')

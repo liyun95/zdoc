@@ -232,7 +232,7 @@ async function regenerate(options, dependencies = {}) {
   options.out = path.join(options.root, `bundle-${options.sequence}`)
   options.scratch = path.join(options.root, `image-scratch-${options.sequence}`)
   options.oldReads = []
-  const result = await generateSharedSources(options, {fetchOld: async token => {
+  const result = await generateSharedSources(options, {assertToolIdentity: () => {}, fetchOld: async token => {
     options.oldReads.push(token)
     return {blocks: {items: [{...heading, heading2: {elements: [{text_run: {content: 'Current heading', text_element_style: {}}}]}}]}}
   }, ...dependencies})

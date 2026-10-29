@@ -8,7 +8,8 @@ const yaml = require('js-yaml')
 const {loadTypeScript} = require('../lib/load-typescript')
 const {git, write, pageYaml} = loadTypeScript(path.resolve(__dirname, '../../packages/docs-tooling/src/shared-docs/testing/build/demo.ts'))
 const adapter = require('../../packages/docs-tooling/src/lark/sharedPageFetch')
-const {generateSharedSources} = require('./guides-shared-sources')
+const {generateSharedSources: productionGenerateSharedSources} = require('./guides-shared-sources')
+const generateSharedSources = (options, dependencies = {}) => productionGenerateSharedSources(options, {assertToolIdentity: () => {}, ...dependencies})
 const {createSourceSnapshot} = require('../../packages/docs-tooling/src/lark/sourceSnapshot')
 const {validateSourceCompleteness} = require('../../packages/docs-tooling/src/lark/sourceCompleteness')
 const Scraper = require('../../packages/docs-tooling/src/lark/larkDocScraper')
@@ -317,7 +318,7 @@ test('source workflow generation CLI freezes matching candidate and plan identit
   await write(options.root, 'plan.json', JSON.stringify(options.plan))
   const {execFile} = require('node:child_process')
   const {promisify} = require('node:util')
-  await promisify(execFile)(process.execPath, [path.join(__dirname, 'guides-shared-sources.js'),
+  await promisify(execFile)(process.execPath, ['-e', `require(${JSON.stringify(path.join(__dirname, 'guides-shared-sources.js'))}).main(process.argv.slice(1), {assertToolIdentity: () => {}}).catch(error => {console.error(error); process.exitCode = 1})`, '--',
     '--preparation', path.join(options.root, 'preparation.json'), '--workspace', options.repositoryRoot,
     '--baseline', options.baselineRoot, '--repo', options.repo, '--source-dir', options.sourceDir, '--root-token', rootToken,
     '--snapshot', path.join(options.root, 'candidate.json'), '--plan', path.join(options.root, 'plan.json'),

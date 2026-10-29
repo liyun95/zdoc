@@ -12,7 +12,7 @@ export interface SharedReceipt {
     milvus_docs: {repository: string; current: string; next: string; files: {path: string; current: string | null; next: string | null}[]}
     zdoc: {repository: string; commit: string; files: {path: string; sha256: string}[]}
     dev: {commit: string; files: {path: string; sha256: string}[]}
-    'fetch': {navigation: string | {navigationRecords: Record<string, any>[]; tableDigests: Record<string, string>}; image_base_url: string}
+    'fetch': {navigation: string | {navigationRecords: Record<string, any>[]; tableDigests: Record<string, string>}; image_base_url: string; render_targets?: {schema_version: 1; targets: {manual: 'guides' | 'guides-byoc'; path: string; extension: '.md' | '.mdx'; navigation: {sidebar_label: string; sidebar_position: number}; channel: 'current' | 'next' | 'retire-in-next'}[]}}
     tools: {zdoc: string; md2md: string}
     images: {source: string; sha256: string; object: string}[]
   }
@@ -144,7 +144,25 @@ export function validateSharedReceipt(value: unknown, expected: {group: string; 
   assert(zdoc.repository === 'zilliztech/zdoc' && matches(zdoc.commit, COMMIT), 'Invalid zdoc commit/repository')
   files(zdoc.files, ['sha256'], 'Shared zdoc files')
   keys(dev, ['commit', 'files'], 'Shared dev input'); assert(matches(dev.commit, COMMIT), 'Invalid dev commit'); files(dev.files, ['sha256'], 'Shared dev files')
-  keys(fetchInputs, ['navigation', 'image_base_url'], 'Shared Fetch inputs')
+  keys(fetchInputs, ['navigation', 'image_base_url', ...(Object.hasOwn(fetchInputs, 'render_targets') ? ['render_targets'] : [])], 'Shared Fetch inputs')
+  if (fetchInputs.render_targets !== undefined) {
+    const projection = fetchInputs.render_targets
+    keys(projection, ['schema_version', 'targets'], 'Shared render targets')
+    assert(projection.schema_version === 1 && Array.isArray(projection.targets) && projection.targets.length === 2
+      && Array.isArray(receipt.outputs) && receipt.outputs.length === 2, 'Invalid render target version or pair')
+    const manuals = new Set<string>()
+    for (const target of projection.targets) {
+      keys(target, ['manual', 'path', 'extension', 'navigation', 'channel'], 'Shared render target')
+      assert(['guides', 'guides-byoc'].includes(target.manual) && !manuals.has(target.manual), 'Invalid render target manual'); manuals.add(target.manual)
+      assert(safeHandoffPath(target.path) && ['.md', '.mdx'].includes(target.extension), 'Invalid render target path/extension')
+      keys(target.navigation, ['sidebar_label', 'sidebar_position'], 'Shared render navigation')
+      text(target.navigation.sidebar_label, 'Render label')
+      assert(Number.isSafeInteger(target.navigation.sidebar_position) && target.navigation.sidebar_position > 0, 'Invalid render position')
+      assert(target.channel === (receipt.channel || 'current'), 'Render channel mismatch')
+      const output = receipt.outputs?.find(output => output.manual === target.manual)
+      assert(output?.path === `content/en/${target.manual === 'guides' ? 'guides' : 'byoc'}/${target.path}${target.extension}`, 'Render output path mismatch')
+    }
+  }
   if (typeof fetchInputs.navigation === 'string') assert(matches(fetchInputs.navigation, SHA), 'Invalid Fetch navigation digest')
   else {
     keys(fetchInputs.navigation, ['navigationRecords', 'tableDigests'], 'Shared permanent navigation')

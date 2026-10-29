@@ -118,6 +118,13 @@ function validateBundle(files, expected = {}) {
       }
       else read(output.file, output.sha256)
     }
+    if (outcome.status === 'success') {
+      const receipt = JSON.parse(files.get(outcome.receipt))
+      if (receipt.inputs.fetch.render_targets || outcome.regeneration) {
+        if (!equal(receipt.inputs.fetch.render_targets?.targets, outcome.targets)) fail('frozen render targets mismatch')
+        require('../../../../scripts/docs-workflow/guides-shared-regeneration').validateRegenerationEvidence(outcome.regeneration, receipt, descriptors.map(output => ({...output, bytes: files.get(output.file)})))
+      }
+    }
   }
   if (seen.size !== expectedRecords.size || used.size !== files.size || !equal(activations, bundle.effective_active)) fail('incomplete or extra bundle evidence')
   // Validation has no mutation of the authenticated source candidate or identity.
