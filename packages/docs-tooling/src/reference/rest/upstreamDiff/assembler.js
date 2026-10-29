@@ -39,19 +39,8 @@ const LEDGERABLE_CATEGORIES = new Set(['upstream-added', 'fragment-only', 'unatt
 
 function validateDecisions(decisions) {
     for (const decision of decisions) {
-        if (!validateDecision(decision)) {
-            const details = validateDecision.errors.map(error => `${error.instancePath || '/'} ${error.message}`).join('; ')
-            fail('REST_UPSTREAM_DECISION_INVALID', `${JSON.stringify(decision)}: ${details}`)
-        }
-        if (decision.action === 'ledger' && decision.override !== undefined) {
-            fail('REST_UPSTREAM_DECISION_INVALID', `${decision.diffEntryId}: ledger decisions carry no override`)
-        }
-        if (decision.action === 'skip' && decision.override !== undefined) {
-            fail('REST_UPSTREAM_DECISION_INVALID', `${decision.diffEntryId}: skip decisions carry no override`)
-        }
-        if (decision.override !== true && decision.overrideReason !== undefined) {
-            fail('REST_UPSTREAM_DECISION_INVALID', `${decision.diffEntryId}: overrideReason without override`)
-        }
+        const shapeError = decisionShapeError(decision)
+        if (shapeError) fail('REST_UPSTREAM_DECISION_INVALID', `${JSON.stringify(decision)}: ${shapeError}`)
     }
     const seen = new Set()
     for (const decision of decisions) {
@@ -60,6 +49,18 @@ function validateDecisions(decisions) {
         }
         seen.add(decision.diffEntryId)
     }
+}
+
+// Contract shape of a single decision line, for callers that must reject one
+// bad line instead of failing a whole file (the batched decision stage).
+function decisionShapeError(decision) {
+    if (!validateDecision(decision)) {
+        return validateDecision.errors.map(error => `${error.instancePath || '/'} ${error.message}`).join('; ')
+    }
+    if (decision.action === 'ledger' && decision.override !== undefined) return 'ledger decisions carry no override'
+    if (decision.action === 'skip' && decision.override !== undefined) return 'skip decisions carry no override'
+    if (decision.override !== true && decision.overrideReason !== undefined) return 'overrideReason without override'
+    return null
 }
 
 function parseDecisions(text, label = 'decisions.jsonl') {
@@ -256,4 +257,4 @@ function assembleChangeSet({diffDocument, decisions, fragmentLoader}) {
     }
 }
 
-module.exports = {parseDecisions, loadDecisions, assembleChangeSet, CONSTRAINT_KEYS, LIFECYCLE_KEYS}
+module.exports = {parseDecisions, loadDecisions, assembleChangeSet, decisionShapeError, CONSTRAINT_KEYS, LIFECYCLE_KEYS}

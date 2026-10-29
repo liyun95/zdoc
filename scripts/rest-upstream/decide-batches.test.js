@@ -1,0 +1,168 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const {decideBatches, parseModelContent, acceptDecisionLine} = require('./decide-batches')
+
+// Minimal diff shaped like diff.js output: two fragment batches.
+function writeDiff(dir) {
+    const diff = {
+        source: 'zilliz-cloud-control-plane',
+        upstreamPin: 'e64f3bd77c94971d2352ca61eb86d1a1f11bf2cb',
+        entries: [
+            {id: 'upstream-modified|post /v2/things|01-things-v2.json|response|success|200|code|description|',
+                category: 'upstream-modified', opKey: 'post /v2/things', fragment: '01-things-v2.json', scope: 'response',
+                branch: 'success', responseStatus: '200', field: 'code', change: {kind: 'description', key: '', before: 'a', after: 'b'}, evidence: ''},
+            {id: 'upstream-modified|post /v2/things|01-things-v2.json|requestBody|||name|constraint|maxLength',
+                category: 'upstream-modified', opKey: 'post /v2/things', fragment: '01-things-v2.json', scope: 'requestBody',
+                branch: '', responseStatus: '', field: 'name', change: {kind: 'constraint', key: 'maxLength', before: 32, after: 50}, evidence: ''},
+            {id: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||dryRun:query|required|',
+                category: 'upstream-modified', opKey: 'delete /v2/things/{ID}', fragment: '02-singles-v2.json', scope: 'parameter',
+                branch: '', responseStatus: '', field: 'dryRun:query', change: {kind: 'required', key: '', before: true, after: false}, evidence: '',
+                requiresConfirmation: 'required-relaxation'},
+        ],
+    }
+    const diffPath = path.join(dir, 'diff.json')
+    fs.writeFileSync(diffPath, `${JSON.stringify(diff, null, 2)}\n`)
+    return diffPath
+}
+
+function stubFetch(responsesByFragment) {
+    const calls = []
+    return {calls, fetchImpl: async (url, options) => {
+        const body = JSON.parse(options.body)
+        const fragmentLine = body.messages[1].content.split('\n').find(line => line.includes('"d":'))
+        const fragment = fragmentLine.includes('01-things') ? '01-things-v2.json' : '02-singles-v2.json'
+        calls.push({url, fragment})
+        return {ok: true, status: 200, text: async () => '', json: async () => ({choices: [{message: {content: responsesByFragment[fragment]}}]})}
+    }}
+}
+
+test('decide-batches merges per-fragment stances, records rejections, and writes the report', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-decide-'))
+    process.env.DECIDE_TEST_KEY = 'test-key'
+    try {
+        const diffPath = writeDiff(dir)
+        const responses = {
+            '01-things-v2.json': JSON.stringify({decisions: [
+                {diffEntryId: 'upstream-modified|post /v2/things|01-things-v2.json|response|success|200|code|description|', action: 'adopt'},
+                {diffEntryId: 'upstream-modified|post /v2/things|01-things-v2.json|requestBody|||name|constraint|maxLength', action: 'adopt'},
+            ]}),
+            '02-singles-v2.json': JSON.stringify({decisions: [
+                {diffEntryId: 'upstream-modified|invented-id', action: 'adopt'},
+                {diffEntryId: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||dryRun:query|required|', action: 'adopt'},
+                {diffEntryId: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||dryRun:query|required|', action: 'adopt'},
+                {diffEntryId: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||dryRun:query|required|', action: 'ledger'},
+            ]}),
+        }
+        const {fetchImpl} = stubFetch(responses)
+        const outPath = path.join(dir, 'decisions.jsonl')
+        const reportPath = path.join(dir, 'report.json')
+        const {summary} = await decideBatches({
+            diffPath, outPath, baseUrl: 'https://gateway.invalid', apiKeyEnv: 'DECIDE_TEST_KEY', model: 'test-model',
+            reportPath, fetchImpl,
+        })
+        assert.equal(summary.candidates, 3)
+        assert.equal(summary.stances, 3)
+        assert.equal(summary.rejectedLines, 3)
+        assert.equal(summary.batches, 2)
+        const decisions = fs.readFileSync(outPath, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+        assert.deepEqual(decisions.map(decision => decision.action), ['adopt', 'adopt', 'adopt'])
+        const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'))
+        const singles = report.batches.find(batch => batch.fragment === '02-singles-v2.json')
+        assert.equal(singles.coverage, 1)
+        assert.equal(singles.attempts, 1)
+        assert.match(singles.rejected[0].reason, /invented/)
+        assert.equal(singles.rejected[1].reason, 'duplicate diffEntryId in one response')
+        assert.match(singles.rejected[2].reason, /^contract: .+classification/)
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
+})
+
+test('parseModelContent tolerates fences, trailing garbage, and concatenated objects', () => {
+    assert.deepEqual(parseModelContent('{"decisions":[]}'), {decisions: []})
+    assert.deepEqual(parseModelContent('```json\n{"decisions":[]}\n```'), {decisions: []})
+    assert.deepEqual(parseModelContent('{"decisions":[]} {"stray":true} trailing'), {decisions: []})
+    assert.deepEqual(parseModelContent('Sure. {"decisions":[{"diffEntryId":"a","action":"adopt"}]}'), {decisions: [{diffEntryId: 'a', action: 'adopt'}]})
+    assert.throws(() => parseModelContent('no json here'), /REST_UPSTREAM_DECIDE_RESPONSE_UNPARSEABLE/)
+    assert.throws(() => parseModelContent('{"decisions":'), /REST_UPSTREAM_DECIDE_RESPONSE_UNPARSEABLE/)
+})
+
+test('acceptDecisionLine rejects invented ids and contract violations without throwing', () => {
+    const candidateIds = new Set(['upstream-modified|x'])
+    assert.equal(acceptDecisionLine({diffEntryId: 'upstream-modified|x', action: 'adopt'}, candidateIds).decision.action, 'adopt')
+    assert.match(acceptDecisionLine({diffEntryId: 'invented', action: 'adopt'}, candidateIds).rejected, /invented/)
+    assert.match(acceptDecisionLine({diffEntryId: 'upstream-modified|x', action: 'ledger'}, candidateIds).rejected, /contract/)
+    assert.match(acceptDecisionLine({diffEntryId: 'upstream-modified|x', action: 'adopt', override: true}, candidateIds).rejected, /contract/)
+    assert.equal(acceptDecisionLine('nope', candidateIds).rejected, 'not an object')
+})
+
+test('batches below the coverage gate retry and then fail the run closed', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-decide-lowcov-'))
+    process.env.DECIDE_TEST_KEY = 'test-key'
+    try {
+        const diffPath = writeDiff(dir)
+        const responses = {
+            '01-things-v2.json': JSON.stringify({decisions: [
+                {diffEntryId: 'upstream-modified|post /v2/things|01-things-v2.json|response|success|200|code|description|', action: 'adopt'},
+                {diffEntryId: 'upstream-modified|post /v2/things|01-things-v2.json|requestBody|||name|constraint|maxLength', action: 'adopt'},
+            ]}),
+            '02-singles-v2.json': JSON.stringify({decisions: []}),
+        }
+        const {fetchImpl, calls} = stubFetch(responses)
+        await assert.rejects(
+            decideBatches({diffPath, outPath: path.join(dir, 'out.jsonl'), baseUrl: 'https://gateway.invalid', apiKeyEnv: 'DECIDE_TEST_KEY', model: 'm', retries: 2, fetchImpl}),
+            /REST_UPSTREAM_DECIDE_BATCH_FAILED: 02-singles-v2\.json after 2 attempt\(s\): stance coverage 0\.0%/,
+        )
+        assert.equal(calls.filter(call => call.fragment === '02-singles-v2.json').length, 2)
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
+})
+
+test('a failing retry recovers when a later attempt reaches the coverage gate', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-decide-retry-'))
+    process.env.DECIDE_TEST_KEY = 'test-key'
+    try {
+        const diffPath = writeDiff(dir)
+        const full = JSON.stringify({decisions: [
+            {diffEntryId: 'upstream-modified|post /v2/things|01-things-v2.json|response|success|200|code|description|', action: 'adopt'},
+            {diffEntryId: 'upstream-modified|post /v2/things|01-things-v2.json|requestBody|||name|constraint|maxLength', action: 'adopt'},
+        ]})
+        let singlesCalls = 0
+        const fetchImpl = async (url, options) => {
+            const content = options.body.includes('02-singles-v2.json') ? (
+                (singlesCalls += 1) === 1
+                    ? JSON.stringify({decisions: []})
+                    : JSON.stringify({decisions: [{diffEntryId: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||dryRun:query|required|', action: 'skip', reason: 'flagged relaxation; human decision pending'}]})
+            ) : full
+            return {ok: true, status: 200, text: async () => '', json: async () => ({choices: [{message: {content}}]})}
+        }
+        const {summary, batches} = await decideBatches({
+            diffPath, outPath: path.join(dir, 'out.jsonl'), baseUrl: 'https://gateway.invalid', apiKeyEnv: 'DECIDE_TEST_KEY', model: 'm', retries: 3, fetchImpl,
+        })
+        assert.equal(summary.stances, 3)
+        const singles = batches.find(batch => batch.fragment === '02-singles-v2.json')
+        assert.equal(singles.attempts, 2)
+        assert.equal(singles.coverage, 1)
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
+})
+
+test('missing api key fails closed before any model call', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-decide-nokey-'))
+    try {
+        const diffPath = writeDiff(dir)
+        let called = 0
+        await assert.rejects(
+            decideBatches({diffPath, outPath: path.join(dir, 'out.jsonl'), baseUrl: 'https://gateway.invalid', apiKeyEnv: 'DECIDE_TEST_KEY_ABSENT', model: 'm', fetchImpl: async () => {called += 1}}),
+            /REST_UPSTREAM_DECIDE_API_KEY_MISSING/,
+        )
+        assert.equal(called, 0)
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
+})

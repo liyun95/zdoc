@@ -239,7 +239,8 @@
       "focusedTests": [
         "pnpm test:rest-upstream",
         "node --test scripts/rest-upstream/rest-refresh-agent.test.js",
-        "node --test scripts/rest-upstream/drift-watchdog.test.js"
+        "node --test scripts/rest-upstream/drift-watchdog.test.js",
+        "node --test scripts/rest-upstream/decide-batches.test.js"
       ],
       "harnesses": [
         "pnpm test:rest-publication-contract"
