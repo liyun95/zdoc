@@ -142,6 +142,90 @@ test('diff then apply round trip through the CLI against a YAML upstream spec', 
     }
 })
 
+test('diff then candidates then decisions then assemble then apply round trip through the CLI', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-decide-'))
+    try {
+        const fragmentsDir = path.join(dir, 'fragments')
+        fs.mkdirSync(fragmentsDir)
+        fs.writeFileSync(path.join(fragmentsDir, '21-project-operations-v2.json'), `${JSON.stringify({
+            openapi: '3.0.1',
+            paths: {'/v2/projects': {post: {
+                summary: 'Create Project.',
+                requestBody: {content: {'application/json': {schema: {type: 'object', required: ['projectName'], properties: {
+                    projectName: {type: 'string', maxLength: 32},
+                }}}}},
+                responses: {'200': {description: 'ok'}},
+            }}},
+        }, null, 2)}\n`)
+        fs.writeFileSync(path.join(dir, 'titles.json'), '{\n  "创建项目": "create-project"\n}\n')
+        fs.writeFileSync(path.join(dir, 'upstream.yaml'), [
+            'openapi: 3.1.0',
+            'info: {title: Cloud-Controller-API, version: v1}',
+            'paths:',
+            '  /v2/projects:',
+            '    post:',
+            '      summary: Create Project',
+            '      requestBody:',
+            '        content:',
+            '          application/json:',
+            '            schema:',
+            '              type: object',
+            '              required: [projectName]',
+            '              properties:',
+            '                projectName: {type: string, maxLength: 50}',
+            '      responses:',
+            "        '200': {description: ok}",
+            '',
+        ].join('\n'))
+        const outDir = path.join(dir, 'diff')
+        const diff = runCli(['rest-upstream-diff', '--source', 'zilliz-cloud-control-plane', '--spec', path.join(dir, 'upstream.yaml'),
+            '--fragments', fragmentsDir, '--out', outDir])
+        assert.equal(diff.status, 0, diff.stderr)
+
+        const summaryId = 'upstream-modified|post /v2/projects|21-project-operations-v2.json|operation||||summary|'
+        const maxLengthId = 'upstream-modified|post /v2/projects|21-project-operations-v2.json|requestBody|||projectName|constraint|maxLength'
+
+        const candidatesFile = path.join(dir, 'candidates.jsonl')
+        const candidates = runCli(['rest-upstream-candidates', '--diff', path.join(outDir, 'diff.json'), '--out', candidatesFile])
+        assert.equal(candidates.status, 0, candidates.stderr)
+        assert.match(candidates.stdout, /candidates 2 line\(s\)/)
+        assert.deepEqual(fs.readFileSync(candidatesFile, 'utf8').trim().split('\n').map(line => JSON.parse(line).d), [summaryId, maxLengthId])
+
+        fs.writeFileSync(path.join(dir, 'decisions.jsonl'), [
+            JSON.stringify({diffEntryId: summaryId, action: 'adopt'}),
+            JSON.stringify({diffEntryId: maxLengthId, action: 'adopt'}),
+        ].join('\n') + '\n')
+        const changeSetFile = path.join(dir, 'change-set.json')
+        const assemble = runCli(['rest-upstream-assemble', '--diff', path.join(outDir, 'diff.json'), '--decisions', path.join(dir, 'decisions.jsonl'),
+            '--fragments', fragmentsDir, '--out', changeSetFile])
+        assert.equal(assemble.status, 0, assemble.stderr)
+        assert.match(assemble.stdout, /assembled 2 entr\(ies\) from 2 decision\(s\) \(adopt=2\)/)
+        const changeSet = JSON.parse(fs.readFileSync(changeSetFile, 'utf8'))
+        assert.equal(changeSet.schemaVersion, '1.0')
+        assert.deepEqual(changeSet.entries.map(entry => entry.diffEntryId), [summaryId, maxLengthId])
+        assert.deepEqual(changeSet.entries.map(entry => entry.kind), ['prose', 'constraint'])
+
+        const applyOut = path.join(dir, 'applied')
+        const apply = runCli(['rest-upstream-apply', '--diff', path.join(outDir, 'diff.json'), '--change-set', changeSetFile,
+            '--fragments', fragmentsDir, '--titles', path.join(dir, 'titles.json'), '--out', applyOut])
+        assert.equal(apply.status, 0, apply.stderr)
+        assert.match(apply.stdout, /applied 2 entries; changed 1 fragment\(s\); 0 diff entries left unaddressed/)
+        const applied = JSON.parse(fs.readFileSync(path.join(applyOut, '21-project-operations-v2.json'), 'utf8'))
+        assert.equal(applied.paths['/v2/projects'].post.summary, 'Create Project')
+        assert.equal(applied.paths['/v2/projects'].post.requestBody.content['application/json'].schema.properties.projectName.maxLength, 50)
+
+        // The decision stage never mints structural coordinates: an invented
+        // diff entry id is refused by the assembler, not smuggled into apply.
+        fs.writeFileSync(path.join(dir, 'bad-decisions.jsonl'), `${JSON.stringify({diffEntryId: 'upstream-modified|invented|21-project-operations-v2.json|operation||||summary|', action: 'adopt'})}\n`)
+        const bad = runCli(['rest-upstream-assemble', '--diff', path.join(outDir, 'diff.json'), '--decisions', path.join(dir, 'bad-decisions.jsonl'),
+            '--fragments', fragmentsDir, '--out', path.join(dir, 'bad-change-set.json')])
+        assert.equal(bad.status, 1)
+        assert.match(bad.stderr, /REST_UPSTREAM_ASSEMBLE_DIFF_ENTRY_UNKNOWN/)
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
+})
+
 test('diff refuses source-tree sources until the extractor skeleton exists, and unclassified fragments', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-cli-tree-'))
     try {
