@@ -1311,7 +1311,9 @@ test('full active aliases render and audit without any retained old body while u
     active: {schema_version: 1, pages: [...bundle.effective_active.pages, {page: 'other', record: 'foreign', feishu_token: 'foreign', feishu_aliases: ['foreign', 'obj'], anchors: {}, activated_in: '123'}]}}), /Duplicate active authority/)
 })
 
-test('validated frozen generation recovers every same-record legacy cache alias when local history is shallow', {timeout: 120000}, async t => {
+test('self-consistent frozen generation with unknown provenance warns and preserves known aliases when history is shallow', {timeout: 120000}, async t => {
+  const diagnostics = []
+  t.mock.method(console, 'info', message => diagnostics.push(message))
   const options = await fixture(t)
   await publishedBaseline(options)
   const activePath = 'generated/en/manifests/shared-pages/guides/active.json'
@@ -1333,23 +1335,22 @@ test('validated frozen generation recovers every same-record legacy cache alias 
   await write(options.repositoryRoot, 'packages/docs-tooling/src/lark/meta/source-cache/guides-manifest.json', JSON.stringify(manifest))
   await refreshPreparation(options)
   const prepared = adapter.restoreRouting(options.preparation)
-  for (const token of ['doc', 'node', 'obj', 'old', 'origin']) assert.equal(prepared.aliasesByToken.get(token), 'rec0', token)
+  assert.equal(prepared.aliasesByToken.get('old'), 'rec0')
+  for (const token of ['doc', 'node', 'obj', 'origin']) assert.equal(prepared.aliasesByToken.has(token), false)
   assert.ok(options.preparation.alias_evidence.gaps.length)
   const bundle = await generateSharedSources(options, {fetchOld: async () => {throw Error('No old Feishu reads')}})
   assert.equal(bundle.outcomes[0].status, 'success')
-  assert.deepEqual(bundle.effective_active.pages[0].feishu_aliases, ['doc', 'node', 'obj', 'old', 'origin'])
+  assert.deepEqual(bundle.effective_active.pages[0].feishu_aliases, ['old'])
+  assert.ok(bundle.information.some(line => line.includes('unknown provenance')))
   assert.ok(bundle.information.some(line => line.includes('rec0')))
   const {loadBundle, validateBundle} = require('../../packages/docs-tooling/src/lark/sharedPageBundle')
-  const handoff = loadBundle(options.out), corrupt = structuredClone(bundle), files = new Map(handoff.files)
-  corrupt.preparation.alias_evidence.caches[0].content = corrupt.preparation.alias_evidence.caches[0].content.replace('origin', 'fake')
-  files.set('bundle.json', Buffer.from(JSON.stringify(corrupt)))
-  assert.throws(() => validateBundle(files), /cache evidence/)
+  loadBundle(options.out)
   for (const output of bundle.outcomes[0].outputs) assert.equal(output.sha256, adapter.digest(fs.readFileSync(path.join(options.baselineRoot, output.path))))
   await write(options.sourceDir, 'foreign-cache.json', JSON.stringify({base_record_id: 'foreign', node_token: 'obj'}))
   assert.throws(() => adapter.prepareSharedSources(options), /conflicting frozen cache owner/)
   fs.unlinkSync(path.join(options.sourceDir, 'foreign-cache.json'))
-  // Without either retained history or a validated generation, enrich known IDs
-  // only, emit informational evidence, and still publish the successful page.
+  // Removing the self-consistent manifest changes no authorization: neither
+  // version has independently authenticated source bytes, so both warn and succeed.
   fs.unlinkSync(path.join(options.repositoryRoot, 'packages/docs-tooling/src/lark/meta/source-cache/guides-manifest.json'))
   await refreshPreparation(options)
   options.out = path.join(options.root, 'gap-only-bundle'); options.scratch = path.join(options.root, 'gap-only-scratch')
@@ -1361,4 +1362,128 @@ test('validated frozen generation recovers every same-record legacy cache alias 
   require('../../packages/docs-tooling/src/lark/sharedPagePublication').finalizePublication({workspace: options.repositoryRoot, handoff: gapHandoff, candidate: options.candidate})
   const report = JSON.parse(fs.readFileSync(path.join(options.repositoryRoot, 'packages/docs-tooling/src/lark/meta/reports/guides-shared-publication.json')))
   assert.deepEqual(report.information, gap.information); assert.deepEqual(report.failures, [])
+  assert.ok(diagnostics.some(line => line.startsWith('[shared-aliases] Alias evidence incomplete for rec0:')))
+})
+
+test('unavailable initial snapshot proof is informational and a known active page still publishes', {timeout: 120000}, async t => {
+  const diagnostics = []
+  t.mock.method(console, 'info', message => diagnostics.push(message))
+  const options = await fixture(t)
+  await publishedBaseline(options)
+  delete options.preparation.alias_evidence
+  const aliases = require('../../packages/docs-tooling/src/lark/sharedPageAliases')
+  const missingProof = (root, args, extra) => {if (args[0] === 'cat-file' && args[1] === 'tree') throw Error('missing local proof object'); return adapter.git(root, args, extra)}
+  assert.doesNotThrow(() => aliases.collect({...options, active: options.preparation.active, previousSnapshot: options.preparation.previous_snapshot,
+    recordIds: ['rec0'], git: missingProof, regularBytes: adapter.regularBytes}))
+  const bundle = await generateSharedSources(options, {fetchOld: async () => {throw Error('Existing page never reads Feishu')},
+    aliasGit(root, args, extra) {if (args[0] === 'cat-file' && args[1] === 'tree') throw Error('missing local proof object'); return adapter.git(root, args, extra)}})
+  assert.equal(bundle.outcomes[0].status, 'success')
+  assert.deepEqual(bundle.effective_active.pages[0].feishu_aliases, ['old'])
+  assert.ok(bundle.information.some(line => line.includes('snapshot')))
+  const handoff = require('../../packages/docs-tooling/src/lark/sharedPageBundle').loadBundle(options.out)
+  for (const output of bundle.outcomes[0].outputs) await write(options.repositoryRoot, output.path, handoff.files.get(output.file))
+  require('../../packages/docs-tooling/src/lark/sharedPagePublication').finalizePublication({workspace: options.repositoryRoot, handoff, candidate: options.candidate})
+  const report = JSON.parse(fs.readFileSync(path.join(options.repositoryRoot, 'packages/docs-tooling/src/lark/meta/reports/guides-shared-publication.json')))
+  assert.deepEqual(report.failures, []); assert.deepEqual(report.information, bundle.information)
+  assert.ok(diagnostics.some(line => line.startsWith('[shared-aliases] Alias evidence incomplete for rec0:')))
+})
+
+async function authenticatedFrozenCache(t, {combinedLimit = false} = {}) {
+  const options = await fixture(t)
+  const legacy = {base_record_id: 'rec0', node_token: 'node', obj_token: 'obj', origin_node_token: 'origin',
+    ...(combinedLimit ? {padding: 'x'.repeat(14 * 1024 * 1024)} : {})}
+  const content = JSON.stringify(legacy)
+  await write(options.sourceDir, 'legacy-authenticated.json', content)
+  const previous = options.preparation.previous_snapshot
+  Object.assign(previous.records[0], {source_file: 'legacy-authenticated.json', source_hash: adapter.digest(content)})
+  await write(options.baselineRoot, adapter.snapshotPath, JSON.stringify(previous))
+  await git(options.baselineRoot, 'add', '.'); await git(options.baselineRoot, 'commit', '--quiet', '-m', 'Pin exact legacy source hash')
+  options.devCommit = await git(options.baselineRoot, 'rev-parse', 'HEAD'); await refreshPreparation(options)
+  await publishedBaseline(options)
+  for (const file of ['active.json', '_publication.json']) {
+    const relative = `generated/en/manifests/shared-pages/guides/${file}`
+    const value = JSON.parse(fs.readFileSync(path.join(options.baselineRoot, relative)))
+    for (const entry of file === 'active.json' ? value.pages : value.active.pages) delete entry.feishu_aliases
+    await write(options.baselineRoot, relative, JSON.stringify(value))
+  }
+  if (combinedLimit) {
+    const snapshot = JSON.parse(fs.readFileSync(path.join(options.baselineRoot, adapter.snapshotPath)))
+    snapshot.padding = 'x'.repeat(3 * 1024 * 1024)
+    await write(options.baselineRoot, adapter.snapshotPath, JSON.stringify(snapshot))
+  }
+  await git(options.baselineRoot, 'add', '.'); await git(options.baselineRoot, 'commit', '--quiet', '-m', 'Legacy scalar state with shared snapshot')
+  options.devCommit = await git(options.baselineRoot, 'rev-parse', 'HEAD'); await refreshPreparation(options)
+  const aliases = require('../../packages/docs-tooling/src/lark/sharedPageAliases')
+  // Retain just the historical root and its exact cache bytes. Its native parent
+  // proof remains anchored at this same dev commit even after history disappears.
+  const retained = aliases.collect({...options, active: options.preparation.active, previousSnapshot: null,
+    recordIds: ['rec0'], git: adapter.git, regularBytes: adapter.regularBytes})
+  assert.equal(retained.caches.length, 1)
+  aliases.authenticate({devCommit: options.devCommit, evidence: retained})
+  options.preparation.alias_evidence = retained
+  return {options, retained}
+}
+
+test('native pinned snapshot source hash authenticates frozen cache aliases offline and rejects recomputed forgeries', {timeout: 120000}, async t => {
+  const diagnostics = []
+  t.mock.method(console, 'info', message => diagnostics.push(message))
+  const {options, retained} = await authenticatedFrozenCache(t)
+  const aliases = require('../../packages/docs-tooling/src/lark/sharedPageAliases')
+  const inventedSource = JSON.stringify({base_record_id: 'rec0', obj_token: 'fabricated'})
+  const inventedSnapshot = JSON.stringify({schema_version: 3, manual: 'guides', build_env: 'uat', records: [{record_id: 'rec0'}], navigation_records: [], table_digests: {}})
+  const inventedManifest = JSON.stringify({schemaVersion: 2, site: 'en', manual: 'guides', buildEnv: 'uat',
+    snapshotHash: require('../../packages/docs-tooling/src/lark/sourceCompleteness').hashSnapshot(JSON.parse(inventedSnapshot)),
+    files: [{path: 'fabricated.json', sha256: adapter.digest(inventedSource), size: Buffer.byteLength(inventedSource)}]})
+  const selfAuthenticated = {dev_commit: options.devCommit, snapshots: [], gaps: [],
+    cache_generation: {manifest: {path: 'packages/docs-tooling/src/lark/meta/source-cache/guides-manifest.json', content: inventedManifest, sha256: adapter.digest(inventedManifest)},
+      snapshot: {path: adapter.snapshotPath, content: inventedSnapshot, sha256: adapter.digest(inventedSnapshot)}},
+    caches: [{path: 'fabricated.json', content: inventedSource, sha256: adapter.digest(inventedSource), generation_sha256: adapter.digest(inventedManifest)}]}
+  assert.throws(() => aliases.authenticate({devCommit: options.devCommit, evidence: selfAuthenticated}), /provenance/)
+  assert.throws(() => aliases.authenticate({devCommit: '0'.repeat(40), evidence: selfAuthenticated}), /dev binding/)
+  const mismatched = {...structuredClone(retained), dev_commit: '0'.repeat(40), snapshots: []}
+  assert.throws(() => aliases.authenticate({devCommit: options.devCommit, evidence: mismatched}), /dev binding/)
+  const rootless = {...structuredClone(retained), snapshots: []}
+  assert.throws(() => aliases.authenticate({devCommit: options.devCommit, evidence: rootless}), /unbound cache evidence/)
+  const forged = structuredClone(retained)
+  const source = JSON.parse(forged.caches[0].content); source.obj_token = 'fabricated'
+  forged.caches[0].content = JSON.stringify(source); forged.caches[0].sha256 = adapter.digest(forged.caches[0].content)
+  for (const item of forged.snapshots) {
+    const snapshot = JSON.parse(item.content)
+    snapshot.records.find(row => row.record_id === 'rec0').source_hash = forged.caches[0].sha256
+    item.content = JSON.stringify(snapshot); item.sha256 = adapter.digest(item.content)
+  }
+  // Every supplied content/file digest is fresh; the independently pinned Git
+  // root still authenticates the original snapshot and defeats the fabrication.
+  assert.throws(() => aliases.authenticate({devCommit: options.devCommit, evidence: forged}), /blob proof/)
+  await write(options.baselineRoot, '.git/shallow', options.devCommit + '\n')
+  const bundle = await generateSharedSources(options, {fetchOld: async () => {throw Error('No Feishu reads')}})
+  assert.equal(bundle.outcomes[0].status, 'success')
+  assert.deepEqual(bundle.effective_active.pages[0].feishu_aliases, ['node', 'obj', 'old', 'origin'])
+  const handoff = require('../../packages/docs-tooling/src/lark/sharedPageBundle').loadBundle(options.out)
+  for (const output of bundle.outcomes[0].outputs) await write(options.repositoryRoot, output.path, handoff.files.get(output.file))
+  require('../../packages/docs-tooling/src/lark/sharedPagePublication').finalizePublication({workspace: options.repositoryRoot, handoff, candidate: options.candidate})
+  assert.ok(diagnostics.some(line => line.startsWith('[shared-aliases] Alias evidence incomplete for rec0:')))
+})
+
+test('combined retained-evidence admission preserves authenticated aliases and publishes with a bounded current-snapshot gap', {timeout: 120000}, async t => {
+  const diagnostics = []
+  t.mock.method(console, 'info', message => diagnostics.push(message))
+  const {options, retained} = await authenticatedFrozenCache(t, {combinedLimit: true})
+  const aliases = require('../../packages/docs-tooling/src/lark/sharedPageAliases')
+  const evidence = aliases.collect({...options, active: options.preparation.active, previousSnapshot: options.preparation.previous_snapshot,
+    retainedEvidence: retained, recordIds: ['rec0'], git: adapter.git, regularBytes: adapter.regularBytes})
+  assert.ok(evidence.gaps.some(gap => gap.message.includes('Current pinned snapshot proof')))
+  assert.equal(evidence.caches.length, 1)
+  assert.equal(evidence.snapshots.some(item => item.commit === options.devCommit), false)
+  aliases.authenticate({devCommit: options.devCommit, evidence})
+  const bundle = await generateSharedSources(options, {fetchOld: async () => {throw Error('No Feishu reads')}})
+  assert.equal(bundle.outcomes[0].status, 'success')
+  assert.deepEqual(bundle.effective_active.pages[0].feishu_aliases, ['node', 'obj', 'old', 'origin'])
+  assert.ok(bundle.information.some(line => line.includes('bounded evidence limits')))
+  const handoff = require('../../packages/docs-tooling/src/lark/sharedPageBundle').loadBundle(options.out)
+  for (const output of bundle.outcomes[0].outputs) await write(options.repositoryRoot, output.path, handoff.files.get(output.file))
+  require('../../packages/docs-tooling/src/lark/sharedPagePublication').finalizePublication({workspace: options.repositoryRoot, handoff, candidate: options.candidate})
+  const report = JSON.parse(fs.readFileSync(path.join(options.repositoryRoot, 'packages/docs-tooling/src/lark/meta/reports/guides-shared-publication.json')))
+  assert.deepEqual(report.failures, []); assert.ok(report.information.length)
+  assert.ok(diagnostics.some(line => line.startsWith('[shared-aliases] Alias evidence incomplete for rec0:')))
 })

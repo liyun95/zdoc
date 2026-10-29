@@ -2,7 +2,6 @@
 
 // Bounded local evidence only: never fetch Git history or call Feishu here.
 const fs = require('node:fs')
-const path = require('node:path')
 const crypto = require('node:crypto')
 const SNAPSHOT = 'packages/docs-tooling/src/lark/meta/snapshots/guides-uat-last-success.json'
 const MANIFEST = 'generated/en/manifests/shared-pages/guides'
@@ -86,21 +85,39 @@ function recordAt(snapshot, id) {
   check(records.length <= 1, `conflicting snapshot owner ${id}`)
   return legacy(records[0]) ? records[0] : null
 }
-function collect({baselineRoot, devCommit, active, previousSnapshot, sourceDir, repositoryRoot, rootToken, retainedEvidence, recordIds, git, regularBytes}) {
+const EVIDENCE_LIMIT = 16 * 1024 * 1024
+const snapshotSize = item => Buffer.byteLength(JSON.stringify(item))
+function collect({baselineRoot, devCommit, active, previousSnapshot, sourceDir, retainedEvidence, recordIds, git, regularBytes}) {
   const evidence = {dev_commit: devCommit, snapshots: [], caches: [], gaps: []}, snapshots = new Map()
   let total = 0
+  const gap = (ids, message) => {for (const record_id of ids) evidence.gaps.push({record_id, message})}
+  // Retained roots already prove the pinned dev ancestry and exact source hash.
+  // Admit them first, so later recovery never evicts previously known evidence.
+  if (retainedEvidence) try {
+    validateEvidence(retainedEvidence, devCommit)
+    evidence.snapshots = [...retainedEvidence.snapshots]
+    evidence.caches = [...retainedEvidence.caches]
+    for (const item of evidence.snapshots) snapshots.set(item.commit, JSON.parse(item.content))
+    total = evidence.snapshots.reduce((sum, item) => sum + snapshotSize(item), 0)
+      + evidence.caches.reduce((sum, item) => sum + Buffer.byteLength(item.content), 0)
+  } catch (error) {
+    gap(recordIds, 'Retained alias evidence has unavailable or unknown provenance')
+  }
   function addSnapshot(commit) {
     if (snapshots.has(commit)) return snapshots.get(commit)
+    check(evidence.snapshots.length < 257, 'snapshot evidence count limit')
     const content = git(baselineRoot, ['show', `${commit}:${SNAPSHOT}`], {stdio: ['ignore', 'pipe', 'pipe']}).toString('utf8')
-    const item = {commit, path: SNAPSHOT, sha256: hash(content), content, proof: gitProof(baselineRoot, devCommit, commit, git)}
-    const nextTotal = total + Buffer.byteLength(JSON.stringify(item))
-    check(nextTotal <= 16 * 1024 * 1024, 'history evidence exceeds size limit')
-    total = nextTotal
+    check(Buffer.byteLength(content) <= EVIDENCE_LIMIT, 'snapshot evidence item size limit')
     const snapshot = JSON.parse(content)
-    snapshots.set(commit, snapshot); evidence.snapshots.push(item)
+    const item = {commit, path: SNAPSHOT, sha256: hash(content), content, proof: gitProof(baselineRoot, devCommit, commit, git)}
+    const size = snapshotSize(item)
+    check(size <= EVIDENCE_LIMIT && total + size <= EVIDENCE_LIMIT, 'snapshot evidence combined size limit')
+    total += size; snapshots.set(commit, snapshot); evidence.snapshots.push(item)
     return snapshot
   }
-  if (previousSnapshot) addSnapshot(devCommit)
+  if (previousSnapshot) try {addSnapshot(devCommit)} catch (error) {
+    gap(recordIds, 'Current pinned snapshot proof is unavailable or exceeds bounded evidence limits')
+  }
   for (const id of recordIds) {
     const entry = active.pages.find(row => row.record === id)
     if (!entry || recordAt(previousSnapshot || {}, id)) continue
@@ -115,106 +132,64 @@ function collect({baselineRoot, devCommit, active, previousSnapshot, sourceDir, 
         const candidate = snapshots.get(commit) || JSON.parse(git(baselineRoot, ['show', `${commit}:${SNAPSHOT}`], {stdio: ['ignore', 'pipe', 'pipe']}))
         if (recordAt(candidate, id)) {addSnapshot(commit); found = true; break}
       }
-      if (!found) evidence.gaps.push({record_id: id, message: 'Historical Feishu snapshot is unavailable in the bounded pinned dev history'})
+      if (!found) gap([id], 'Historical Feishu snapshot is unavailable in the bounded pinned dev history')
     } catch (error) {
-      evidence.gaps.push({record_id: id, message: 'Pinned receipt or local snapshot history is unavailable'})
+      gap([id], 'Pinned receipt or local snapshot history is unavailable or exceeds bounded evidence limits')
     }
   }
-  if (retainedEvidence?.cache_generation) {
-    validateEvidence(retainedEvidence, devCommit)
-    evidence.cache_generation = retainedEvidence.cache_generation
-    evidence.caches = [...retainedEvidence.caches.filter(item => item.generation_sha256)]
-  }
-  // Reuse the existing v5/v4 source-manifest identity while the restored cache
-  // is still frozen. Later Base projection can change other files in this directory.
-  if (repositoryRoot && sourceDir && rootToken) {
-    const manifestPath = 'packages/docs-tooling/src/lark/meta/source-cache/guides-manifest.json'
-    if (fs.existsSync(path.join(repositoryRoot, manifestPath)) && fs.existsSync(path.join(repositoryRoot, SNAPSHOT))) try {
-      require('../../../../scripts/docs-workflow/guides-source-cache').validateSourceCache({site: 'en', sourceDir, rootToken,
-        snapshotPath: path.join(repositoryRoot, SNAPSHOT), manifestPath: path.join(repositoryRoot, manifestPath)})
-      const manifest = regularBytes(repositoryRoot, manifestPath).toString('utf8'), snapshot = regularBytes(repositoryRoot, SNAPSHOT).toString('utf8')
-      check(total + Buffer.byteLength(manifest) + Buffer.byteLength(snapshot) <= 16 * 1024 * 1024, 'source-cache identity exceeds evidence size limit')
-      if (evidence.cache_generation?.manifest.sha256 !== hash(manifest)) evidence.caches = []
-      evidence.cache_generation = {manifest: {path: manifestPath, sha256: hash(manifest), content: manifest},
-        snapshot: {path: SNAPSHOT, sha256: hash(snapshot), content: snapshot}}
-    } catch (error) {
-      for (const id of recordIds) evidence.gaps.push({record_id: id, message: 'Restored source-cache generation is unavailable or no longer frozen'})
-    }
-  }
-  total += evidence.cache_generation ? Buffer.byteLength(evidence.cache_generation.manifest.content) + Buffer.byteLength(evidence.cache_generation.snapshot.content) : 0
-  total += evidence.caches.reduce((sum, item) => sum + Buffer.byteLength(item.content), 0)
   const cacheOwners = new Map()
   if (sourceDir && fs.existsSync(sourceDir)) for (const name of fs.readdirSync(sourceDir).filter(name => name.endsWith('.json')).sort()) {
     const bytes = regularBytes(sourceDir, name), source = JSON.parse(bytes)
     if (!legacy(source) || !source.base_record_id) continue
+    // Ownership conflicts remain fatal even when recovery evidence is unavailable.
     for (const token of tokens(source)) {
       const owner = cacheOwners.get(token)
       check(!owner || owner === source.base_record_id, `conflicting frozen cache owner for ${token}`)
       cacheOwners.set(token, source.base_record_id)
     }
-    if (!recordIds.includes(source.base_record_id)) continue
+    if (!recordIds.includes(source.base_record_id) || evidence.caches.some(item => item.path === name)) continue
     const binding = evidence.snapshots.find(item => {
       const old = recordAt(snapshots.get(item.commit), source.base_record_id)
       return old?.source_file === name && old.source_hash === hash(bytes)
     })
-    const generation = evidence.cache_generation, manifest = generation && JSON.parse(generation.manifest.content)
-    const generatedFile = manifest?.files.find(file => file.path === name && file.sha256 === hash(bytes) && file.size === bytes.length)
-    if (!evidence.caches.some(item => item.path === name) && (binding || generatedFile) && (total + bytes.length > 16 * 1024 * 1024 || evidence.caches.length >= 2048)) {
-      evidence.gaps.push({record_id: source.base_record_id, message: `Frozen legacy cache exceeds bounded evidence limits: ${name}`})
-      continue
-    }
-    if (!evidence.caches.some(item => item.path === name) && (binding || generatedFile)) {
+    if (binding) {
+      if (bytes.length > EVIDENCE_LIMIT || total + bytes.length > EVIDENCE_LIMIT || evidence.caches.length >= 2048) {
+        gap([source.base_record_id], `Frozen legacy cache exceeds bounded evidence limits: ${name}`)
+        continue
+      }
       total += bytes.length
-      evidence.caches.push({path: name, sha256: hash(bytes), content: bytes.toString('utf8'),
-      ...(binding ? {snapshot_commit: binding.commit} : {generation_sha256: generation.manifest.sha256})})
-    } else if (!evidence.caches.some(item => item.path === name) && tokens(source).some(token => !tokens(recordAt(previousSnapshot || {}, source.base_record_id)).includes(token))) {
-      evidence.gaps.push({record_id: source.base_record_id, message: `Frozen legacy cache has no authenticated snapshot identity: ${name}`})
+      evidence.caches.push({path: name, sha256: hash(bytes), content: bytes.toString('utf8'), snapshot_commit: binding.commit})
+    } else if (tokens(source).some(token => !tokens(recordAt(previousSnapshot || {}, source.base_record_id)).includes(token))) {
+      // A self-consistent cache manifest describes bytes; it cannot authorize IDs.
+      gap([source.base_record_id], `Frozen legacy cache has unknown provenance (no pinned source_file/source_hash): ${name}`)
     }
   }
   evidence.gaps = [...new Map(evidence.gaps.map(item => [JSON.stringify(item), item])).values()]
   return evidence
 }
-function validateEvidence(evidence = {snapshots: [], caches: [], gaps: []}, devCommit = evidence.dev_commit) {
-  check(evidence && Array.isArray(evidence.snapshots) && Array.isArray(evidence.caches) && Array.isArray(evidence.gaps)
+function validateEvidence(evidence, devCommit = evidence?.dev_commit) {
+  if (evidence === undefined) return
+  check(evidence && /^[a-f0-9]{40}$/.test(devCommit) && evidence.dev_commit === devCommit, 'invalid evidence dev binding')
+  check(Array.isArray(evidence.snapshots) && Array.isArray(evidence.caches) && Array.isArray(evidence.gaps)
     && evidence.snapshots.length <= 257 && evidence.caches.length <= 2048, 'invalid evidence')
+  check(evidence.cache_generation === undefined, 'unverified cache generation provenance')
   let bytes = 0
   const snapshots = new Map(), seenCaches = new Set()
   for (const item of evidence.snapshots) {
     check(/^[a-f0-9]{40}$/.test(item.commit) && item.path === SNAPSHOT && typeof item.content === 'string'
       && item.sha256 === hash(item.content) && !snapshots.has(item.commit), 'invalid snapshot evidence')
-    check(/^[a-f0-9]{40}$/.test(devCommit) && evidence.dev_commit === devCommit, 'invalid evidence dev binding')
     verifyProof(item, devCommit)
-    snapshots.set(item.commit, JSON.parse(item.content)); bytes += Buffer.byteLength(JSON.stringify(item))
-  }
-  let generationManifest, generationSnapshot
-  if (evidence.cache_generation) {
-    const {manifest, snapshot} = evidence.cache_generation
-    check(manifest?.path === 'packages/docs-tooling/src/lark/meta/source-cache/guides-manifest.json' && snapshot?.path === SNAPSHOT
-      && typeof manifest.content === 'string' && typeof snapshot.content === 'string'
-      && hash(manifest.content) === manifest.sha256 && hash(snapshot.content) === snapshot.sha256, 'invalid cache generation evidence')
-    bytes += Buffer.byteLength(manifest.content) + Buffer.byteLength(snapshot.content)
-    generationManifest = JSON.parse(manifest.content); generationSnapshot = JSON.parse(snapshot.content)
-    check(generationManifest.schemaVersion === 2 && generationManifest.manual === 'guides' && generationManifest.buildEnv === 'uat'
-      && (generationManifest.site === undefined || generationManifest.site === 'en') && Array.isArray(generationManifest.files)
-      && generationManifest.snapshotHash === require('./sourceCompleteness').hashSnapshot(generationSnapshot), 'invalid cache generation identity')
-    const paths = new Set()
-    for (const file of generationManifest.files) {
-      check(typeof file.path === 'string' && /^[^/\\]+\.json$/.test(file.path) && !paths.has(file.path)
-        && /^[a-f0-9]{64}$/.test(file.sha256) && Number.isSafeInteger(file.size) && file.size >= 0, 'invalid cache generation inventory')
-      paths.add(file.path)
-    }
+    snapshots.set(item.commit, JSON.parse(item.content)); bytes += snapshotSize(item)
+    check(bytes <= EVIDENCE_LIMIT, 'evidence exceeds size limit')
   }
   for (const item of evidence.caches) {
     check(typeof item.path === 'string' && /^[^/\\]+\.json$/.test(item.path) && !seenCaches.has(item.path)
       && typeof item.content === 'string' && item.sha256 === hash(item.content), 'invalid cache evidence')
     seenCaches.add(item.path); bytes += Buffer.byteLength(item.content)
+    check(bytes <= EVIDENCE_LIMIT, 'evidence exceeds size limit')
     const source = JSON.parse(item.content), record = recordAt(snapshots.get(item.snapshot_commit) || {}, source.base_record_id)
-    const generationFile = generationManifest?.files.find(file => file.path === item.path)
-    const generationBound = item.generation_sha256 === evidence.cache_generation?.manifest.sha256 && generationFile?.sha256 === item.sha256
-      && generationFile.size === Buffer.byteLength(item.content) && generationSnapshot?.records?.some(row => row.record_id === source.base_record_id)
-    check(legacy(source) && ((record?.source_file === item.path && record.source_hash === item.sha256) || generationBound), 'unbound cache evidence')
+    check(legacy(source) && record?.source_file === item.path && record.source_hash === item.sha256, 'unbound cache evidence')
   }
-  check(bytes <= 16 * 1024 * 1024, 'evidence exceeds size limit')
   return evidence
 }
 function recover({active, previousSnapshot, evidence, recordIds}) {

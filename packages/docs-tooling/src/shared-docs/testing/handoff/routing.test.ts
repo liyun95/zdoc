@@ -89,7 +89,7 @@ it('reserves activation metadata at both routing and receipt boundaries', () => 
 it('accepts persistent legacy aliases and rejects invalid, missing-primary and foreign aliases', () => {
   const entry = {page: 'example', record: 'rec', feishu_token: 'old', feishu_aliases: ['obj', 'old', 'origin'], anchors: {}, activated_in: '123'}
   expect(validateActiveState({schema_version: 1, pages: [entry]}).pages[0]).toBe(entry)
-  for (const aliases of [['old', 'old'], ['obj'], ['old', 'base_table_rec'], ['old', 'shared-example'], ['old', 'https://feishu.cn/wiki/obj'], [null]]) {
+  for (const aliases of [['old', 'old'], ['obj'], ['old', 'base_table_rec'], ['old', 'shared-example'], ['old', 'https://feishu.cn/wiki/obj'], [null], null, {}, 'old', 0]) {
     expect(() => validateActiveState({schema_version: 1, pages: [{...entry, feishu_aliases: aliases}]})).toThrow()
   }
   expect(() => validateActiveState({schema_version: 1, pages: [entry, {...entry, page: 'second', record: 'other', feishu_token: 'other', feishu_aliases: ['obj', 'other']}]})).toThrow()

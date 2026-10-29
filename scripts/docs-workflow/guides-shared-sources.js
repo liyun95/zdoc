@@ -158,7 +158,7 @@ async function generateSharedSources(options, dependencies = {}) {
   const {preparation: preparation, repositoryRoot, baselineRoot, repo, sourceDir, candidate, rootToken, out, scratch, runId} = options
   if (!preparation || (!Object.keys(preparation.inputs).length && !preparation.errors.length)) return null
   const data = {...preparation, alias_evidence: aliases.collect({baselineRoot, devCommit: preparation.dev_commit, active: preparation.active,
-    previousSnapshot: preparation.previous_snapshot, sourceDir, repositoryRoot, rootToken, retainedEvidence: preparation.alias_evidence, recordIds: Object.keys(preparation.inputs), git: fetch.git, regularBytes: fetch.regularBytes})}
+    previousSnapshot: preparation.previous_snapshot, sourceDir, repositoryRoot, rootToken, retainedEvidence: preparation.alias_evidence, recordIds: Object.keys(preparation.inputs), git: dependencies.aliasGit || fetch.git, regularBytes: fetch.regularBytes})}
   const recovered = aliases.recover({active: data.active, previousSnapshot: data.previous_snapshot, evidence: data.alias_evidence, recordIds: Object.keys(data.inputs)})
   const imageBaseUrl = validateImageBaseUrl(options.imageBaseUrl)
   if (!/^\d+$/.test(String(runId))) throw new Error('A numeric Fetch run ID is required')

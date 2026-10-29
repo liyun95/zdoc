@@ -75,7 +75,7 @@ export function validateActiveState(value: unknown): ActiveState {
     text(entry.record, 'Active record'); text(entry.activated_in, 'Active run')
     assert(/^\d+$/.test(entry.activated_in), 'Active run must be a run ID')
     assert(entry.feishu_token === null || (typeof entry.feishu_token === 'string' && matches(entry.feishu_token, TOKEN)), 'Invalid active Feishu token')
-    const tokens = entry.feishu_aliases ?? (entry.feishu_token ? [entry.feishu_token] : [])
+    const tokens = Object.hasOwn(entry, 'feishu_aliases') ? entry.feishu_aliases : (entry.feishu_token ? [entry.feishu_token] : [])
     assert(Array.isArray(tokens) && tokens.every(token => matches(token, TOKEN) && !/^(?:base_|shared-)/.test(token)) && new Set(tokens).size === tokens.length, 'Invalid active Feishu aliases')
     assert(entry.feishu_token === null ? tokens.length === 0 : tokens.includes(entry.feishu_token), 'Active aliases must include primary token')
     assert(!pages.has(entry.page) && !records.has(entry.record) && tokens.every(token => !aliases.has(token)), 'Duplicate active authority')
