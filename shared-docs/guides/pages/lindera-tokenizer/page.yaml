@@ -13,8 +13,3 @@ transforms:
   - operation: remove
     target:
       block: lindera-compile-prerequisites
-  - operation: replace
-    target:
-      block: lindera-dictionary-options
-    content:
-      file: dictionary-options.md

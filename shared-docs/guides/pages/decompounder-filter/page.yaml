@@ -10,16 +10,12 @@ metadata:
   beta: "FALSE"
   description: "The `decompounder` filter splits compound words into individual components based on a specified dictionary, making it easier to search for parts of compound terms. This filter is particularly useful for languages that frequently use compound words, such as German."
 transforms:
-  - operation: replace
+  - operation: remove
     target:
       block: decompounder-overview
-    content:
-      file: overview.md
-  - operation: replace
+  - operation: remove
     target:
       block: decompounder-word-list-sources
-    content:
-      file: word-list-sources.md
   - operation: remove
     target:
       block: decompounder-file-resource
