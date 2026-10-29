@@ -4,7 +4,7 @@ export type SourceRoute =
   | {kind: 'shared-page'; group: string; page: string; directory: string; url: string}
   | {kind: 'invalid'; code: 'OWNERSHIP_CONFIG_MISSING' | 'OWNERSHIP_PATH_MISMATCH'; message: string}
 export interface SharedPageIdentity {group: string; page: string; inputs_sha256: string; record: string}
-export interface ActivePage {page: string; record: string; feishu_token: string | null; anchors: Record<string, string>; activated_in: string}
+export interface ActivePage {page: string; record: string; feishu_token: string | null; feishu_aliases?: string[]; anchors: Record<string, string>; activated_in: string}
 export interface ActiveState {schema_version: 1; pages: ActivePage[]}
 export interface SharedReceipt {
   schema_version: 1; page: string; token: string
@@ -70,13 +70,16 @@ export function validateActiveState(value: unknown): ActiveState {
   assert(state.schema_version === 1 && Array.isArray(state.pages), 'Invalid shared active schema')
   const pages = new Set(), records = new Set(), aliases = new Set()
   for (const entry of state.pages) {
-    keys(entry, ['page', 'record', 'feishu_token', 'anchors', 'activated_in'], 'Shared active page')
+    keys(entry, ['page', 'record', 'feishu_token', 'anchors', 'activated_in', ...(Object.hasOwn(entry, 'feishu_aliases') ? ['feishu_aliases'] : [])], 'Shared active page')
     assert(matches(entry.page, SLUG), 'Invalid active page')
     text(entry.record, 'Active record'); text(entry.activated_in, 'Active run')
     assert(/^\d+$/.test(entry.activated_in), 'Active run must be a run ID')
     assert(entry.feishu_token === null || (typeof entry.feishu_token === 'string' && matches(entry.feishu_token, TOKEN)), 'Invalid active Feishu token')
-    assert(!pages.has(entry.page) && !records.has(entry.record) && (entry.feishu_token === null || !aliases.has(entry.feishu_token)), 'Duplicate active authority')
-    pages.add(entry.page); records.add(entry.record); if (entry.feishu_token) aliases.add(entry.feishu_token)
+    const tokens = entry.feishu_aliases ?? (entry.feishu_token ? [entry.feishu_token] : [])
+    assert(Array.isArray(tokens) && tokens.every(token => matches(token, TOKEN) && !/^(?:base_|shared-)/.test(token)) && new Set(tokens).size === tokens.length, 'Invalid active Feishu aliases')
+    assert(entry.feishu_token === null ? tokens.length === 0 : tokens.includes(entry.feishu_token), 'Active aliases must include primary token')
+    assert(!pages.has(entry.page) && !records.has(entry.record) && tokens.every(token => !aliases.has(token)), 'Duplicate active authority')
+    pages.add(entry.page); records.add(entry.record); tokens.forEach(token => aliases.add(token))
     object(entry.anchors, 'Active anchors')
     for (const [block, anchor] of Object.entries(entry.anchors)) {
       assert(matches(block, TOKEN) && typeof anchor === 'string' && !!anchor && !/[\s/#?\\\0]/.test(anchor) && anchor !== '.' && anchor !== '..', 'Invalid active anchor')

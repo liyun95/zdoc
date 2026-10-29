@@ -344,7 +344,7 @@ async function runReplay({evidenceRoot, exactBaseline = false, comparisonBaselin
   const report = {kind: 'synthetic-regression', root: options.root, pilot, scenarios: []}
   await regenerate(options)
   assert.ok(options.bundle.outcomes.every(row => row.status === 'success'), JSON.stringify(options.bundle.outcomes))
-  assert.deepEqual(options.oldReads, ['old', 'old1'])
+  assert.deepEqual(options.oldReads, ['old'])
   await assemble(options)
   const first = await publish(options)
   assert.ok(first.changed.includes(`${publication.MANIFEST}/active.json`))

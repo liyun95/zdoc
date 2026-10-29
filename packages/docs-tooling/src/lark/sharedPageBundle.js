@@ -31,6 +31,9 @@ function validateBundle(files, expected = {}) {
   if (!prep || prep.master_commit !== bundle.master_commit || prep.dev_commit !== bundle.dev_commit || !equal(prep.navigation, bundle.navigation)
     || !equal(prep.active, bundle.baseline_active) || !Array.isArray(prep.records) || !Array.isArray(prep.errors) || !Array.isArray(prep.dev_files)) fail('preparation evidence')
   validateActiveState(bundle.baseline_active); validateActiveState(bundle.effective_active)
+  const aliases = require('./sharedPageAliases')
+  aliases.authenticate({devCommit: bundle.dev_commit, evidence: prep.alias_evidence})
+  const recovered = aliases.recover({active: bundle.baseline_active, previousSnapshot: prep.previous_snapshot, evidence: prep.alias_evidence, recordIds: Object.keys(prep.inputs)})
   const records = new Set()
   for (const record of prep.records) {if (!record.record_id || records.has(record.record_id)) fail('duplicate Base record'); records.add(record.record_id)}
   const inventory = new Map()
@@ -81,7 +84,18 @@ function validateBundle(files, expected = {}) {
       }
       if (!Array.isArray(outcome.images) || !equal(receipt.inputs.images, outcome.images.map(image => ({source: image.original, sha256: image.sha256, object: image.address})))) fail('image manifest')
       for (const image of outcome.images) if (!new RegExp(`^shared/${image.sha256}\\.[a-z0-9]+$`).test(image.address) || !/^[a-f0-9]{64}$/.test(image.sha256)) fail('image address')
-      if (outcome.activation.firstActivation) activations.pages.push(outcome.activation.entry)
+      const entry = outcome.activation.entry, old = activations.pages.find(row => row.record === outcome.record_id)
+      if (old) {
+        if (outcome.activation.firstActivation) fail('existing activation marked new')
+        aliases.verifyEnrichment(old, entry, recovered.aliases[outcome.record_id] || [])
+        activations.pages[activations.pages.indexOf(old)] = entry
+      } else {
+        if (!outcome.activation.firstActivation || entry.record !== outcome.record_id || entry.page !== outcome.page) fail('activation identity')
+        const previous = prep.previous_snapshot?.records?.find(row => row.record_id === outcome.record_id)
+        if (entry.feishu_token !== (previous?.doc_token || previous?.node_token || null)
+          || !equal(entry.feishu_aliases, recovered.aliases[outcome.record_id] || [])) fail('activation aliases')
+        activations.pages.push(entry)
+      }
     } else if (outcome.status === 'fallback') {
       const prior = prep.previous_snapshot?.records?.find(record => record.record_id === outcome.record_id)
       descriptors = outcome.baseline.outputs
@@ -107,7 +121,7 @@ function validateBundle(files, expected = {}) {
   }
   if (seen.size !== expectedRecords.size || used.size !== files.size || !equal(activations, bundle.effective_active)) fail('incomplete or extra bundle evidence')
   // Validation has no mutation of the authenticated source candidate or identity.
-  return {bundle: freeze(bundle), files, routing: require('./sharedPageFetch').restoreRouting({...prep, active: bundle.effective_active})}
+  return {bundle: freeze(bundle), files, routing: require('./sharedPageFetch').restoreRouting({...prep, active: bundle.effective_active, effective_routing: true})}
 }
 function fromPayload(payload, expected) {
   const files = new Map([...payload].filter(([file]) => file.startsWith(`${ROOT}/`)).map(([file, bytes]) => [file.slice(ROOT.length + 1), bytes]))
