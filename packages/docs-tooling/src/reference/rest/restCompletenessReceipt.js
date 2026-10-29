@@ -165,7 +165,14 @@ function createRestCompletenessReceipt({collectionDirectory, sourceBaselineSha, 
     exclusions: structuredClone(exclusions),
     receiptSha256: 'sha256:'.padEnd(71, '0'),
   }
-  if (upstreamAccounting) body.upstreamAccounting = structuredClone(upstreamAccounting)
+  if (upstreamAccounting) {
+    // Cross-bind the accounting to the receipt identity: a statement about a
+    // different upstream revision is not evidence about this checkpoint.
+    if (upstreamAccounting.upstreamPin !== sourceCheckpointSha) {
+      throw new Error('REST completeness receipt upstreamAccounting upstreamPin must equal the receipt sourceCheckpointSha')
+    }
+    body.upstreamAccounting = structuredClone(upstreamAccounting)
+  }
   body.outputInventory.sort((left, right) => compareText(left.path, right.path))
   body.exclusions.sort((left, right) => compareText(left.path, right.path))
   body.receiptSha256 = sha256(receiptBody(body))

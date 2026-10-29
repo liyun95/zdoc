@@ -434,42 +434,54 @@ var httpMethodNames = map[string]bool{
 	"GET": true, "POST": true, "PUT": true, "DELETE": true, "PATCH": true,
 }
 
-// routeCalls walks a function body for router.<METHOD>(...) calls. A router
-// handed to a helper (router as a call argument) means registrations live
-// outside this body and would be silently missed — every reported operation
-// set would under-report upstream additions and mis-age documented ones, so
-// that shape fails closed instead.
+// routeCalls walks the top-level statements of RegisterRoutesToV2 for
+// router.<METHOD>(...) calls. Two delegation shapes fail closed because their
+// registrations are invisible to this body and would silently under-report the
+// route set: the router handed to a helper as a call argument, and a
+// router.<non-METHOD> call such as router.Group splitting the surface onto a
+// sub-router. The walk does not descend into function literals — closures run
+// at request time, so a router reference inside a handler is not a
+// registration delegation.
 func routeCalls(fn *ast.FuncDecl) ([]*ast.CallExpr, error) {
 	var calls []*ast.CallExpr
-	var delegated error
-	ast.Inspect(fn.Body, func(node ast.Node) bool {
-		if delegated != nil {
-			return false
-		}
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		for _, arg := range call.Args {
-			ident, ok := arg.(*ast.Ident)
-			if ok && ident.Name == "router" {
-				delegated = fail("REST_UPSTREAM_EXTRACT_ROUTER_DELEGATED", "%s: the router is passed to %s; registrations outside this function body are not visible to the extractor", fn.Name.Name, exprName(call.Fun))
+	for _, stmt := range fn.Body.List {
+		var fatal error
+		ast.Inspect(stmt, func(node ast.Node) bool {
+			if fatal != nil {
 				return false
 			}
-		}
-		selector, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
+			if _, ok := node.(*ast.FuncLit); ok {
+				return false
+			}
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			for _, arg := range call.Args {
+				ident, ok := arg.(*ast.Ident)
+				if ok && ident.Name == "router" {
+					fatal = fail("REST_UPSTREAM_EXTRACT_ROUTER_DELEGATED", "%s: the router is passed to %s; registrations outside this function body are not visible to the extractor", fn.Name.Name, exprName(call.Fun))
+					return false
+				}
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			receiver, ok := selector.X.(*ast.Ident)
+			if !ok || receiver.Name != "router" {
+				return true
+			}
+			if !httpMethodNames[selector.Sel.Name] {
+				fatal = fail("REST_UPSTREAM_EXTRACT_ROUTER_GROUP", "%s: router.%s splits the registration surface; the extractor only reads direct router.<METHOD> calls", fn.Name.Name, selector.Sel.Name)
+				return false
+			}
+			calls = append(calls, call)
 			return true
+		})
+		if fatal != nil {
+			return nil, fatal
 		}
-		receiver, ok := selector.X.(*ast.Ident)
-		if !ok || receiver.Name != "router" || !httpMethodNames[selector.Sel.Name] {
-			return true
-		}
-		calls = append(calls, call)
-		return true
-	})
-	if delegated != nil {
-		return nil, delegated
 	}
 	return calls, nil
 }

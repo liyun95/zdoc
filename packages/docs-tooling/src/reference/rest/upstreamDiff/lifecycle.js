@@ -34,7 +34,10 @@ function parseTrack(track, label = 'lifecycle track') {
     return {major, minor}
 }
 
-// Negative when `left` precedes `right` on the managed track timeline.
+// Numeric, never lexical, track ordering per CUSTOM_ATTRIBUTES §1.10. This is
+// deliberately stricter than releaseTrack.js: lifecycle keys are milvus
+// data-plane attributes written as bare `major.minor.x`, so the `v`-prefixed
+// forms releaseTrack accepts are invalid here rather than normalized.
 function compareTracks(left, right) {
     const a = parseTrack(left, 'left track')
     const b = parseTrack(right, 'right track')
@@ -94,9 +97,17 @@ function assertLifecycleOrder(entry, fragmentNode, suggestion, track) {
         fail('REST_UPSTREAM_LIFECYCLE_ORDER', `${entry.id}: fragment x-last-modified ${fragmentLastModified} is newer than suggestion track ${track}`)
     }
     const fragmentDeprecatedSince = fragmentNode['x-deprecated-since']
-    if (typeof fragmentDeprecatedSince === 'string' && TRACK_PATTERN.test(fragmentDeprecatedSince)
-        && suggestion['x-last-modified'] !== undefined && compareTracks(suggestion['x-last-modified'], fragmentDeprecatedSince) > 0) {
-        fail('REST_UPSTREAM_LIFECYCLE_ORDER', `${entry.id}: suggestion x-last-modified ${suggestion['x-last-modified']} would exceed fragment x-deprecated-since ${fragmentDeprecatedSince}`)
+    if (typeof fragmentDeprecatedSince === 'string' && TRACK_PATTERN.test(fragmentDeprecatedSince)) {
+        if (suggestion['x-last-modified'] !== undefined && compareTracks(suggestion['x-last-modified'], fragmentDeprecatedSince) > 0) {
+            fail('REST_UPSTREAM_LIFECYCLE_ORDER', `${entry.id}: suggestion x-last-modified ${suggestion['x-last-modified']} would exceed fragment x-deprecated-since ${fragmentDeprecatedSince}`)
+        }
+        // §1.10 defines the key as the FIRST track in which the element is
+        // deprecated: a suggestion below the recorded marker would rewrite
+        // that history backwards (and the generation-side deprecation-rewrite
+        // guard never sees applier output, so nothing else would catch it).
+        if (suggestion['x-deprecated-since'] !== undefined && compareTracks(suggestion['x-deprecated-since'], fragmentDeprecatedSince) < 0) {
+            fail('REST_UPSTREAM_LIFECYCLE_ORDER', `${entry.id}: suggestion x-deprecated-since ${suggestion['x-deprecated-since']} would move the fragment deprecation marker ${fragmentDeprecatedSince} backwards`)
+        }
     }
 }
 

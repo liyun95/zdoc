@@ -127,6 +127,40 @@ test('canonical readiness: collection covers the canonical fragments with curren
     }
 })
 
+test('canonical readiness rejects a collection that promotes a fragment still held pre-canonical', () => {
+    const ws = workspace()
+    try {
+        // declare a service for the legacy-shadow-required fragment too
+        const betaBytes = writeFragment(ws.fragmentsDir, '02-beta-operations.json',
+            fragmentDocument('beta-v2', '/v2/vectordb/beta', 'betaOp'))
+        fs.writeFileSync(path.join(ws.collectionDir, '02-beta-operations.openapi.json'), betaBytes)
+        const manifest = JSON.parse(fs.readFileSync(path.join(ws.collectionDir, 'collection-manifest.json'), 'utf8'))
+        manifest.services.push({id: 'beta-v2', fragment: '02-beta-operations.openapi.json', sha256: sha256Digest(betaBytes), operationCount: 1})
+        fs.writeFileSync(path.join(ws.collectionDir, 'collection-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
+        const migration = parseRestFragmentMigration(JSON.stringify(ws.migration))
+        assert.throws(
+            () => assertCanonicalReady({migration, fragmentsDir: ws.fragmentsDir, collectionDir: ws.collectionDir, ...accountingInputs()}),
+            /REST_UPSTREAM_MIGRATION_CANONICAL_OVERCOVERED/,
+        )
+    } finally {
+        cleanUp(ws.root)
+    }
+    // a fresh workspace: the accounting diff must be the canonical surface's
+    // own upstream source, not any completed diff
+    const clean = workspace()
+    try {
+        const migration = parseRestFragmentMigration(JSON.stringify(clean.migration))
+        assert.throws(
+            () => assertCanonicalReady({migration, fragmentsDir: clean.fragmentsDir, collectionDir: clean.collectionDir,
+                diff: {...accountingInputs().diff, source: 'some-other-source'}, ledger: {schemaVersion: '1.0', entries: []},
+                expectedSourceId: 'milvus-data-plane'}),
+            /REST_UPSTREAM_MIGRATION_DIFF_SOURCE_MISMATCH/,
+        )
+    } finally {
+        cleanUp(clean.root)
+    }
+})
+
 test('canonical readiness fails closed on stale bytes, undeclared fragments, missing collection, and undecided upstream operations', () => {
     for (const [name, options, expected] of [
         ['stale bytes', {staleBytes: true}, /REST_UPSTREAM_MIGRATION_CANONICAL_STALE/],

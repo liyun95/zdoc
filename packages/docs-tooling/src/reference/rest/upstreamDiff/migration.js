@@ -88,10 +88,12 @@ function assertMigrationConsistency({migration, fragmentsDir}) {
 /*
  * Canonical-readiness gate. `collectionDir` is the candidate canonical
  * collection (manifest + fragment copies); `diff`/`ledger` prove the upstream
- * accounting for the surface. Canonical fragments of a surface with no
- * candidate collection fail closed.
+ * accounting for the surface — `expectedSourceId` binds that diff to the
+ * lock's source for the canonical surface, so an arbitrary completed diff
+ * cannot stand in for the real upstream accounting. Canonical fragments of a
+ * surface with no candidate collection fail closed.
  */
-function assertCanonicalReady({migration, fragmentsDir, collectionDir, diff, ledger}) {
+function assertCanonicalReady({migration, fragmentsDir, collectionDir, diff, ledger, expectedSourceId = null}) {
     const canonicalSurfaces = new Set(migration.fragments.filter(fragment => fragment.migrationState === 'canonical').map(fragment => fragment.apiSurface))
     if (canonicalSurfaces.size === 0) {
         fail('REST_UPSTREAM_MIGRATION_NOTHING_CANONICAL', 'no fragment is in the canonical state; nothing to gate')
@@ -123,8 +125,21 @@ function assertCanonicalReady({migration, fragmentsDir, collectionDir, diff, led
             fail('REST_UPSTREAM_MIGRATION_CANONICAL_COUNT', `${fragment.file}: collection manifest and migration disagree on the operation count`)
         }
     }
+    // The other direction: a collection service whose fragment the migration
+    // still holds in a pre-canonical state would let exactly the premature
+    // promotion this gate exists to catch slip through.
+    const canonicalServices = new Set(canonicalBySurface.get(collection.manifest.apiSurface).map(fragment => fragment.service))
+    for (const service of servicesById.values()) {
+        if (!canonicalServices.has(service.id)) {
+            fail('REST_UPSTREAM_MIGRATION_CANONICAL_OVERCOVERED', `collection service ${service.id} is not a canonical fragment of surface ${collection.manifest.apiSurface}`)
+        }
+    }
     // T4 accounting for the surface's upstream source: nothing undocumented
-    // and undecided. The collection must already satisfy its own receipt.
+    // and undecided, and provably the accounting OF that source — a diff from
+    // a different (or invented) source id proves nothing about this surface.
+    if (expectedSourceId && diff.source !== expectedSourceId) {
+        fail('REST_UPSTREAM_MIGRATION_DIFF_SOURCE_MISMATCH', `accounting diff is for ${JSON.stringify(diff.source)}, not the ${collection.manifest.apiSurface} source ${JSON.stringify(expectedSourceId)}`)
+    }
     assertAccountingComplete(accountUpstreamOperations({diff, ledger}))
     return collection
 }

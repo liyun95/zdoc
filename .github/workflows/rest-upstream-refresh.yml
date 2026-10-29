@@ -289,7 +289,9 @@ jobs:
               })
               added++
             }
-            ledger.entries.sort((left, right) => (left.opKey < right.opKey ? -1 : left.opKey > right.opKey ? 1 : 0))
+            ledger.entries.sort((left, right) => (left.source === right.source
+              ? (left.opKey < right.opKey ? -1 : left.opKey > right.opKey ? 1 : 0)
+              : (left.source < right.source ? -1 : 1)))
             fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`)
             console.log(`ledger: landed ${added} draft entr(ies) as deferred (${applied.ledgerDrafts.length} proposed)`)
           }
@@ -304,13 +306,11 @@ jobs:
           git config user.email 'bot@zilliz.com'
           git commit -m "refactor(rest): refresh fragments from ${SOURCE} @ ${UPSTREAM_COMMIT}"
 
-      # Gate 4 (design §8.4) + ledger T4: after the applier and titles landed,
-      # the refreshed tree must carry no undecided upstream operation — every
-      # upstream@pin op the fragments lack needs a ledger decision (any
-      # classification; the point is that the human decision exists). Ledger
-      # drafts from the change set are proposals only: merge them into the
-      # ledger in the review round (or dispatch the bootstrap merge) before
-      # re-running, so the gate forces the explicit step.
+      # Gate 4 (design §8.4) + ledger T4: after the applier, titles, ledger
+      # drafts (landed as deferred in the commit above), and the pin bump, the
+      # refreshed tree must carry no undecided upstream operation — every
+      # upstream@pin op the fragments lack has a ledger entry by now, so this
+      # gate re-proves it against the landed ledger before anything is pushed.
       - name: Gate the ledger accounting for the refreshed surface
         run: |
           node packages/docs-tooling/src/reference/rest/index.js rest-upstream-accounting \

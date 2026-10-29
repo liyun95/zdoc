@@ -374,6 +374,46 @@ test('lifecycle values that deviate from the derived suggestion fail closed unle
     assert.match(result.overrides[0].reason, /backport/)
 })
 
+test('ledger drafts are bound to the cited operation: a forged opKey or field-level citation is rejected', () => {
+    // a draft whose opKey differs from the cited upstream-added operation is
+    // an invented decision about an operation the diff never reported
+    const addedDiff = {schemaVersion: '1.0', source: 'milvus-data-plane', publicationTarget: 'milvus', upstreamPin: SHA, summary: {},
+        entries: [{opKey: 'post /v2/vectordb/collections/compact', category: 'upstream-added', scope: 'operation',
+            change: {kind: 'operation-absent-in-fragments', before: null, after: null}, evidence: '/paths/x/post',
+            id: 'upstream-added|post /v2/vectordb/collections/compact||operation||||operation-absent-in-fragments|'}]}
+    assert.throws(
+        () => applyChangeSet({documents: new Map(), titles: {},
+            changeSet: parseChangeSet(JSON.stringify(changeSet([
+                {id: 'upstream-added|post /v2/vectordb/collections/compact||operation||||operation-absent-in-fragments|',
+                    kind: 'ledgerDraft', ledgerDraft: {opKey: 'post /v2/vectordb/snapshots/list',
+                        classification: 'external', reason: 'invented decision', owner: 'codex-rest-refresh-agent'}},
+            ], addedDiff))), diff: addedDiff, ruleset: RULESET}),
+        /REST_UPSTREAM_APPLY_UNBOUND_LOCUS/,
+    )
+    const diff = lifecycleDiff()
+    // a non-operation drift cannot carry a ledger draft at all
+    assert.throws(
+        () => applyChangeSet({documents: new Map([['05-collection-operations-v2.json', lifecycleFragment()]]), titles: {},
+            changeSet: parseChangeSet(JSON.stringify(changeSet([
+                {id: MAXLENGTH_ID, kind: 'ledgerDraft', ledgerDraft: {opKey: 'post /v2/vectordb/collections/describe',
+                    classification: 'external', reason: 'field-level citation', owner: 'codex-rest-refresh-agent'}},
+            ], diff))), diff, ruleset: RULESET}),
+        /REST_UPSTREAM_APPLY_UNBOUND_TARGET/,
+    )
+    // the legit shape: an unattributed union field citing its branched operation
+    const fieldDiff = {schemaVersion: '1.0', source: 'milvus-data-plane', publicationTarget: 'milvus', upstreamPin: SHA, summary: {},
+        entries: [{opKey: 'post /v2/vectordb/collections/create', category: 'unattributed', scope: 'requestBody', field: 'dbName',
+            change: {kind: 'field-uncovered', before: null, after: null}, evidence: '/paths/x/post',
+            id: 'unattributed|post /v2/vectordb/collections/create|f.json|requestBody|||dbName|field-uncovered|'}]}
+    const drafted = applyChangeSet({documents: new Map(), titles: {},
+        changeSet: parseChangeSet(JSON.stringify(changeSet([
+            {id: 'unattributed|post /v2/vectordb/collections/create|f.json|requestBody|||dbName|field-uncovered|',
+                kind: 'ledgerDraft', ledgerDraft: {opKey: 'post /v2/vectordb/collections/create',
+                    classification: 'deferred', reason: 'branch attribution needs review', owner: 'codex-rest-refresh-agent'}},
+        ], fieldDiff))), diff: fieldDiff, ruleset: RULESET})
+    assert.deepEqual(drafted.ledgerDrafts.map(draft => draft.opKey), ['post /v2/vectordb/collections/create'])
+})
+
 test('lifecycle leaves the diff did not derive still require the override', () => {
     const diff = lifecycleDiff()
     assert.throws(

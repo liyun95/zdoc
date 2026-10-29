@@ -309,6 +309,24 @@ function assertTitleBinding(entry, cited) {
 }
 
 /*
+ * A ledger draft is a proposed T4 decision: it must name the very operation
+ * the cited drift reports. Without this binding an agent could invent a
+ * ledger decision for an operation absent from the diff and satisfy the
+ * accounting gate itself. `unattributed` stays legal — branch-attribution
+ * proposals for an uncovered union field cite the branched operation (design
+ * §8.2) — but the opKey equality keeps every draft anchored to a real entry.
+ */
+function assertLedgerDraftBinding(entry, cited) {
+    if (['upstream-added', 'fragment-only', 'unattributed'].includes(cited.category)) {
+        if (cited.opKey !== entry.ledgerDraft.opKey) {
+            fail('REST_UPSTREAM_APPLY_UNBOUND_LOCUS', `${entry.diffEntryId}: ledger draft opKey ${JSON.stringify(entry.ledgerDraft.opKey)} does not match the cited operation ${JSON.stringify(cited.opKey)}`)
+        }
+        return
+    }
+    fail('REST_UPSTREAM_APPLY_UNBOUND_TARGET', `${entry.diffEntryId}: ledger drafts must cite an operation-level drift (upstream-added, fragment-only, unattributed), not ${cited.category}`)
+}
+
+/*
  * applyChangeSet({documents, titles, changeSet, diff, ruleset}) ->
  * {documents, changedFiles, titles, appliedLog, ledgerDrafts, titleLog, overrides}
  * documents: Map<fragmentFile, parsed object>. Only files named by entries are
@@ -328,6 +346,7 @@ function applyChangeSet({documents, titles = {}, changeSet, diff, ruleset}) {
         const cited = citedById.get(entry.diffEntryId)
         if (entry.override) overrides.push({diffEntryId: entry.diffEntryId, kind: entry.kind, reason: entry.overrideReason})
         if (entry.kind === 'ledgerDraft') {
+            assertLedgerDraftBinding(entry, cited)
             ledgerDrafts.push({diffEntryId: entry.diffEntryId, ...entry.ledgerDraft})
             appliedLog.push({diffEntryId: entry.diffEntryId, kind: entry.kind})
             continue

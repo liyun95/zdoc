@@ -91,11 +91,12 @@ test('rest deletion evidence requires baseline presence and complete checkpoint 
   fs.rmSync(generatedRoot, {recursive: true, force: true})
 })
 
-// SchemaVersion 2 embeds the upstream ledger accounting (design §7 T4 / D2).
+// SchemaVersion 2 embeds the upstream ledger accounting (design §7 T4 / D2);
+// creating the receipt cross-binds its upstreamPin to sourceCheckpointSha.
 const ACCOUNTING = {
   schemaVersion: '1.0',
   source: 'zilliz-cloud-control-plane',
-  upstreamPin: SHA_A,
+  upstreamPin: SHA_B,
   diffDigest: `sha256:${'3'.repeat(64)}`,
   summary: {upstreamAdded: 2, ledgered: 2, unaccounted: 0},
   unaccountedOpKeys: [],
@@ -134,6 +135,23 @@ test('schemaVersion 1 receipts stay byte-compatible without accounting', () => {
   }
 })
 
+test('v2 accounting must be about the receipt checkpoint: a foreign upstreamPin is rejected at creation', () => {
+  const collection = writeCollection([{id: 'projects', spec: fragment('projects', '/v2/projects', 'listProjects')}])
+  try {
+    assert.throws(
+      () => createRestCompletenessReceipt({
+        collectionDirectory: collection,
+        sourceBaselineSha: SHA_A,
+        sourceCheckpointSha: SHA_B,
+        upstreamAccounting: {...ACCOUNTING, upstreamPin: SHA_A},
+      }),
+      /upstreamAccounting upstreamPin must equal the receipt sourceCheckpointSha/,
+    )
+  } finally {
+    fs.rmSync(collection, {recursive: true, force: true})
+  }
+})
+
 test('v2 accounting fails closed on undecided operations, inconsistent summaries, and wrong shapes', () => {
   const collection = writeCollection([{id: 'projects', spec: fragment('projects', '/v2/projects', 'listProjects')}])
   try {
@@ -147,7 +165,7 @@ test('v2 accounting fails closed on undecided operations, inconsistent summaries
       /upstreamAccounting is incomplete: undecided upstream operations remain/)
     assert.throws(() => build({...ACCOUNTING, summary: {upstreamAdded: 3, ledgered: 2, unaccounted: 0}}),
       /summary is inconsistent/)
-    assert.throws(() => build({...ACCOUNTING, upstreamPin: 'short'}), /upstreamAccounting upstreamPin is invalid/)
+    assert.throws(() => build({...ACCOUNTING, upstreamPin: 'short'}), /upstreamAccounting upstreamPin/)
     assert.throws(() => build({...ACCOUNTING, unaccountedOpKeys: ['get /v2/projects']}),
       /summary disagrees with the op key list/)
     assert.throws(() => build({...ACCOUNTING, diffDigest: 'sha256:short'}), /upstreamAccounting diffDigest is invalid/)

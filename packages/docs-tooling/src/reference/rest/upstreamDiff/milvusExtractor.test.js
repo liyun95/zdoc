@@ -79,10 +79,26 @@ test('extractor fails closed on unknown path constants, external types, a missin
         // Two wrapperPost calls in one registration are ambiguous; picking
         // one would extract an arbitrary request contract.
         ['ambiguous-wrapper', 'REST_UPSTREAM_EXTRACT_WRAPPER_AMBIGUOUS'],
+        // router.Group splits the registration surface onto a sub-router the
+        // extractor never reads: fail closed instead of diffing a subset.
+        ['grouped-router', 'REST_UPSTREAM_EXTRACT_ROUTER_GROUP'],
     ]) {
         const {result, outDir} = extract(path.join(TESTDATA, fixture))
         fs.rmSync(outDir, {recursive: true, force: true})
         assert.notEqual(result.status, 0, `${fixture} must fail`)
         assert.match(result.stderr, new RegExp(code), `${fixture} must report ${code}`)
     }
+})
+
+// A router reference inside a handler closure is request-time use, not a
+// registration delegation: the top-level walk must not flag it. (An inline
+// FuncLit handler itself stays unsupported — HANDLER_MISSING — but the error
+// names the shape instead of blaming a delegation.)
+test('a router reference inside a handler closure is not a delegation', t => {
+    if (!goAvailable()) return t.skip('go toolchain not on PATH; extractor behavior is covered wherever Go is installed')
+    const {result, outDir} = extract(path.join(TESTDATA, 'closure-router'))
+    fs.rmSync(outDir, {recursive: true, force: true})
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /REST_UPSTREAM_EXTRACT_HANDLER_MISSING/)
+    assert.doesNotMatch(result.stderr, /REST_UPSTREAM_EXTRACT_ROUTER_DELEGATED/)
 })

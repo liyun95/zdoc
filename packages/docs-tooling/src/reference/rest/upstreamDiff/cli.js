@@ -350,6 +350,7 @@ function registerMigrationCommand(command) {
         .option('--collection <dir>', 'Candidate canonical collection directory (manifest + fragment copies)')
         .option('--diff <path>', 'diff.json proving the upstream accounting for the canonical surface')
         .option('--ledger <path>', 'Ledger file path', DEFAULTS.ledger)
+        .option('--lock <path>', 'Lock file path (binds the accounting diff to the canonical surface source)', DEFAULTS.lock)
         .action(opts => {
             const migration = loadRestFragmentMigration(opts.migration)
             assertMigrationConsistency({migration, fragmentsDir: opts.fragments})
@@ -362,7 +363,13 @@ function registerMigrationCommand(command) {
             }
             const diff = JSON.parse(fs.readFileSync(opts.diff, 'utf8'))
             const ledger = loadRestUpstreamLedger(opts.ledger)
-            const collection = assertCanonicalReady({migration, fragmentsDir: opts.fragments, collectionDir: opts.collection, diff, ledger})
+            // Bind the accounting diff to the lock's source for the canonical
+            // surface: a completed diff from any other source proves nothing.
+            const canonicalSurfaces = new Set(migration.fragments.filter(fragment => fragment.migrationState === 'canonical').map(fragment => fragment.apiSurface))
+            const lock = loadRestUpstreamLock(opts.lock)
+            const expectedSourceId = lock.sources.find(source => canonicalSurfaces.has(source.apiSurface))?.id
+            if (!expectedSourceId) fail('REST_UPSTREAM_MIGRATION_SOURCE_UNKNOWN', `the lock has no source for canonical surface(s) ${[...canonicalSurfaces].sort().join(', ')}`)
+            const collection = assertCanonicalReady({migration, fragmentsDir: opts.fragments, collectionDir: opts.collection, diff, ledger, expectedSourceId})
             console.log(`canonical-ready: collection ${collection.manifest.collectionId} (${collection.manifest.apiSurface}) loads, canonical fragments covered, accounting complete`)
         })
 }

@@ -580,6 +580,15 @@ test('lifecycle suggestions fail closed when the fragment side is already on a n
     )
 })
 
+test('a deprecation suggestion below the recorded x-deprecated-since would rewrite history and fails closed', () => {
+    // fragment already records deprecation at 3.2.x; a 3.0.x flip suggestion
+    // must not move that marker backwards (§1.10: FIRST deprecated track).
+    assert.throws(
+        () => lifecycleRun({lifecycleTrack: TRACK, fragmentOverride: {renameOperation: {'x-deprecated-since': '3.2.x'}}}),
+        /would move the fragment deprecation marker 3.2.x backwards/,
+    )
+})
+
 test('lifecycle tracks reject control-plane sources and malformed values', () => {
     assert.throws(() => lifecycleRun({lifecycleTrack: '3.0'}), /REST_UPSTREAM_LIFECYCLE_TRACK_INVALID/)
     assert.throws(
