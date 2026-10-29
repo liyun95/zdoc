@@ -19,7 +19,6 @@ const MIXED_RULES = [
   {from: '/docs/old', to: '/docs/new'},
   {from: '/ja-JP/docs/setup-a-private-link', to: '/ja-JP/docs/setup-a-private-link-aws'},
 ];
-
 test('keeps the plugin name in sync with the docs-ui redirect helper', () => {
   const helper = fs.readFileSync(
     path.join(REPO_ROOT, 'packages', 'docs-ui', 'src', 'shared', 'theme', 'NotFound', 'Content', 'spaRedirectMap.ts'),
@@ -92,24 +91,25 @@ test('resolves targets against routes under a non-root baseUrl', async () => {
   );
 });
 
-test('the default-locale build does not validate other locales rules', async () => {
-  // Regression: the en build failed because /ja-JP targets are routes of the
-  // ja-JP locale build, not of the en build whose routes carry no prefix.
-  const plugin = buildPlugin(MIXED_RULES, {i18n: EN_JA_I18N});
-  await plugin.postBuild({routesPaths: ['/docs/new'], baseUrl: '/'});
-  await assert.rejects(
-    () => plugin.postBuild({routesPaths: ['/docs/other'], baseUrl: '/'}),
-    /redirect \/docs\/old -> \/docs\/new targets a route/,
-  );
+test('locale-prefixed targets validate against prefix-less locale build routes', async () => {
+  // Regression x2: postBuild hands out routes WITHOUT the locale prefix in
+  // every locale build, so both the en and the ja-JP build must compare the
+  // /ja-JP target after stripping its prefix. Untranslated pages fall back to
+  // the default locale's content, so the route inventories are equivalent.
+  for (const i18n of [EN_JA_I18N, JA_I18N]) {
+    const plugin = buildPlugin(MIXED_RULES, {i18n});
+    await plugin.postBuild({routesPaths: ['/docs/new', '/docs/setup-a-private-link-aws'], baseUrl: '/'});
+  }
 });
 
-test('a locale build validates only its own prefixed rules', async () => {
-  const plugin = buildPlugin(MIXED_RULES, {i18n: JA_I18N});
-  await plugin.postBuild({routesPaths: ['/ja-JP/docs/setup-a-private-link-aws'], baseUrl: '/'});
-  await assert.rejects(
-    () => plugin.postBuild({routesPaths: ['/ja-JP/docs/other'], baseUrl: '/'}),
-    /redirect \/ja-JP\/docs\/setup-a-private-link -> \/ja-JP\/docs\/setup-a-private-link-aws targets a route/,
-  );
+test('a missing target still fails in any locale build', async () => {
+  for (const i18n of [EN_JA_I18N, JA_I18N]) {
+    const plugin = buildPlugin(MIXED_RULES, {i18n});
+    await assert.rejects(
+      () => plugin.postBuild({routesPaths: ['/docs/new'], baseUrl: '/'}),
+      /redirect \/ja-JP\/docs\/setup-a-private-link -> \/ja-JP\/docs\/setup-a-private-link-aws targets a route/,
+    );
+  }
 });
 
 test('global data keeps the full map in every locale build', async () => {
