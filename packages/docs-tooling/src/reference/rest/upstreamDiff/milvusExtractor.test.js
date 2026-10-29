@@ -48,12 +48,34 @@ test('extractor reproduces the golden skeleton from the hermetic fixture', t => 
     }
 })
 
-test('extractor fails closed on unknown path constants, external types, and a missing route table', t => {
+// P2 review P1-1: same path, mixed methods — the emitted order is the
+// (path, method) tuple, exactly what the Node-side gate compares.
+test('extractor emits mixed-method routes in (path, method) tuple order', t => {
+    if (!goAvailable()) return t.skip('go toolchain not on PATH; extractor behavior is covered wherever Go is installed')
+    const {result, skeletonPath, outDir} = extract(path.join(TESTDATA, 'mixed-method'))
+    try {
+        assert.equal(result.status, 0, result.stderr)
+        const skeleton = parseRestUpstreamSkeleton(fs.readFileSync(skeletonPath, 'utf8'))
+        assert.deepEqual(skeleton.operations.map(op => `${op.method} ${op.path}`), [
+            'post /v2/vectordb/collections/list',
+            'get /v2/vectordb/entities/delete',
+            'get /v2/vectordb/entities/get',
+            'post /v2/vectordb/entities/get',
+        ])
+    } finally {
+        fs.rmSync(outDir, {recursive: true, force: true})
+    }
+})
+
+test('extractor fails closed on unknown path constants, external types, a missing route table, and a delegated router', t => {
     if (!goAvailable()) return t.skip('go toolchain not on PATH; extractor behavior is covered wherever Go is installed')
     for (const [fixture, code] of [
         ['bad-ident', 'REST_UPSTREAM_EXTRACT_PATH_UNKNOWN_IDENT'],
         ['external-type', 'REST_UPSTREAM_EXTRACT_EXTERNAL_TYPE'],
         ['no-table', 'REST_UPSTREAM_EXTRACT_ROUTE_TABLE_MISSING'],
+        // A router handed to a helper hides registrations outside the parsed
+        // body: the route set would silently under-report upstream additions.
+        ['delegated-router', 'REST_UPSTREAM_EXTRACT_ROUTER_DELEGATED'],
     ]) {
         const {result, outDir} = extract(path.join(TESTDATA, fixture))
         fs.rmSync(outDir, {recursive: true, force: true})

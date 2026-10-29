@@ -87,3 +87,25 @@ test('skeleton from another repository is refused for a locked source', () => {
         /REST_UPSTREAM_SKELETON_SOURCE_MISMATCH/)
     assertSkeletonMatchesSource(skeleton, LOCK_SOURCE)
 })
+
+// P2 review P1-1: the extractor sorts by (path, method); the gate must not
+// invert that order across methods the way "method path" string order does.
+test('mixed-method skeletons sort by the (path, method) tuple, not by method-path string', () => {
+    const mixed = validSkeleton()
+    mixed.operations = [
+        {...validSkeleton().operations[0], path: '/v2/vectordb/entities/insert', method: 'get', handler: 'getInsertState'},
+        {...validSkeleton().operations[0], path: '/v2/vectordb/entities/insert', method: 'post'},
+        {...validSkeleton().operations[1]},
+    ]
+    // "get /v2/vectordb/entities/insert" < "post /v2/vectordb/jobs/..." as strings,
+    // but the tuple order puts the /jobs path first: this IS the extractor's order.
+    const parsed = parseRestUpstreamSkeleton(JSON.stringify(mixed))
+    assert.deepEqual(parsed.operations.map(op => `${op.method} ${op.path}`), [
+        'get /v2/vectordb/entities/insert',
+        'post /v2/vectordb/entities/insert',
+        'post /v2/vectordb/jobs/import/get_progress',
+    ])
+    const inverted = validSkeleton()
+    inverted.operations = [mixed.operations[2], ...mixed.operations.slice(0, 2)]
+    assert.throws(() => parseRestUpstreamSkeleton(JSON.stringify(inverted)), /REST_UPSTREAM_SKELETON_ORDER/)
+})

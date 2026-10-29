@@ -25,10 +25,15 @@ const validateSkeleton = compileSchema(skeletonSchema)
 // here so a hand-edited skeleton cannot smuggle drift past the diff.
 function assertSkeletonInvariants(skeleton) {
     const schemas = skeleton.components.schemas
+    // The extractor sorts by the (path, method) tuple; compare the same way.
+    // String order on "method path" would invert the tuple order across methods
+    // ("get /z" sorts before "post /a"; the tuple puts /a first) and reject a
+    // correctly sorted mixed-method skeleton.
     for (let index = 1; index < skeleton.operations.length; index++) {
-        const previous = `${skeleton.operations[index - 1].method} ${skeleton.operations[index - 1].path}`
-        const current = `${skeleton.operations[index].method} ${skeleton.operations[index].path}`
-        if (previous >= current) fail('REST_UPSTREAM_SKELETON_ORDER', `${current} follows ${previous}: operations must be sorted`)
+        const previous = skeleton.operations[index - 1]
+        const current = skeleton.operations[index]
+        const ordered = previous.path < current.path || (previous.path === current.path && previous.method <= current.method)
+        if (!ordered) fail('REST_UPSTREAM_SKELETON_ORDER', `${current.method} ${current.path} follows ${previous.method} ${previous.path}: operations must be sorted by (path, method)`)
     }
     for (const op of skeleton.operations) {
         if (!op.path.startsWith(skeleton.extractedFrom.mountPrefix)) {

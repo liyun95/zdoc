@@ -434,13 +434,28 @@ var httpMethodNames = map[string]bool{
 	"GET": true, "POST": true, "PUT": true, "DELETE": true, "PATCH": true,
 }
 
-// routeCalls walks a function body for router.<METHOD>(...) calls.
-func routeCalls(fn *ast.FuncDecl) []*ast.CallExpr {
+// routeCalls walks a function body for router.<METHOD>(...) calls. A router
+// handed to a helper (router as a call argument) means registrations live
+// outside this body and would be silently missed — every reported operation
+// set would under-report upstream additions and mis-age documented ones, so
+// that shape fails closed instead.
+func routeCalls(fn *ast.FuncDecl) ([]*ast.CallExpr, error) {
 	var calls []*ast.CallExpr
+	var delegated error
 	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		if delegated != nil {
+			return false
+		}
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
+		}
+		for _, arg := range call.Args {
+			ident, ok := arg.(*ast.Ident)
+			if ok && ident.Name == "router" {
+				delegated = fail("REST_UPSTREAM_EXTRACT_ROUTER_DELEGATED", "%s: the router is passed to %s; registrations outside this function body are not visible to the extractor", fn.Name.Name, exprName(call.Fun))
+				return false
+			}
 		}
 		selector, ok := call.Fun.(*ast.SelectorExpr)
 		if !ok {
@@ -453,7 +468,21 @@ func routeCalls(fn *ast.FuncDecl) []*ast.CallExpr {
 		calls = append(calls, call)
 		return true
 	})
-	return calls
+	if delegated != nil {
+		return nil, delegated
+	}
+	return calls, nil
+}
+
+func exprName(expr ast.Expr) string {
+	switch inner := expr.(type) {
+	case *ast.Ident:
+		return inner.Name
+	case *ast.SelectorExpr:
+		return exprName(inner.X) + "." + inner.Sel.Name
+	default:
+		return "expression"
+	}
 }
 
 func extractSkeleton(dir, repository, sourceDir, mountPrefix string) (*skeleton, error) {
@@ -478,7 +507,11 @@ func extractSkeleton(dir, repository, sourceDir, mountPrefix string) (*skeleton,
 		return nil, fail("REST_UPSTREAM_EXTRACT_ROUTE_TABLE_MISSING", "no (*HandlersV2) RegisterRoutesToV2 found")
 	}
 	operations := []operation{}
-	for _, call := range routeCalls(register) {
+	calls, err := routeCalls(register)
+	if err != nil {
+		return nil, err
+	}
+	for _, call := range calls {
 		if len(call.Args) < 1 {
 			return nil, fail("REST_UPSTREAM_EXTRACT_PATH_MISSING", "route call without arguments")
 		}

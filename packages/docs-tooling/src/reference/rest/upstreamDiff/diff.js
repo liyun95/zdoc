@@ -48,17 +48,6 @@ function encodePointerToken(token) {
     return String(token).replace(/~/g, '~0').replace(/\//g, '~1')
 }
 
-function resolvePointer(document, pointer) {
-    if (!pointer.startsWith('#/')) fail('REST_UPSTREAM_REF_UNSUPPORTED', pointer)
-    let value = document
-    for (const rawToken of pointer.slice(2).split('/')) {
-        if (value === null || typeof value !== 'object') fail('REST_UPSTREAM_REF_DANGLING', pointer)
-        const token = rawToken.replace(/~1/g, '/').replace(/~0/g, '~')
-        value = Array.isArray(value) ? value[Number(token)] : value[token]
-    }
-    return value
-}
-
 // Resolve a local $ref. Fragment documents may reference components defined in
 // a sibling fragment (the publication assembler merges fragments before
 // rendering, so cross-fragment refs are sanctioned); when the local walk
