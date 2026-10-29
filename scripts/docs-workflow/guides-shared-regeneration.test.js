@@ -160,3 +160,14 @@ test('[PUBLISH_REGEN_MISMATCH] accepted image bytes are verified without origin 
     scratch: value.options.scratch, outputs: value.outputs, readAcceptedImage: async () => Buffer.from('corrupt')},
   {assertToolIdentity: () => {}}), error => error.code === 'PUBLISH_REGEN_MISMATCH' && error.detail[0].file.startsWith('shared/'))
 })
+test('executing tool identity rejects drift in its consumed docHeadingTags dependency', async t => {
+  const value = await candidate(t)
+  const root = path.join(value.options.root, 'synthetic-tooling')
+  const dependency = 'packages/docs-ui/src/shared/utils/docHeadingTags.ts'
+  put(root, dependency, 'export const DOC_HEADING_TAGS = ["main"]\n')
+  git(root, ['init', '--quiet', '--initial-branch=master', '--template='])
+  const tools = {...value.receipt.inputs.tools, zdoc: commit(root, 'Pinned consumed heading tags')}
+  assert.doesNotThrow(() => regeneration.assertToolIdentity(tools, {root}))
+  put(root, dependency, 'export const DOC_HEADING_TAGS = ["changed"]\n')
+  assert.throws(() => regeneration.assertToolIdentity(tools, {root}), error => error.message === `Executing tooling drift: ${dependency}`)
+})

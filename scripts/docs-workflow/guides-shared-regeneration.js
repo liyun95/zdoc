@@ -39,11 +39,12 @@ function installedMd2md() {
   if (pkg.name !== '@zilliz/mdtomd') throw Error('Unexpected md2md package identity')
   return pkg.version
 }
-function assertToolIdentity(tools) {
-  const root = path.resolve(__dirname, '../..')
+// The root override isolates synthetic tooling fixtures; production uses this executing checkout.
+function assertToolIdentity(tools, {root = path.resolve(__dirname, '../..')} = {}) {
   if (git(root, ['rev-parse', 'HEAD']).toString().trim() !== tools.zdoc || installedMd2md() !== tools.md2md) throw Error('Executing tooling identity does not match receipt')
   // Generated dev state is deliberately excluded; executable source/config may not drift.
-  const roots = ['scripts', 'packages/docs-tooling/src/shared-docs', 'packages/docs-tooling/src/manuals', 'packages/docs-tooling/package.json', 'package.json', 'pnpm-lock.yaml']
+  const roots = ['scripts', 'packages/docs-tooling/src/shared-docs', 'packages/docs-tooling/src/manuals',
+    'packages/docs-ui/src/shared/utils/docHeadingTags.ts', 'packages/docs-tooling/package.json', 'package.json', 'pnpm-lock.yaml']
   const inventory = gitInventory(root, tools.zdoc, roots)
   for (const file of inventory) if (digest(regularBytes(root, file.path)) !== file.sha256) throw Error(`Executing tooling drift: ${file.path}`)
   for (const [file] of Object.entries(require.cache)) if (file.startsWith(`${root}/packages/docs-tooling/src/lark/`) && !file.includes('/meta/')) {
