@@ -224,18 +224,28 @@ only through reviewed refresh PRs.
 
 `rest-upstream-refresh.yml` is dispatched by an operator after a watchdog
 report (inputs: `source`, optional `upstream_commit`, `base_ref`,
-`draft_pr`). One dispatch produces one PR per source: prepare an isolated
+`draft_pr`, optional `lifecycle_track`). One dispatch produces one PR per
+source: prepare an isolated
 staging directory (diff plus touched fragment copies plus the ruleset and the
 instruction pack, with a repository-path isolation sweep), run one codex agent
 turn on the internal gateway that emits a schema'd change set, apply it with
 the deterministic applier (every entry must bind to a cited diff entry;
-denylist, `x-*`, and oneOf branch structure are asserted), run the canonical
+denylist, `x-*`, and oneOf branch structure are asserted), gate the T4 ledger
+accounting, run the canonical
 bytes check, the change-scoped `test:for-change` union plus
 `pnpm test:rest-publication-contract` and `pnpm test:workflow-policy`, both
 site builds, `git diff --check`, and finally open the PR with
 `REST_UPSTREAM_REFRESH_PAT` so the pull-request checks actually run. The same
 commit bumps the lock pin to the refreshed upstream commit with its content
-SHA (atomic adoption: the watchdog goes quiet exactly when the PR merges).
+SHA (atomic adoption: the watchdog goes quiet exactly when the PR merges) and
+lands the agent's ledger drafts as conservative `deferred` ledger entries so
+the PR stays atomic; human review reclassifies them in the PR. For milvus
+data-plane dispatches, pass `lifecycle_track` (e.g. `3.0.x`) to make the diff
+derive `x-added-at`/`x-last-modified`/`x-deprecated-since` suggestions; the
+applier binds lifecycle change-set values to those suggestions and requires an
+explicit override to deviate. The refresh workflow handles source-tree sources
+end to end (checkout-free GitHub contents fetch, `setup-go` 1.27, vendored
+extractor).
 The PR body embeds the diff report and the applier log (overrides, ledger
 drafts, unaddressed entries) for human review. ja-JP is a deliberate
 follow-up: the change set cannot write ja (the applier freezes `x-i18n`

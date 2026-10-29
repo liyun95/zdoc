@@ -236,7 +236,7 @@ run artifact 固定包含：staging 快照、diff JSON、change-set、applier �
 - [ ] refresh 首个真实 PR：门禁全绿 + 人审合并 + lock bump 原子 + sync 链路落 dev + 双站 build 绿
 - [ ] titles/退役联动演练各一次（新增 op + 删除 op）
 - [x] milvus 试点 reconcile 演练（P2）— pin 6d833a67 全量演练，证据 `.claude/specs/2026-10-29-rest-upstream-milvus-extractor-p2.md` + `tmp/rest-upstream-p2-milvus/`
-- [ ] receipt ledger 会计上线（P3，若 D2 采 P3）
+- [x] receipt ledger 会计上线（P3，D2 已关闭；证据 `.claude/specs/2026-10-29-rest-upstream-p3-lifecycle-accounting-migration.md`）
 - [ ] operator 文档落 README（watchdog/refresh 的运行说明与报告解读）
 
 ## 14. 开放决策与对 shared-docs 的差异声明
@@ -244,7 +244,7 @@ run artifact 固定包含：staging 快照、diff JSON、change-set、applier �
 | # | 事项 | 推荐 |
 |---|---|---|
 | D1 | refresh PR 创建方式 | **确定性步骤开 draft PR**（agent 无 git 写权限，§8.1 第 4 条）；v1 允许人工本地跑同一 prepare→agent→apply 链后手动开 PR |
-| D2 | receipt ledger 会计上线时点 | P3，与 canonical 转正同 PR 面 |
+| D2 | receipt ledger 会计上线时点 | **已关闭（v7）**：随 P3 上线（receipt schemaVersion 2 内嵌 `upstreamAccounting`，`rest-upstream-accounting` 严格闸）；canonical 转正时点独立，见 `rest-upstream-migration --canonical-ready` |
 | D3 | milvus 提取器运行体 | setup-go pinned + `go run`（理由 §6.1） |
 | D4 | watchdog 报告通道 | report-card（对齐既有 6 个 watchdog 模式） |
 | D5 | refresh PR 的 token 策略 | PAT/App token 开 PR（规避 bot-PR 幻影 CI）；无 PAT 则 self-dispatch 校验 |
@@ -271,6 +271,8 @@ run artifact 固定包含：staging 快照、diff JSON、change-set、applier �
 ---
 
 ## 变更记录
+
+- v7（2026-10-29，P3 落地后修订）：§6.3 lifecycle 建议定稿——diff 以 `--lifecycle-track` 派生 `x-added-at`/`x-last-modified`/`x-deprecated-since` 建议并绑定进 change-set 契约（applier 对派生叶子做值绑定，偏离须 override；仅契约性漂移产建议，prose/unattributed 永不产；片段侧时间线先校验，建议永不回拨且不得越过 x-deprecated-since）；§7 T4 定稿——`rest-upstream-accounting` 严格闸（任何分类都算"已决策"，缺条目即 fail-closed 列出 op 清单）+ receipt schemaVersion 2 内嵌 `upstreamAccounting`（unaccounted>0 即不完整）；**D2 关闭**（receipt ledger 会计随 P3 上线）；ledger 草稿定稿为"刷新提交内以 deferred 原子落地、人审在 PR 里改分类"（解开 T4 与单 PR 原子性的互锁：否则每个发现新 op 的 refresh 都会被闸挡住、被迫拆第二个 ledger PR）；fragment-migration 状态机门禁定稿（`rest-upstream-migration`：一致性常开——契约校验/文件存在/operationCount 真值；`--canonical-ready` 需候选 collection 按 service id 配对（canonical collection 片段名是 `*.openapi.json`，legacy 树是 `NN-name.json`）+ 字节一致 + T4 会计完备）；refresh workflow 增 milvus source-tree lane（GitHub contents 拉取→setup-go 1.27→vendored 提取器）与 `lifecycle_track` dispatch 输入，lock bump 对 source-tree 源只写 commit（按 §3.1 锁契约）。证据：`.claude/specs/2026-10-29-rest-upstream-p3-lifecycle-accounting-migration.md`。
 
 - v6（2026-10-29，P2 实施后）：§6 落地于 PR #906，验收证据 `.claude/specs/2026-10-29-rest-upstream-milvus-extractor-p2.md`。实施要点与 §6.1 的差异：①骨架=最小 JSON Schema 词表（{type}/{type,items}/{type,properties,required}/$ref/{}）——首次试点含 additionalProperties/format 时 346 条 upstream-modified 中 324 条是 description 噪音，最小词表把同一 diff 收敛到 22 条实质条目；②structure-only 模式下沉进 diff（`source.artifact.kind === 'source-tree'` 跳过 summary/description/parameter/response 比对，§6.2"存量片段赢 prose"的机器表达）；③新增跨片段组件解析：片段 $ref 悬空时回退全片段合并组件视图（镜像发布装配语义），API 真值等价的同名变体容忍（x-tab-label 等文档属性差异是既有事实），真值冲突 fail-closed（REST_UPSTREAM_SHARED_SCHEMA_CONFLICT）；④watchdog 对 source-tree 源的 `pin-behind` 占位退役：漂移时下载非测试 .go 文件→go run 提取→同 diff 分类，workflow 补 actions/setup-go@v6（pinned 1.27）；⑤试点实证 pin 6d833a67：113 操作/84 组件精确对齐路由表，diff 信号分类齐全（11 upstream-added/24 added-field/9 unattributed/22 modified/48 zdoc-only），ledger bootstrap 提案 26 条待人审合并；⑥已知限制：source-tree pin 无内容摘要（P3 可选）、Go 注释 prose 不入骨架、UnmarshalJSON 覆写形状不提取（P4 流量录制候选）。
 - v5（2026-10-29，P1 code-review 评审后修订）：修复评审 2 P0/3 P1/4 P2——①refresh workflow 的 stdin heredoc 混用 require 与顶层 await 在 Node 22 触发 ERR_AMBIGUOUS_MODULE_SYNTAX，改 async IIFE（本地同版本实测）；②REPOSITORY_ROOT 差一级致默认指令包 ENOENT 且隔离扫描锚错根，改六级并加 prepare 指令包存在性断言+无 `--instructions` 回归测试；③bootstrap `--date` 默认值改为 action 内 `||`（commander coercion 仅在旗标出现时调用）；④**lock pin bump 进 refresh 提交实现原子采纳**（§3.1/§5 兑现：land 步骤写 pin.commit+contentSha256+lastVerifiedAt）；⑤**ja-JP 降范围**：ja 文本在片段 x-i18n 内而 applier 冻结全部 x-* 叶子，change-set 无法表达——规则集 `ja-jp-follows-en` 改写为"en prose 变更在 evidence 记录需跟改的 ja 页，由 ja lane 跟进"，指令包规则 8/PR 清单同步（复核项改 ja 跟进而非 ja 同步）；⑥P2 加固：私有仓身份常量 PRIVATE_TOKEN_REPOSITORIES、spec_path 由 node 写 GITHUB_OUTPUT（修扩展名硬编码）、两个 workflow checkout persist-credentials:false、base_ref 白名单 master、titles 门禁注释改指 build:zh-CN（refGen）。

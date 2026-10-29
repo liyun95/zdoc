@@ -191,10 +191,21 @@ function assertBoundToCitedEntry(document, entry, cited, parent, leaf, tokens) {
             fail('REST_UPSTREAM_APPLY_VALUE_UNBOUND', `${label}: value ${JSON.stringify(entry.value)} differs from the upstream value ${JSON.stringify(expected)}; use override with a reason to deviate`)
         }
     } else if (entry.kind === 'lifecycle') {
-        if (!entry.override) fail('REST_UPSTREAM_APPLY_OVERRIDE_REQUIRED', `${label}: the diff does not derive lifecycle values yet; lifecycle writes need override with a reason`)
+        // Design §6.3: the diff derives lifecycle suggestions on data-plane
+        // sources, so a cited value binds like a constraint value. A leaf the
+        // diff did not derive (spec-file sources, no track, un-suggested leaf)
+        // still needs an explicit logged override.
+        const derived = cited.lifecycle ? cited.lifecycle[leaf] : undefined
+        if (derived !== undefined) {
+            if (!entry.override && !sameValue(entry.value, derived, false)) {
+                fail('REST_UPSTREAM_APPLY_VALUE_UNBOUND', `${label}: value ${JSON.stringify(entry.value)} differs from the diff-derived lifecycle value ${JSON.stringify(derived)}; use override with a reason to deviate`)
+            }
+        } else if (!entry.override) {
+            fail('REST_UPSTREAM_APPLY_OVERRIDE_REQUIRED', `${label}: the diff does not derive a lifecycle value for "${leaf}"; lifecycle writes need override with a reason`)
+        }
     }
 
-    if (['prose', 'constraint'].includes(entry.kind)) {
+    if (['prose', 'constraint', 'lifecycle'].includes(entry.kind)) {
         if (cited.field !== undefined) {
             const baseField = String(cited.field).split('#')[0]
             if (isParameterObject(parent)) {
@@ -361,16 +372,24 @@ function applyChangeSet({documents, titles = {}, changeSet, diff, ruleset}) {
 // Reconcile (design §8.2): every change-set entry must have been applied exactly
 // once; applied-log entries must trace back to the change set. Returns the set
 // of diff entries left unaddressed (a report, not a failure — deferral is legal).
+/*
+ * Reconcile every applied write against the change set with the same write key
+ * the change-set parser enforces (diff entry, kind, locus): one application per
+ * entry, no strays. Drift entries no change-set entry cites come back as the
+ * unaddressed remainder for the PR body.
+ */
 function reconcile(appliedLog, changeSet, diffDocument) {
-    const changeSetIds = changeSet.entries.map(entry => entry.diffEntryId)
-    const appliedIds = appliedLog.map(logEntry => logEntry.diffEntryId)
-    for (const id of appliedIds) {
-        if (!changeSetIds.includes(id)) fail('REST_UPSTREAM_RECONCILE_STRAY', id)
+    const writeKey = entry => `${entry.diffEntryId}|${entry.kind}|${entry.opPath || ''}`
+    const changeSetKeys = changeSet.entries.map(writeKey)
+    const appliedKeys = appliedLog.map(writeKey)
+    for (const key of appliedKeys) {
+        if (!changeSetKeys.includes(key)) fail('REST_UPSTREAM_RECONCILE_STRAY', key)
     }
-    for (const id of changeSetIds) {
-        if (appliedIds.filter(candidate => candidate === id).length !== 1) fail('REST_UPSTREAM_RECONCILE_INCOMPLETE', id)
+    for (const key of changeSetKeys) {
+        if (appliedKeys.filter(candidate => candidate === key).length !== 1) fail('REST_UPSTREAM_RECONCILE_INCOMPLETE', key)
     }
-    return diffDocument.entries.map(entry => entry.id).filter(id => !changeSetIds.includes(id))
+    const citedIds = new Set(changeSet.entries.map(entry => entry.diffEntryId))
+    return diffDocument.entries.map(entry => entry.id).filter(id => !citedIds.has(id))
 }
 
 function writeCanonicalOutputs({outDir, fragmentsDir, documents, changedFiles, titles}) {

@@ -160,7 +160,7 @@ function watchdogCardStatus(report) {
     return report.sources.every(source => source.status === 'no-drift') ? 'success' : 'fail'
 }
 
-module.exports = {runWatchdog, renderWatchdogMarkdown, watchdogCardStatus, resolveHeadSha, fetchSpecBytes}
+module.exports = {runWatchdog, renderWatchdogMarkdown, watchdogCardStatus, resolveHeadSha, fetchSpecBytes, fetchSourceTreeFiles, extractSourceTreeSkeleton, PRIVATE_TOKEN_REPOSITORIES}
 
 if (require.main === module) {
     const args = process.argv.slice(2)

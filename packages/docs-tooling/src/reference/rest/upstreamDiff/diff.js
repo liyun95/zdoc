@@ -1,4 +1,5 @@
 const {isDeepStrictEqual} = require('node:util')
+const {attachLifecycleSuggestion, assertLifecycleSource, parseTrack} = require('./lifecycle')
 
 // Branch-aware diff between a pinned upstream spec and the zdoc fragments.
 // Truth assignment (design §4): upstream/code wins on API truth; the fragments
@@ -184,6 +185,15 @@ function makeEntry(parts) {
     return entry
 }
 
+// Design §6.3: data-plane refreshes carry lifecycle suggestions on the diff
+// entries so neither the agent nor a human has to invent track values. No-op
+// unless a track was supplied (the default diff output stays byte-identical).
+function suggestLifecycle(entry, lifecycle, fragmentNode, upstreamNode) {
+    if (!lifecycle) return
+    attachLifecycleSuggestion(entry, {track: lifecycle.track, fragmentNode: fragmentNode ?? null, upstreamNode: upstreamNode ?? null})
+    return entry
+}
+
 function includesTarget(operation, publicationTarget) {
     const targets = operation['x-include-target']
     if (!Array.isArray(targets)) return true
@@ -218,9 +228,11 @@ function diffSchemaPair(context) {
         }
         for (const [key, after] of constraintPairs(upstreamDocument, upstreamProperty)) {
             if (isDeepStrictEqual(fragmentProperty[key], after)) continue
-            entries.push(makeEntry({...context.meta, category: 'upstream-modified', scope: context.scope, branch: context.branch, field: name,
+            const entry = makeEntry({...context.meta, category: 'upstream-modified', scope: context.scope, branch: context.branch, field: name,
                 change: {kind: 'constraint', key, before: fragmentProperty[key] === undefined ? null : fragmentProperty[key], after},
-                evidence: context.upstreamEvidencePath}))
+                evidence: context.upstreamEvidencePath})
+            suggestLifecycle(entry, context.lifecycle, fragmentProperty, upstreamProperty)
+            entries.push(entry)
         }
         for (const key of CONSTRAINT_KEYS) {
             if (key in fragmentProperty && !(key in upstreamProperty)) {
@@ -238,19 +250,23 @@ function diffSchemaPair(context) {
         const inFragmentRequired = Array.isArray(fragmentRequired) && fragmentRequired.includes(name)
         const inUpstreamRequired = Array.isArray(upstreamRequired) && upstreamRequired.includes(name)
         if (inFragmentRequired !== inUpstreamRequired && upstreamRequired !== null) {
-            entries.push(makeEntry({...context.meta, category: 'upstream-modified', scope: context.scope, branch: context.branch, field: name,
+            const entry = makeEntry({...context.meta, category: 'upstream-modified', scope: context.scope, branch: context.branch, field: name,
                 change: {kind: 'required', before: inFragmentRequired, after: inUpstreamRequired}, evidence: context.upstreamEvidencePath,
                 // Relaxing a fragment-side requirement on upstream say-so is exactly the
                 // "suspected generator loss" class (decision 9): never auto-adoptable.
-                requiresConfirmation: inUpstreamRequired ? undefined : 'required-relaxation'}))
+                requiresConfirmation: inUpstreamRequired ? undefined : 'required-relaxation'})
+            suggestLifecycle(entry, context.lifecycle, fragmentProperty, upstreamProperty)
+            entries.push(entry)
         }
     }
 
     if (!context.suppressUpstreamOnlyFields) {
         for (const name of Object.keys(upstreamProperties)) {
             if (denylisted(ruleset, name) || name in fragmentProperties) continue
-            entries.push(makeEntry({...context.meta, category: 'upstream-added-field', scope: context.scope, branch: context.branch, field: name,
-                change: {kind: 'field-uncovered', before: null, after: null}, evidence: context.upstreamEvidencePath}))
+            const entry = makeEntry({...context.meta, category: 'upstream-added-field', scope: context.scope, branch: context.branch, field: name,
+                change: {kind: 'field-uncovered', before: null, after: null}, evidence: context.upstreamEvidencePath})
+            suggestLifecycle(entry, context.lifecycle, null, upstreamProperties[name])
+            entries.push(entry)
         }
         if (fragmentRequired !== null && upstreamRequired === null && fragmentRequired.length > 0) {
             entries.push(makeEntry({...context.meta, category: 'upstream-modified', scope: context.scope, branch: context.branch,
@@ -316,8 +332,10 @@ function diffBodied(context, fragmentContent, upstreamContent, scope) {
     const uncoveredCategory = scope === 'requestBody' ? 'unattributed' : 'upstream-added-field'
     for (const name of Object.keys(upstreamUnionProperties)) {
         if (denylisted(ruleset, name) || coveredNames.has(name)) continue
-        entries.push(makeEntry({...context.meta, category: uncoveredCategory, scope, field: name,
-            change: {kind: 'field-uncovered', before: null, after: null}, evidence: context.upstreamEvidencePath}))
+        const entry = makeEntry({...context.meta, category: uncoveredCategory, scope, field: name,
+            change: {kind: 'field-uncovered', before: null, after: null}, evidence: context.upstreamEvidencePath})
+        if (uncoveredCategory === 'upstream-added-field') suggestLifecycle(entry, context.lifecycle, null, upstreamUnionProperties[name])
+        entries.push(entry)
     }
     if (scope === 'requestBody' && upstreamUnionRequired === null
         && fragmentBranches.branches.some(branch => (requiredOf(fragmentDocument, branch, shared) || []).length > 0)) {
@@ -394,8 +412,10 @@ function diffResponses(context) {
             }
             for (const name of Object.keys(upstreamProperties)) {
                 if (denylisted(context.ruleset, name) || coveredNames.has(name)) continue
-                entries.push(makeEntry({...statusContext.meta, category: 'upstream-added-field', scope: 'response', field: name,
-                    change: {kind: 'field-uncovered', before: null, after: null}, evidence: context.upstreamEvidencePath}))
+                const entry = makeEntry({...statusContext.meta, category: 'upstream-added-field', scope: 'response', field: name,
+                    change: {kind: 'field-uncovered', before: null, after: null}, evidence: context.upstreamEvidencePath})
+                suggestLifecycle(entry, context.lifecycle, null, upstreamProperties[name])
+                entries.push(entry)
             }
             continue
         }
@@ -427,8 +447,10 @@ function diffParameters(context) {
         const key = `${upstreamParameter.name}:${upstreamParameter.in}`
         const matches = fragmentIndex.get(key) || []
         if (matches.length === 0) {
-            entries.push(makeEntry({...meta, category: 'upstream-added-param', scope: 'parameter', field: key,
-                change: {kind: 'param-uncovered', before: null, after: null}, evidence: upstreamEvidencePath}))
+            const entry = makeEntry({...meta, category: 'upstream-added-param', scope: 'parameter', field: key,
+                change: {kind: 'param-uncovered', before: null, after: null}, evidence: upstreamEvidencePath})
+            suggestLifecycle(entry, context.lifecycle, null, upstreamParameter)
+            entries.push(entry)
             continue
         }
         for (const [index, fragmentParameter] of matches.entries()) {
@@ -437,10 +459,12 @@ function diffParameters(context) {
             const copyIndex = matches.length > 1 ? index : undefined
             const field = copyIndex === undefined ? key : `${key}#${copyIndex}`
             if (Boolean(fragmentParameter.required) !== Boolean(upstreamParameter.required)) {
-                entries.push(makeEntry({...meta, category: 'upstream-modified', scope: 'parameter', field,
+                const entry = makeEntry({...meta, category: 'upstream-modified', scope: 'parameter', field,
                     change: {kind: 'required', before: Boolean(fragmentParameter.required), after: Boolean(upstreamParameter.required)},
                     evidence: upstreamEvidencePath, copyIndex,
-                    requiresConfirmation: upstreamParameter.required ? undefined : 'required-relaxation'}))
+                    requiresConfirmation: upstreamParameter.required ? undefined : 'required-relaxation'})
+                suggestLifecycle(entry, context.lifecycle, fragmentParameter, upstreamParameter)
+                entries.push(entry)
             }
             if (normalizeText(upstreamParameter.description ?? '') !== normalizeText(fragmentParameter.description ?? '')) {
                 entries.push(makeEntry({...meta, category: 'upstream-modified', scope: 'parameter', field,
@@ -476,9 +500,11 @@ function diffOperationPair(context) {
             evidence: context.upstreamEvidencePath}))
     }
     if (Boolean(fragmentOperation.deprecated) !== Boolean(upstreamOperation.deprecated)) {
-        entries.push(makeEntry({...context.meta, category: 'upstream-modified', scope: 'operation',
+        const entry = makeEntry({...context.meta, category: 'upstream-modified', scope: 'operation',
             change: {kind: 'deprecated', before: Boolean(fragmentOperation.deprecated), after: Boolean(upstreamOperation.deprecated)},
-            evidence: context.upstreamEvidencePath}))
+            evidence: context.upstreamEvidencePath})
+        suggestLifecycle(entry, context.lifecycle, fragmentOperation, upstreamOperation)
+        entries.push(entry)
     }
     // Structure-only sources carry no parameters and no response contract;
     // those comparisons are skipped before they can report absence as drift.
@@ -500,9 +526,15 @@ function diffOperationPair(context) {
  * fragment missing from the control-plane spec is expected, not drift. When
  * `fragmentSurfaces` is supplied every fragment must be classified.
  */
-function diffSpecifications({source, upstreamPin, upstream, fragments, ledger, ruleset, fragmentSurfaces = null}) {
+function diffSpecifications({source, upstreamPin, upstream, fragments, ledger, ruleset, fragmentSurfaces = null, lifecycleTrack = null}) {
     if (!isPlainObject(ruleset) || !Array.isArray(ruleset.internalFieldDenylist)) {
         fail('REST_UPSTREAM_RULESET_INVALID', 'ruleset.internalFieldDenylist is required')
+    }
+    let lifecycle = null
+    if (lifecycleTrack) {
+        parseTrack(lifecycleTrack)
+        assertLifecycleSource(source)
+        lifecycle = {track: lifecycleTrack}
     }
     if (fragmentSurfaces) {
         for (const file of fragments.keys()) {
@@ -543,9 +575,11 @@ function diffSpecifications({source, upstreamPin, upstream, fragments, ledger, r
         const upstreamEvidencePath = `/paths/${encodePointerToken(upstreamRecord.endpoint)}/${upstreamRecord.method}`
         if (!fragmentOps.has(opKey)) {
             const ledgerEntry = ledger.entries.find(candidate => candidate.source === source.id && candidate.opKey === opKey)
-            entries.push(makeEntry({...meta, category: 'upstream-added', scope: 'operation',
+            const entry = makeEntry({...meta, category: 'upstream-added', scope: 'operation',
                 change: {kind: 'operation-absent-in-fragments', before: null, after: null}, evidence: upstreamEvidencePath,
-                ledgerStatus: ledgerEntry ? 'classified' : 'pending'}))
+                ledgerStatus: ledgerEntry ? 'classified' : 'pending'})
+            suggestLifecycle(entry, lifecycle, null, upstreamRecord.operation)
+            entries.push(entry)
             continue
         }
         for (const fragmentRecord of fragmentOps.get(opKey)) {
@@ -559,6 +593,7 @@ function diffSpecifications({source, upstreamPin, upstream, fragments, ledger, r
                 ruleset,
                 structureOnly,
                 shared,
+                lifecycle,
             }))
         }
     }

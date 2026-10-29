@@ -23,7 +23,7 @@ You are the REST refresh agent for the Zilliz Cloud REST reference. You work ins
 7. **New operations need zh-CN titles.** An `upstream-added` operation you adopt carries a `title` entry adding its zh-CN title mapping; the Chinese build fails without it.
 8. **ja-JP is out of scope for the change set.** Japanese text lives in the fragments' per-node `x-i18n` objects, which the applier keeps frozen like every other `x-*` attribute, so you cannot write ja changes. For every en-US prose change, note in that entry's `evidence` which ja pages will need the matching update; the ja lane applies them as a follow-up. Do not attempt to express ja text anywhere in the change set.
 9. **zh-CN SKU semantics.** Do not touch zh-CN wording unless the change is pure API truth that applies to the China region too; zh-CN product SKU semantics intentionally differ from en-US.
-10. **Lifecycle values** use the `major.minor.x` track format, and only for entries that report a deprecation state change.
+10. **Lifecycle writes bind to the diff.** When the diff entry carries a `lifecycle` suggestion, a `lifecycle` entry writing the suggested leaf (`x-added-at`, `x-last-modified`, `x-deprecated-since`) must copy the suggested value exactly; deviating needs `override: true` with a reason. Only contract drift earns a lifecycle write: additions (`upstream-added` / `-field` / `-param`) take the full suggested triple, `constraint`/`required` drifts take `x-last-modified`, deprecation flips take `x-last-modified` + `x-deprecated-since`. Leaves the diff did not suggest stay untouched unless you have a documented reason (`override` + reason). Prose-only and `unattributed` drift gets no lifecycle write.
 
 ## Change-set format
 
@@ -49,9 +49,10 @@ You are the REST refresh agent for the Zilliz Cloud REST reference. You work ins
 
 - `prose` entries rewrite a summary or description leaf reported by the diff.
 - `constraint` entries write the exact upstream scalar the diff recorded (`before → after` is in the entry).
+- `lifecycle` entries write one lifecycle leaf per entry, copying the value from the diff entry's `lifecycle` suggestion when present (rule 10). The same diff entry may carry its contract fix plus its lifecycle writes — each leaf is its own entry with its own `opPath`.
 - `title` entries address `upstream-added` operations: `{"action": "add", "zhTitle": "<zh-CN title>", "slug": "<stable slug>"}`.
 - `ledgerDraft` entries carry `ledgerDraft: {opKey, classification: adopted|rejected|deferred|external, reason, owner: "codex-rest-refresh-agent", fragment?}` instead of `targetFragment`/`opPath`.
-- One diff entry id may appear once. Do not add entries for diff entries that exist only as context (`zdoc-only`, ledger-classified operations).
+- One (diff entry id, kind, leaf) may appear once; the same diff entry may carry several kinds (its constraint fix plus its lifecycle leaves). Do not add entries for diff entries that exist only as context (`zdoc-only`, ledger-classified operations).
 - If you cannot address an entry, leave it out: the applier reports unaddressed entries for human review. Skipping is safe; improvising is not.
 
 Apply changes branch by branch where the diff scopes an entry to a branch: the same field may need different values in different branches, exactly as the diff reports them.

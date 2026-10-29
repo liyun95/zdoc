@@ -125,9 +125,11 @@ test('every sourcing and shape guarantee fails closed', () => {
     const diff = baseDiff()
     const documents = new Map([['11-import-operations-v2.json', importFragment()]])
 
+    // Same write twice (diff entry + kind + locus) is rejected; a different
+    // kind or leaf on the same drift entry stays expressible (design §6.3).
     assert.throws(() => parseChangeSet(JSON.stringify(changeSet([
         {id: SUMMARY_ID, kind: 'prose', targetFragment: '11-import-operations-v2.json', opPath: `${CREATE_POINTER}/summary`, value: 'a'},
-        {id: SUMMARY_ID, kind: 'prose', targetFragment: '11-import-operations-v2.json', opPath: `${CREATE_POINTER}/description`, value: 'b'},
+        {id: SUMMARY_ID, kind: 'prose', targetFragment: '11-import-operations-v2.json', opPath: `${CREATE_POINTER}/summary`, value: 'b'},
     ]))), /REST_UPSTREAM_CHANGESET_DUPLICATE_DIFF_ENTRY/)
 
     assert.throws(() => parseChangeSet(JSON.stringify(changeSet([
@@ -286,4 +288,111 @@ test('branch-scoped drift must be written into the cited branch, not a sibling b
     const ok = apply([{id: MAXLENGTH_SERVING_ID, kind: 'constraint', targetFragment: '11-import-operations-v2.json',
         opPath: `${CREATE_POINTER}/requestBody/content/application~1json/schema/oneOf/1/properties/objectUrl/maxLength`, value: 256}])
     assert.equal(ok.appliedLog.length, 1)
+})
+
+// Design §6.3: lifecycle writes bind to the diff-derived suggestion without an
+// override; deviations and un-derived leaves still need the logged override.
+const TREE_SOURCE = {id: 'milvus-data-plane', repository: 'milvus-io/milvus', apiSurface: 'data-plane', publicationTarget: 'milvus', artifact: {kind: 'source-tree'}}
+const TRACK = '3.0.x'
+
+function lifecycleFragment() {
+    return {
+        openapi: '3.0.1',
+        info: {title: 'REST', version: 'v2'},
+        paths: {
+            '/v2/vectordb/collections/describe': {
+                post: {
+                    summary: 'Describe Collection',
+                    'x-added-at': '2.6.x', 'x-last-modified': '2.6.x', 'x-deprecated-since': null,
+                    requestBody: {content: {'application/json': {schema: {type: 'object', properties: {
+                        collectionName: {type: 'string', maxLength: 256, 'x-added-at': '2.6.x', 'x-last-modified': '2.6.x', 'x-deprecated-since': null},
+                    }}}}},
+                    responses: {'200': {description: 'ok'}},
+                },
+            },
+        },
+    }
+}
+
+function lifecycleUpstream() {
+    return {
+        openapi: '3.0.3',
+        info: {title: 'REST upstream source-tree skeleton', version: '/v2/vectordb'},
+        paths: {
+            '/v2/vectordb/collections/describe': {
+                post: {
+                    requestBody: {content: {'application/json': {schema: {type: 'object', properties: {
+                        collectionName: {type: 'string', maxLength: 128},
+                    }}}}},
+                    responses: {'200': {description: 'ok'}},
+                },
+            },
+        },
+    }
+}
+
+function lifecycleDiff() {
+    return diffSpecifications({source: TREE_SOURCE, upstreamPin: SHA, upstream: lifecycleUpstream(),
+        fragments: new Map([['05-collection-operations-v2.json', lifecycleFragment()]]),
+        ledger: {schemaVersion: '1.0', entries: []}, ruleset: RULESET, lifecycleTrack: TRACK})
+}
+
+const DESCRIBE_POINTER = '/paths/~1v2~1vectordb~1collections~1describe/post'
+const MAXLENGTH_ID = 'upstream-modified|post /v2/vectordb/collections/describe|05-collection-operations-v2.json|requestBody|||collectionName|constraint|maxLength'
+const PROPERTY_POINTER = `${DESCRIBE_POINTER}/requestBody/content/application~1json/schema/properties/collectionName`
+
+test('lifecycle writes bind to the diff-derived suggestion without an override', () => {
+    const diff = lifecycleDiff()
+    const changeSetDoc = parseChangeSet(JSON.stringify(changeSet([
+        {id: MAXLENGTH_ID, kind: 'constraint', targetFragment: '05-collection-operations-v2.json', opPath: `${PROPERTY_POINTER}/maxLength`, value: 128},
+        {id: MAXLENGTH_ID, kind: 'lifecycle', targetFragment: '05-collection-operations-v2.json', opPath: `${PROPERTY_POINTER}/x-last-modified`, value: TRACK},
+    ], diff)))
+    const result = applyChangeSet({documents: new Map([['05-collection-operations-v2.json', lifecycleFragment()]]), titles: {}, changeSet: changeSetDoc, diff, ruleset: RULESET})
+    const property = result.documents.get('05-collection-operations-v2.json').paths['/v2/vectordb/collections/describe'].post
+        .requestBody.content['application/json'].schema.properties.collectionName
+    assert.equal(property.maxLength, 128)
+    assert.equal(property['x-last-modified'], TRACK)
+    assert.deepEqual(result.overrides, [])
+})
+
+test('lifecycle values that deviate from the derived suggestion fail closed unless overridden', () => {
+    const diff = lifecycleDiff()
+    // The track format parses; the applier binding rejects the deviation.
+    const changeSetDoc = parseChangeSet(JSON.stringify(changeSet([
+        {id: MAXLENGTH_ID, kind: 'lifecycle', targetFragment: '05-collection-operations-v2.json', opPath: `${PROPERTY_POINTER}/x-last-modified`, value: '2.6.x', override: true, overrideReason: 'the 2.6 backport changed the field first'},
+    ], diff)))
+    assert.throws(
+        () => applyChangeSet({documents: new Map([['05-collection-operations-v2.json', lifecycleFragment()]]), titles: {},
+            changeSet: parseChangeSet(JSON.stringify(changeSet([
+                {id: MAXLENGTH_ID, kind: 'lifecycle', targetFragment: '05-collection-operations-v2.json', opPath: `${PROPERTY_POINTER}/x-last-modified`, value: '2.6.x'},
+            ], diff))), diff, ruleset: RULESET}),
+        /REST_UPSTREAM_APPLY_VALUE_UNBOUND/,
+    )
+    const result = applyChangeSet({documents: new Map([['05-collection-operations-v2.json', lifecycleFragment()]]), titles: {}, changeSet: changeSetDoc, diff, ruleset: RULESET})
+    assert.equal(result.overrides.length, 1)
+    assert.equal(result.overrides[0].kind, 'lifecycle')
+    assert.match(result.overrides[0].reason, /backport/)
+})
+
+test('lifecycle leaves the diff did not derive still require the override', () => {
+    const diff = lifecycleDiff()
+    assert.throws(
+        () => applyChangeSet({documents: new Map([['05-collection-operations-v2.json', lifecycleFragment()]]), titles: {},
+            changeSet: parseChangeSet(JSON.stringify(changeSet([
+                {id: MAXLENGTH_ID, kind: 'lifecycle', targetFragment: '05-collection-operations-v2.json', opPath: `${PROPERTY_POINTER}/x-added-at`, value: TRACK},
+            ], diff))), diff, ruleset: RULESET}),
+        /REST_UPSTREAM_APPLY_OVERRIDE_REQUIRED/,
+    )
+})
+
+test('lifecycle writes honor the locus binding: cited field, operation scope, and branch labels', () => {
+    const diff = lifecycleDiff()
+    // Writing inside the cited property's sibling is rejected as an unbound locus.
+    assert.throws(
+        () => applyChangeSet({documents: new Map([['05-collection-operations-v2.json', lifecycleFragment()]]), titles: {},
+            changeSet: parseChangeSet(JSON.stringify(changeSet([
+                {id: MAXLENGTH_ID, kind: 'lifecycle', targetFragment: '05-collection-operations-v2.json', opPath: `${DESCRIBE_POINTER}/x-last-modified`, value: TRACK, override: true, overrideReason: 'op-scoped bump'},
+            ], diff))), diff, ruleset: RULESET}),
+        /REST_UPSTREAM_APPLY_UNBOUND_LOCUS/,
+    )
 })

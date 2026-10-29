@@ -30,8 +30,12 @@ function assertChangeSetShape(changeSet) {
         for (const field of KIND_REQUIREMENTS[entry.kind]) {
             if (entry[field] === undefined) fail('REST_UPSTREAM_CHANGESET_FIELD_MISSING', `${entry.kind} entry ${entry.diffEntryId} requires ${field}`)
         }
-        if (seenEntryIds.has(entry.diffEntryId)) fail('REST_UPSTREAM_CHANGESET_DUPLICATE_DIFF_ENTRY', entry.diffEntryId)
-        seenEntryIds.add(entry.diffEntryId)
+        // One write per (diff entry, kind, locus): a drift may need several
+        // writes of different kinds (a constraint fix plus its lifecycle bump,
+        // design §6.3), but never two writes of the same kind at the same leaf.
+        const writeKey = `${entry.diffEntryId}|${entry.kind}|${entry.opPath || ''}`
+        if (seenEntryIds.has(writeKey)) fail('REST_UPSTREAM_CHANGESET_DUPLICATE_DIFF_ENTRY', writeKey)
+        seenEntryIds.add(writeKey)
         if (entry.override === true && !entry.overrideReason) {
             fail('REST_UPSTREAM_CHANGESET_OVERRIDE_REASON_REQUIRED', `${entry.diffEntryId}: override needs an overrideReason for the reviewer`)
         }

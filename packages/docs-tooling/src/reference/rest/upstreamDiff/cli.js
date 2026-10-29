@@ -12,6 +12,8 @@ const {applyChangeSet, reconcile, writeCanonicalOutputs} = require('./applier')
 const {buildLedgerProposal, parseRestUpstreamLedgerProposal, mergeLedgerProposal} = require('./ledgerBootstrap')
 const {prepareRestUpstreamStaging} = require('./staging')
 const {loadRestUpstreamSkeleton, skeletonToUpstreamDocument, assertSkeletonMatchesSource} = require('./sourceTree')
+const {accountUpstreamOperations, assertAccountingComplete} = require('./accounting')
+const {loadRestFragmentMigration, assertMigrationConsistency, assertCanonicalReady} = require('./migration')
 
 // Six levels up from upstreamDiff/: rest → reference → src → docs-tooling → packages → repo root.
 const REPOSITORY_ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..', '..')
@@ -86,7 +88,7 @@ function computeUpstreamDiff(opts) {
     }
     const upstreamCommit = opts.upstreamCommit || source.pin.commit
     if (!/^[a-f0-9]{40}$/.test(upstreamCommit)) fail('REST_UPSTREAM_COMMIT_INVALID', upstreamCommit)
-    const diff = diffSpecifications({source, upstreamPin: upstreamCommit, upstream, fragments, ledger, ruleset, fragmentSurfaces})
+    const diff = diffSpecifications({source, upstreamPin: upstreamCommit, upstream, fragments, ledger, ruleset, fragmentSurfaces, lifecycleTrack: opts.lifecycleTrack || null})
     return {diff, specSha256: contentSha256, source, ruleset, lock}
 }
 
@@ -123,6 +125,13 @@ function renderDiffMarkdown(diff) {
             ].filter(Boolean)
             lines.push(`- **${entry.category}** — ${where}: ${detail}${flags.length ? ` [${flags.join('; ')}]` : ''}`)
             lines.push(`  - id: \`${entry.id}\``)
+            if (entry.lifecycle) {
+                const suggested = ['x-added-at', 'x-last-modified', 'x-deprecated-since']
+                    .filter(key => key in entry.lifecycle)
+                    .map(key => `${key}=${JSON.stringify(entry.lifecycle[key])}`)
+                    .join(' ')
+                lines.push(`  - lifecycle suggestion: ${suggested}`)
+            }
         }
         lines.push('')
     }
@@ -183,6 +192,7 @@ function registerDiffCommand(command) {
         .option('--rules <path>', 'Refresh ruleset path', DEFAULTS.rules)
         .option('--fragments <dir>', 'Fragment directory', DEFAULTS.fragments)
         .option('--migration <path>', 'fragment-migration.json used to scope fragment-only reporting by api surface', DEFAULTS.migration)
+        .option('--lifecycle-track <track>', 'Derive x-added-at/x-last-modified/x-deprecated-since suggestions on this managed track (data-plane sources only, design §6.3)')
         .action(opts => {
             const {diff} = computeUpstreamDiff(opts)
             fs.mkdirSync(opts.out, {recursive: true})
@@ -272,6 +282,7 @@ function registerPrepareCommand(command) {
         .option('--titles <path>', 'titles.json path', DEFAULTS.titles)
         .option('--fragments <dir>', 'Fragment directory', DEFAULTS.fragments)
         .option('--migration <path>', 'fragment-migration.json used to scope fragment-only reporting by api surface', DEFAULTS.migration)
+        .option('--lifecycle-track <track>', 'Derive lifecycle suggestions into the staged diff (data-plane sources only, design §6.3)')
         .action(opts => {
             // The default pack anchors REPOSITORY_ROOT; a wrong root would
             // only surface as an ENOENT deep in staging. Trip here instead.
@@ -309,6 +320,53 @@ function registerPrepareCommand(command) {
         })
 }
 
+function registerAccountingCommand(command) {
+    command
+        .description('Ledger accounting for the upstream operation surface (T4): every upstream-added operation must carry a ledger decision')
+        .requiredOption('--diff <path>', 'diff.json to account (digest-bound into the statement)')
+        .option('--ledger <path>', 'Ledger file path', DEFAULTS.ledger)
+        .option('--out <file>', 'Write the accounting statement JSON to this path')
+        .option('--report-only', 'Exit 0 even when operations are unaccounted (inspection mode)', false)
+        .action(opts => {
+            const diff = JSON.parse(fs.readFileSync(opts.diff, 'utf8'))
+            const ledger = loadRestUpstreamLedger(opts.ledger)
+            const statement = accountUpstreamOperations({diff, ledger})
+            if (opts.out) {
+                fs.mkdirSync(path.dirname(path.resolve(opts.out)), {recursive: true})
+                fs.writeFileSync(opts.out, serializeDocument(statement))
+            }
+            console.log(`accounting ${statement.source} @ ${statement.upstreamPin}: ${statement.summary.upstreamAdded} upstream-added, ${statement.summary.ledgered} ledgered, ${statement.summary.unaccounted} unaccounted`)
+            for (const opKey of statement.unaccountedOpKeys) console.log(`  unaccounted: ${opKey}`)
+            if (!opts.reportOnly) assertAccountingComplete(statement)
+        })
+}
+
+function registerMigrationCommand(command) {
+    command
+        .description('Gate the fragment-migration bookkeeping and the canonical transition (always: consistency; with --canonical-ready: collection + T4 accounting)')
+        .option('--migration <path>', 'fragment-migration.json path', DEFAULTS.migration)
+        .option('--fragments <dir>', 'Fragment directory the migration classifies', DEFAULTS.fragments)
+        .option('--canonical-ready', 'Also gate the canonical transition', false)
+        .option('--collection <dir>', 'Candidate canonical collection directory (manifest + fragment copies)')
+        .option('--diff <path>', 'diff.json proving the upstream accounting for the canonical surface')
+        .option('--ledger <path>', 'Ledger file path', DEFAULTS.ledger)
+        .action(opts => {
+            const migration = loadRestFragmentMigration(opts.migration)
+            assertMigrationConsistency({migration, fragmentsDir: opts.fragments})
+            const states = {}
+            for (const fragment of migration.fragments) states[fragment.migrationState] = (states[fragment.migrationState] || 0) + 1
+            console.log(`migration ${migration.fragments.length} fragment(s): ${Object.entries(states).sort().map(([state, count]) => `${state}=${count}`).join(', ')}`)
+            if (!opts.canonicalReady) return
+            if (!opts.collection || !opts.diff) {
+                fail('REST_UPSTREAM_MIGRATION_INPUTS_REQUIRED', '--canonical-ready needs --collection and --diff')
+            }
+            const diff = JSON.parse(fs.readFileSync(opts.diff, 'utf8'))
+            const ledger = loadRestUpstreamLedger(opts.ledger)
+            const collection = assertCanonicalReady({migration, fragmentsDir: opts.fragments, collectionDir: opts.collection, diff, ledger})
+            console.log(`canonical-ready: collection ${collection.manifest.collectionId} (${collection.manifest.apiSurface}) loads, canonical fragments covered, accounting complete`)
+        })
+}
+
 function registerUpstreamCommands(cli) {
     registerLockCommand(cli.command('rest-upstream-lock'))
     registerFormatCommand(cli.command('rest-upstream-format'))
@@ -316,8 +374,10 @@ function registerUpstreamCommands(cli) {
     registerApplyCommand(cli.command('rest-upstream-apply'))
     registerLedgerBootstrapCommand(cli.command('rest-upstream-ledger-bootstrap'))
     registerPrepareCommand(cli.command('rest-upstream-prepare'))
+    registerAccountingCommand(cli.command('rest-upstream-accounting'))
+    registerMigrationCommand(cli.command('rest-upstream-migration'))
 }
 
-const UPSTREAM_COMMANDS = new Set(['rest-upstream-lock', 'rest-upstream-format', 'rest-upstream-diff', 'rest-upstream-apply', 'rest-upstream-ledger-bootstrap', 'rest-upstream-prepare'])
+const UPSTREAM_COMMANDS = new Set(['rest-upstream-lock', 'rest-upstream-format', 'rest-upstream-diff', 'rest-upstream-apply', 'rest-upstream-ledger-bootstrap', 'rest-upstream-prepare', 'rest-upstream-accounting', 'rest-upstream-migration'])
 
 module.exports = {registerUpstreamCommands, renderDiffMarkdown, loadSpecFile, loadRuleset, loadFragmentSurfaces, computeUpstreamDiff, substantiveDriftEntries, UPSTREAM_COMMANDS, DEFAULTS, REPOSITORY_ROOT}

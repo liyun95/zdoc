@@ -276,7 +276,7 @@ test('relaxing a requirement is flagged for R&D confirmation; tightening is adop
 
 // --- Source-tree structure-only mode (design §6) ----------------------------
 
-const TREE_SOURCE = {id: 'milvus-data-plane', repository: 'milvus-io/milvus', publicationTarget: 'milvus', artifact: {kind: 'source-tree'}}
+const TREE_SOURCE = {id: 'milvus-data-plane', repository: 'milvus-io/milvus', apiSurface: 'data-plane', publicationTarget: 'milvus', artifact: {kind: 'source-tree'}}
 
 function treeFragment() {
     return {
@@ -458,4 +458,132 @@ test('doc-design-only component variants are interchangeable donors', () => {
         ruleset: RULESET,
     })
     assert.deepEqual(result.entries, [])
+})
+
+// Design §6.3: data-plane sources can derive lifecycle suggestions when a
+// managed track is supplied; without one the output stays byte-identical.
+const TRACK = '3.0.x'
+
+function lifecycleFragment(overrides = {}) {
+    return {
+        openapi: '3.0.1',
+        info: {title: 'REST', version: 'v2'},
+        paths: {
+            '/v2/vectordb/collections/describe': {
+                post: {
+                    summary: 'Describe Collection',
+                    'x-added-at': '2.6.x', 'x-last-modified': '2.6.x', 'x-deprecated-since': null,
+                    requestBody: {content: {'application/json': {schema: {type: 'object', properties: {
+                        collectionName: {type: 'string', maxLength: 256, 'x-added-at': '2.6.x', 'x-last-modified': '2.6.x', 'x-deprecated-since': null},
+                    }}}}},
+                    responses: {'200': {description: 'ok'}},
+                },
+            },
+            '/v2/vectordb/collections/rename': {
+                post: {
+                    summary: 'Rename Collection',
+                    'x-added-at': '2.6.x', 'x-last-modified': '2.6.x', 'x-deprecated-since': null,
+                    ...(overrides && overrides.renameOperation),
+                    requestBody: {content: {'application/json': {schema: {type: 'object', required: ['collectionName', 'newCollectionName'], properties: {
+                        collectionName: {type: 'string'},
+                        newCollectionName: {type: 'string'},
+                    }}}}},
+                    responses: {'200': {description: 'ok'}},
+                },
+            },
+        },
+    }
+}
+
+function lifecycleUpstream() {
+    return {
+        openapi: '3.0.3',
+        info: {title: 'REST upstream source-tree skeleton', version: '/v2/vectordb'},
+        paths: {
+            '/v2/vectordb/collections/describe': {
+                post: {
+                    requestBody: {content: {'application/json': {schema: {type: 'object', properties: {
+                        collectionName: {type: 'string', maxLength: 128},
+                        dbName: {type: 'string'},
+                    }}}}},
+                    responses: {'200': {description: 'ok'}},
+                },
+            },
+            '/v2/vectordb/collections/rename': {
+                post: {
+                    deprecated: true,
+                    requestBody: {content: {'application/json': {schema: {type: 'object', required: ['collectionName'], properties: {
+                        collectionName: {type: 'string'},
+                        newCollectionName: {type: 'string'},
+                    }}}}},
+                    responses: {'200': {description: 'ok'}},
+                },
+            },
+            '/v2/vectordb/collections/compact': {
+                post: {
+                    requestBody: {content: {'application/json': {schema: {type: 'object', properties: {collectionName: {type: 'string'}}}}}},
+                    responses: {'200': {description: 'ok'}},
+                },
+            },
+        },
+    }
+}
+
+function lifecycleRun({fragmentOverride = null, ...rest} = {}) {
+    return diffSpecifications({
+        source: TREE_SOURCE,
+        upstreamPin: SHA,
+        upstream: lifecycleUpstream(),
+        fragments: new Map([['05-collection-operations-v2.json', lifecycleFragment(fragmentOverride)]]),
+        ledger: EMPTY_LEDGER,
+        ruleset: RULESET,
+        ...rest,
+    })
+}
+
+test('lifecycle suggestions attach to contract drift on data-plane sources when a track is supplied', () => {
+    const result = lifecycleRun({lifecycleTrack: TRACK})
+    const byKind = new Map(result.entries.map(entry => [entry.id, entry]))
+    const constraint = byKind.get('upstream-modified|post /v2/vectordb/collections/describe|05-collection-operations-v2.json|requestBody|||collectionName|constraint|maxLength')
+    assert.deepEqual(constraint.lifecycle, {'x-last-modified': TRACK})
+    const addedField = byKind.get('upstream-added-field|post /v2/vectordb/collections/describe|05-collection-operations-v2.json|requestBody|||dbName|field-uncovered|')
+    assert.deepEqual(addedField.lifecycle, {'x-added-at': TRACK, 'x-last-modified': TRACK, 'x-deprecated-since': null})
+    const deprecation = byKind.get('upstream-modified|post /v2/vectordb/collections/rename|05-collection-operations-v2.json|operation||||deprecated|')
+    assert.deepEqual(deprecation.lifecycle, {'x-last-modified': TRACK, 'x-deprecated-since': TRACK})
+    const relaxation = byKind.get('upstream-modified|post /v2/vectordb/collections/rename|05-collection-operations-v2.json|requestBody|||newCollectionName|required|')
+    assert.deepEqual(relaxation.lifecycle, {'x-last-modified': TRACK})
+    assert.ok(relaxation.requiresConfirmation === 'required-relaxation')
+    const addedOp = byKind.get('upstream-added|post /v2/vectordb/collections/compact||operation||||operation-absent-in-fragments|')
+    assert.deepEqual(addedOp.lifecycle, {'x-added-at': TRACK, 'x-last-modified': TRACK, 'x-deprecated-since': null})
+    // structure-only sources skip prose entirely: no summary entry, hence nothing to suggest for
+    const summary = byKind.get('upstream-modified|post /v2/vectordb/collections/describe|05-collection-operations-v2.json|operation||||summary|')
+    assert.ok(!summary)
+    // entry ids are untouched by the suggestion
+    assert.ok(!constraint.id.includes('lifecycle'))
+})
+
+test('without a lifecycle track the diff output is byte-identical to the pre-lifecycle behavior', () => {
+    const without = lifecycleRun()
+    for (const entry of without.entries) assert.ok(!('lifecycle' in entry), entry.id)
+    // and the id set matches the tracked run exactly: suggestions never change identity
+    const withTrack = lifecycleRun({lifecycleTrack: TRACK})
+    assert.deepEqual(
+        withTrack.entries.map(entry => entry.id).sort(),
+        without.entries.map(entry => entry.id).sort(),
+    )
+})
+
+test('lifecycle suggestions fail closed when the fragment side is already on a newer track', () => {
+    assert.throws(
+        () => lifecycleRun({lifecycleTrack: TRACK, fragmentOverride: {renameOperation: {'x-added-at': '3.1.x'}}}),
+        /REST_UPSTREAM_LIFECYCLE_ORDER/,
+    )
+})
+
+test('lifecycle tracks reject control-plane sources and malformed values', () => {
+    assert.throws(() => lifecycleRun({lifecycleTrack: '3.0'}), /REST_UPSTREAM_LIFECYCLE_TRACK_INVALID/)
+    assert.throws(
+        () => lifecycleRun({lifecycleTrack: TRACK, source: SOURCE}),
+        /REST_UPSTREAM_LIFECYCLE_TRACK_REJECTED/,
+    )
 })

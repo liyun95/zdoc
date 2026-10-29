@@ -45,6 +45,10 @@
     {
       "id": "new-operations-need-titles",
       "rule": "Adopting a new operation requires a titles.json zh-CN title mapping in the same change (the Chinese build fails without it)."
+    },
+    {
+      "id": "lifecycle-binds-to-diff",
+      "rule": "x-added-at / x-last-modified / x-deprecated-since are milvus data-plane lifecycle attributes. When the diff entry carries a lifecycle suggestion, lifecycle entries copy the suggested value for that leaf exactly; deviations need override with a reason. Only contract drift earns lifecycle writes (additions take the suggested triple; constraint/required drift takes x-last-modified; deprecation flips take x-last-modified plus x-deprecated-since). Prose-only and unattributed drift gets none."
     }
   ]
 }

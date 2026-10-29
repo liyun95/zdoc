@@ -23,6 +23,11 @@ on:
         required: true
         default: true
         type: boolean
+      lifecycle_track:
+        description: 'Managed track for lifecycle suggestions (data-plane sources only, e.g. 3.0.x; empty = no suggestions)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -71,7 +76,7 @@ jobs:
             exit 1
           }
 
-      - name: Resolve upstream revision and fetch the spec
+      - name: Resolve upstream revision
         id: upstream
         env:
           REST_UPSTREAM_GITHUB_TOKEN: ${{ secrets.REST_UPSTREAM_GITHUB_TOKEN || secrets.PRODUCT_DOC_LINKS_GITHUB_TOKEN }}
@@ -79,30 +84,97 @@ jobs:
           SOURCE: ${{ inputs.source }}
           UPSTREAM_COMMIT: ${{ inputs.upstream_commit }}
         run: |
-          test -n "$REST_UPSTREAM_GITHUB_TOKEN" || {
-            echo 'REST_UPSTREAM_GITHUB_TOKEN (or PRODUCT_DOC_LINKS_GITHUB_TOKEN) must be provisioned with contents:read on zilliztech/zilliz-cloud' >&2
-            exit 1
-          }
           mkdir -p "$RUNNER_TEMP/rest-upstream"
           # stdin scripts mixing require() with top-level await fail module
           # detection on Node 22 (ERR_AMBIGUOUS_MODULE_SYNTAX): wrap in an IIFE.
           node <<'NODE'
           const fs = require('node:fs')
+          const {loadRestUpstreamLock, findLockSource} = require('./packages/docs-tooling/src/reference/rest/upstreamDiff/lock')
+          const {resolveHeadSha, PRIVATE_TOKEN_REPOSITORIES} = require('./scripts/rest-upstream/drift-watchdog')
+          ;(async () => {
+            const lock = loadRestUpstreamLock('./packages/docs-tooling/src/reference/rest/meta/upstream/rest-upstream-lock.json')
+            const source = findLockSource(lock, process.env.SOURCE)
+            const token = PRIVATE_TOKEN_REPOSITORIES.has(source.repository) ? process.env.REST_UPSTREAM_GITHUB_TOKEN : process.env.GITHUB_TOKEN
+            if (PRIVATE_TOKEN_REPOSITORIES.has(source.repository) && !token) {
+              throw new Error('rest-upstream-refresh: REST_UPSTREAM_GITHUB_TOKEN (or PRODUCT_DOC_LINKS_GITHUB_TOKEN) must be provisioned with contents:read on the private upstream')
+            }
+            const commit = process.env.UPSTREAM_COMMIT || await resolveHeadSha(globalThis.fetch, {repository: source.repository, ref: source.trackedRef, token})
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, [
+              `kind=${source.artifact.kind}`,
+              `commit=${commit}`,
+              `repository=${source.repository}`,
+              `source_dir=${source.artifact.kind === 'source-tree' ? source.artifact.paths[0] : source.artifact.path}`,
+            ].map(line => `${line}\n`).join(''))
+            console.log(`resolved ${source.id} (${source.artifact.kind}) -> ${source.repository}@${commit}`)
+          })().catch(error => {
+            console.error(String(error?.message || error))
+            process.exit(1)
+          })
+          NODE
+
+      - name: Fetch the pinned upstream spec
+        id: upstream-spec
+        if: ${{ steps.upstream.outputs.kind == 'spec-file' }}
+        env:
+          REST_UPSTREAM_GITHUB_TOKEN: ${{ secrets.REST_UPSTREAM_GITHUB_TOKEN || secrets.PRODUCT_DOC_LINKS_GITHUB_TOKEN }}
+          SOURCE: ${{ inputs.source }}
+          UPSTREAM_COMMIT: ${{ steps.upstream.outputs.commit }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
           const path = require('node:path')
           const crypto = require('node:crypto')
-          const {resolveHeadSha, fetchSpecBytes} = require('./scripts/rest-upstream/drift-watchdog')
+          const {fetchSpecBytes, PRIVATE_TOKEN_REPOSITORIES} = require('./scripts/rest-upstream/drift-watchdog')
           const {loadRestUpstreamLock, findLockSource} = require('./packages/docs-tooling/src/reference/rest/upstreamDiff/lock')
           ;(async () => {
             const lock = loadRestUpstreamLock('./packages/docs-tooling/src/reference/rest/meta/upstream/rest-upstream-lock.json')
             const source = findLockSource(lock, process.env.SOURCE)
-            if (source.artifact.kind !== 'spec-file') throw new Error(`rest-upstream-refresh: ${source.id} is a source-tree source; the extractor skeleton (P2) is required first`)
-            const token = process.env.REST_UPSTREAM_GITHUB_TOKEN
-            const commit = process.env.UPSTREAM_COMMIT || await resolveHeadSha(globalThis.fetch, {repository: source.repository, ref: source.trackedRef, token})
-            const bytes = await fetchSpecBytes(globalThis.fetch, {repository: source.repository, specPath: source.artifact.path, ref: commit, token})
+            const token = PRIVATE_TOKEN_REPOSITORIES.has(source.repository) ? process.env.REST_UPSTREAM_GITHUB_TOKEN : null
+            const bytes = await fetchSpecBytes(globalThis.fetch, {repository: source.repository, specPath: source.artifact.path, ref: process.env.UPSTREAM_COMMIT, token})
             const specPath = path.join(process.env.RUNNER_TEMP, `upstream-spec${path.extname(source.artifact.path) || '.yaml'}`)
             fs.writeFileSync(specPath, bytes)
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, `commit=${commit}\nspec_path=${specPath}\nspec_sha256=${crypto.createHash('sha256').update(bytes).digest('hex')}\n`)
-            console.log(`fetched ${source.repository}:${source.artifact.path}@${commit} (${bytes.length} bytes)`)
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `spec_path=${specPath}\nspec_sha256=${crypto.createHash('sha256').update(bytes).digest('hex')}\n`)
+            console.log(`fetched ${source.repository}:${source.artifact.path}@${process.env.UPSTREAM_COMMIT} (${bytes.length} bytes)`)
+          })().catch(error => {
+            console.error(String(error?.message || error))
+            process.exit(1)
+          })
+          NODE
+
+      # Source-tree sources (design §6): download the non-test Go files of the
+      # tracked directory at HEAD and run the vendored stdlib-only extractor.
+      # Go is installed only here and never enters the build chain (decision D3).
+      - uses: actions/setup-go@v6
+        if: ${{ steps.upstream.outputs.kind == 'source-tree' }}
+        with:
+          go-version: '1.27'
+
+      - name: Extract the source-tree skeleton
+        id: upstream-skeleton
+        if: ${{ steps.upstream.outputs.kind == 'source-tree' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE: ${{ inputs.source }}
+          UPSTREAM_COMMIT: ${{ steps.upstream.outputs.commit }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const {fetchSourceTreeFiles, extractSourceTreeSkeleton} = require('./scripts/rest-upstream/drift-watchdog')
+          const {loadRestUpstreamLock, findLockSource} = require('./packages/docs-tooling/src/reference/rest/upstreamDiff/lock')
+          ;(async () => {
+            const lock = loadRestUpstreamLock('./packages/docs-tooling/src/reference/rest/meta/upstream/rest-upstream-lock.json')
+            const source = findLockSource(lock, process.env.SOURCE)
+            const goFilesDir = await fetchSourceTreeFiles(globalThis.fetch, {
+              repository: source.repository,
+              sourceDir: source.artifact.paths[0],
+              ref: process.env.UPSTREAM_COMMIT,
+              token: process.env.GITHUB_TOKEN,
+            })
+            const skeletonPath = path.join(process.env.RUNNER_TEMP, 'upstream-skeleton.json')
+            extractSourceTreeSkeleton(goFilesDir, skeletonPath)
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `skeleton_path=${skeletonPath}\n`)
+            console.log(`extracted ${source.repository}:${source.artifact.paths[0]}@${process.env.UPSTREAM_COMMIT} -> ${skeletonPath}`)
           })().catch(error => {
             console.error(String(error?.message || error))
             process.exit(1)
@@ -112,11 +184,22 @@ jobs:
       # Deterministic staging: diff + touched fragment copies + ruleset +
       # instructions, with the repository-path isolation sweep (design §8.1/§8.6).
       - name: Prepare agent staging
+        env:
+          LIFECYCLE_TRACK: ${{ inputs.lifecycle_track }}
         run: |
+          args=()
+          if test -n "$LIFECYCLE_TRACK"; then args+=(--lifecycle-track "$LIFECYCLE_TRACK"); fi
+          input_args=()
+          if test '${{ steps.upstream.outputs.kind }}' = 'spec-file'; then
+            input_args+=(--spec '${{ steps.upstream-spec.outputs.spec_path }}')
+          else
+            input_args+=(--skeleton '${{ steps.upstream-skeleton.outputs.skeleton_path }}')
+          fi
           node packages/docs-tooling/src/reference/rest/index.js rest-upstream-prepare \
             --source '${{ inputs.source }}' \
-            --spec '${{ steps.upstream.outputs.spec_path }}' \
+            "${input_args[@]}" \
             --upstream-commit '${{ steps.upstream.outputs.commit }}' \
+            "${args[@]}" \
             --staging "$RUNNER_TEMP/$STAGING"
 
       # Single paid agent turn on the internal gateway (same exposure surface
@@ -158,7 +241,7 @@ jobs:
         env:
           SOURCE: ${{ inputs.source }}
           UPSTREAM_COMMIT: ${{ steps.upstream.outputs.commit }}
-          SPEC_SHA256: ${{ steps.upstream.outputs.spec_sha256 }}
+          SPEC_SHA256: ${{ steps.upstream-spec.outputs.spec_sha256 }}
         run: |
           node <<'NODE'
           const fs = require('node:fs')
@@ -175,9 +258,41 @@ jobs:
           const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'))
           const source = lock.sources.find(entry => entry.id === process.env.SOURCE)
           if (!source) throw new Error(`lock has no source ${process.env.SOURCE}`)
-          source.pin = {commit: process.env.UPSTREAM_COMMIT, contentSha256: process.env.SPEC_SHA256}
+          // spec-file sources pin the content digest for the watchdog fast path;
+          // source-tree sources pin the commit only (lock contract §3.1).
+          source.pin = process.env.SPEC_SHA256
+            ? {commit: process.env.UPSTREAM_COMMIT, contentSha256: process.env.SPEC_SHA256}
+            : {commit: process.env.UPSTREAM_COMMIT}
           source.lastVerifiedAt = new Date().toISOString()
           fs.writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`)
+          // Ledger drafts are agent proposals (design §8.2): land them in the
+          // ledger as conservative `deferred` entries so the refresh PR stays
+          // atomic (fragments + titles + ledger + lock) and the T4 accounting
+          // gate can actually pass. Human review reclassifies in the PR;
+          // existing decisions are never overwritten.
+          if (applied.ledgerDrafts.length > 0) {
+            const ledgerPath = path.join(restMeta, 'upstream', 'ledger.json')
+            const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'))
+            const today = new Date().toISOString().slice(0, 10)
+            let added = 0
+            for (const draft of applied.ledgerDrafts) {
+              if (ledger.entries.some(entry => entry.source === process.env.SOURCE && entry.opKey === draft.opKey)) continue
+              ledger.entries.push({
+                opKey: draft.opKey,
+                source: process.env.SOURCE,
+                firstSeenPin: process.env.UPSTREAM_COMMIT,
+                firstSeenAt: today,
+                classification: draft.classification === 'adopted' ? 'deferred' : draft.classification,
+                reason: draft.reason,
+                owner: draft.owner,
+                decidedAt: today,
+              })
+              added++
+            }
+            ledger.entries.sort((left, right) => (left.opKey < right.opKey ? -1 : left.opKey > right.opKey ? 1 : 0))
+            fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`)
+            console.log(`ledger: landed ${added} draft entr(ies) as deferred (${applied.ledgerDrafts.length} proposed)`)
+          }
           console.log(`landed ${applied.changedFiles.length} fragment(s); ${applied.titleLog.length} title entr(ies); ${applied.overrides.length} override(s); ${applied.ledgerDrafts.length} ledger draft(s); pin -> ${process.env.UPSTREAM_COMMIT}`)
           NODE
           git add packages/docs-tooling/src/reference/rest/meta
@@ -188,6 +303,18 @@ jobs:
           git config user.name 'zdoc rest-upstream bot'
           git config user.email 'bot@zilliz.com'
           git commit -m "refactor(rest): refresh fragments from ${SOURCE} @ ${UPSTREAM_COMMIT}"
+
+      # Gate 4 (design §8.4) + ledger T4: after the applier and titles landed,
+      # the refreshed tree must carry no undecided upstream operation — every
+      # upstream@pin op the fragments lack needs a ledger decision (any
+      # classification; the point is that the human decision exists). Ledger
+      # drafts from the change set are proposals only: merge them into the
+      # ledger in the review round (or dispatch the bootstrap merge) before
+      # re-running, so the gate forces the explicit step.
+      - name: Gate the ledger accounting for the refreshed surface
+        run: |
+          node packages/docs-tooling/src/reference/rest/index.js rest-upstream-accounting \
+            --diff "$RUNNER_TEMP/$STAGING/diff/diff.json"
 
       # Gates 3-7 in order (design §8.4): canonical bytes, the change-scoped
       # test union, workflow policy. The missing-zh-title assertion lives in

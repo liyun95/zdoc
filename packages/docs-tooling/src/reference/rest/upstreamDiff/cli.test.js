@@ -356,3 +356,72 @@ test('diff and prepare accept a source-tree skeleton for milvus-data-plane', () 
         fs.rmSync(dir, {recursive: true, force: true})
     }
 })
+
+test('lifecycle-track diffs, T4 accounting, and the migration gate wire through the CLI', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-cli-p3-'))
+    try {
+        const fragmentsDir = path.join(dir, 'fragments')
+        fs.mkdirSync(fragmentsDir)
+        fs.writeFileSync(path.join(fragmentsDir, '05-collection-operations-v2.json'), `${JSON.stringify({
+            openapi: '3.0.1',
+            paths: {'/v2/vectordb/collections/list': {post: {
+                summary: 'List Collections',
+                requestBody: {content: {'application/json': {schema: {type: 'object', properties: {dbName: {type: 'string'}}}}}},
+                responses: {'200': {description: 'ok'}},
+            }}},
+        }, null, 2)}\n`)
+        // required tightening is a contract change: it earns a lifecycle suggestion
+        fs.writeFileSync(path.join(dir, 'skeleton.json'), JSON.stringify({
+            schemaVersion: '1.0',
+            extractedFrom: {repository: 'milvus-io/milvus', sourceDir: 'internal/distributed/proxy/httpserver', mountPrefix: '/v2/vectordb'},
+            operations: [{path: '/v2/vectordb/collections/list', method: 'post', handler: 'listCollections', requestStruct: 'DatabaseReq',
+                requestSchema: {$ref: '#/components/schemas/DatabaseReq'}}],
+            components: {schemas: {DatabaseReq: {type: 'object', required: ['dbName'], properties: {dbName: {type: 'string'}}}}},
+        }, null, 2) + '\n')
+
+        const outDir = path.join(dir, 'diff')
+        const tracked = runCli(['rest-upstream-diff', '--source', 'milvus-data-plane', '--skeleton', path.join(dir, 'skeleton.json'),
+            '--fragments', fragmentsDir, '--out', outDir, '--lifecycle-track', '3.0.x'])
+        assert.equal(tracked.status, 0, tracked.stderr)
+        const diffDocument = JSON.parse(fs.readFileSync(path.join(outDir, 'diff.json'), 'utf8'))
+        const constraint = diffDocument.entries.find(entry => entry.change?.kind === 'required')
+        assert.ok(constraint, 'fixture drift: expected the required tightening entry')
+        assert.deepEqual(constraint.lifecycle, {'x-last-modified': '3.0.x'})
+
+        // T4 accounting: everything classified -> strict passes; an undecided
+        // upstream-added op fails the run and is named in the output.
+        const accounted = runCli(['rest-upstream-accounting', '--diff', path.join(outDir, 'diff.json')])
+        assert.equal(accounted.status, 0, accounted.stderr)
+        assert.match(accounted.stdout, /0 upstream-added, 0 ledgered, 0 unaccounted/)
+        const undecidedPath = path.join(dir, 'undecided-diff.json')
+        fs.writeFileSync(undecidedPath, JSON.stringify({
+            ...diffDocument,
+            entries: [...diffDocument.entries, {opKey: 'post /v2/vectordb/snapshots/list', category: 'upstream-added', scope: 'operation',
+                change: {kind: 'operation-absent-in-fragments', before: null, after: null}, evidence: '/paths/x/post', id: 'x'}],
+        }, null, 2) + '\n')
+        const undecided = runCli(['rest-upstream-accounting', '--diff', undecidedPath])
+        assert.equal(undecided.status, 1)
+        assert.match(undecided.stderr, /REST_UPSTREAM_LEDGER_ACCOUNTING_INCOMPLETE/)
+        assert.match(undecided.stderr, /post \/v2\/vectordb\/snapshots\/list/)
+        const report = runCli(['rest-upstream-accounting', '--diff', undecidedPath, '--report-only', '--out', path.join(dir, 'accounting.json')])
+        assert.equal(report.status, 0, report.stderr)
+        const statement = JSON.parse(fs.readFileSync(path.join(dir, 'accounting.json'), 'utf8'))
+        assert.deepEqual(statement.summary, {upstreamAdded: 1, ledgered: 0, unaccounted: 1})
+        assert.match(statement.diffDigest, /^sha256:[0-9a-f]{64}$/)
+
+        // The committed migration bookkeeping is consistent with the fragments.
+        const migration = runCli(['rest-upstream-migration'])
+        assert.equal(migration.status, 0, migration.stderr)
+        assert.match(migration.stdout, /migration 38 fragment\(s\)/)
+        // canonical readiness needs a candidate collection and a diff input
+        const unready = runCli(['rest-upstream-migration', '--canonical-ready'])
+        assert.equal(unready.status, 1)
+        assert.match(unready.stderr, /REST_UPSTREAM_MIGRATION_INPUTS_REQUIRED/)
+        const noManifest = runCli(['rest-upstream-migration', '--canonical-ready', '--collection', path.join(dir, 'collection'),
+            '--diff', path.join(outDir, 'diff.json')])
+        assert.equal(noManifest.status, 1)
+        assert.match(noManifest.stderr, /ENOENT|REST_COLLECTION_/)
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
+})

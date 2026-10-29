@@ -114,10 +114,14 @@ this one waits for the same.
 ## 6. Follow-ups (P3, per design §11)
 
 - Merge the reviewed milvus ledger bootstrap (user decision; same flow as the
-  cloud 54-entry bootstrap).
+  cloud 54-entry bootstrap). Until merged, the P3 T4 accounting gate fails any
+  milvus refresh with the exact 11 undecided op keys — by design.
 - First agent-driven milvus refresh rehearsal through `rest-upstream-prepare`
-  + the codex agent (needs secrets; shared with the P1 refresh rehearsal).
-- Lifecycle attributes (`x-added-at`/`x-last-modified`/`x-deprecated-since`)
-  suggestions for data-plane changes (design §6.3).
-- Refresh workflow source-tree lane (checkout → extract → prepare) when the
-  first real milvus adoption is scheduled.
+  + the codex agent (needs secrets; shared with the P1 refresh rehearsal). The
+  refresh workflow gained the source-tree lane in P3, so the rehearsal is a
+  plain dispatch (optionally with `lifecycle_track`).
+- ~~Lifecycle attributes (`x-added-at`/`x-last-modified`/`x-deprecated-since`)
+  suggestions for data-plane changes (design §6.3).~~ Done in P3
+  (`--lifecycle-track`; see the P3 report).
+- ~~Refresh workflow source-tree lane (checkout → extract → prepare) when the
+  first real milvus adoption is scheduled.~~ Done in P3.
