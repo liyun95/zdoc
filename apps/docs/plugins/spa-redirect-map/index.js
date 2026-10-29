@@ -49,8 +49,23 @@ function stripTrailingSlash(path) {
   return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
 }
 
-module.exports = function spaRedirectMapPlugin(_context, options) {
+// Docusaurus instantiates the plugin once per locale build: the default-locale
+// build serves prefix-less routes while every other locale build serves routes
+// under /<locale>. A rule belongs to the build whose namespace contains its
+// target — unprefixed targets to the default build, /ja-JP targets to the
+// ja-JP build — so a build never validates another locale's routes.
+function scopeRulesToBuild(rules, i18n) {
+  const currentLocale = i18n?.currentLocale;
+  const defaultLocale = i18n?.defaultLocale ?? currentLocale;
+  if (!currentLocale || currentLocale === defaultLocale) {
+    return rules.filter(rule => !i18n?.locales?.some(locale => locale !== defaultLocale && rule.to.startsWith(`/${locale}/`)));
+  }
+  return rules.filter(rule => rule.to.startsWith(`/${currentLocale}/`));
+}
+
+module.exports = function spaRedirectMapPlugin(context, options) {
   const rules = normalizeRules(options.rules);
+  const buildRules = scopeRulesToBuild(rules, context.i18n);
   return {
     name: PluginName,
     async loadContent() {
@@ -62,7 +77,7 @@ module.exports = function spaRedirectMapPlugin(_context, options) {
     async postBuild({routesPaths, baseUrl}) {
       const served = new Set(routesPaths.map(stripTrailingSlash));
       const basePrefix = baseUrl === '/' ? '' : baseUrl.replace(/\/+$/, '');
-      for (const {from, to} of rules) {
+      for (const {from, to} of buildRules) {
         const target = `${basePrefix}${to}`;
         if (!served.has(stripTrailingSlash(target))) {
           throw new Error(
