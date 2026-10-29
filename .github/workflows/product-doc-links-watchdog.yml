@@ -50,11 +50,17 @@ jobs:
             echo 'PRODUCT_DOC_LINKS_GITHUB_TOKEN is not configured; provision a secret with contents:read on zilliztech/zilliz-cloud' >&2
             exit 1
           }
+          # Fail closed on every layer: pipefail carries a curl failure (401 on
+          # an expired/revoked token, 404 on lost access — both render as a
+          # "Not Found"-style body) through the pipe instead of letting jq turn
+          # the error body into the literal string "null"; jq -e then rejects
+          # any 200 response whose .sha is not a 40-hex commit SHA.
+          set -o pipefail
           revision=$(curl -s --fail-with-body \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $PRODUCT_DOC_LINKS_GITHUB_TOKEN" \
             https://api.github.com/repos/zilliztech/zilliz-cloud/commits/master \
-            | jq -r '.sha')
+            | jq -e -r '.sha | select(type == "string" and test("^[0-9a-f]{40}$"))')
           test -n "$revision"
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
 

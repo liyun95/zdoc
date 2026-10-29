@@ -49,7 +49,11 @@ test('watchdog scans the product link source at a resolved upstream revision', (
   assert.doesNotMatch(revision.run, /curl -sf /)
   assert.match(revision.run, /-H "Authorization: Bearer \$PRODUCT_DOC_LINKS_GITHUB_TOKEN"/)
   assert.match(revision.run, /https:\/\/api\.github\.com\/repos\/zilliztech\/zilliz-cloud\/commits\/master/)
-  assert.match(revision.run, /jq -r '\.sha'/)
+  // A curl failure inside the pipe (expired token 401, lost access 404) must
+  // fail the step, not survive as jq's literal "null": pipefail plus jq -e
+  // with a 40-hex SHA gate keep the revision resolution fail closed.
+  assert.match(revision.run, /set -o pipefail/)
+  assert.match(revision.run, /jq -e -r '\.sha \| select\(type == "string" and test\("\^\[0-9a-f\]\{40\}\$"\)\)'/)
   assert.match(revision.run, /test -n "\$revision"/)
   assert.match(revision.run, /echo "revision=\$revision" >> "\$GITHUB_OUTPUT"/)
   assert.doesNotMatch(revision.run, /git ls-remote/)
