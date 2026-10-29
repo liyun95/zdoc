@@ -81,7 +81,7 @@ function output(options, bundle, manual) {
   const page = bundle.outcomes[0].outputs.find(output => output.manual === manual)
   return fs.readFileSync(path.join(options.out, page.file), 'utf8')
 }
-test('real selected source build uses pinned inputs, both manuals, current Base metadata and scratch-only accepted image bytes', {timeout: 120000}, async t => {
+test('[9-6] real selected source build uses pinned inputs, both manuals, current Base metadata and scratch-only accepted image bytes', {timeout: 120000}, async t => {
   const options = await fixture(t, {imageSource: true})
   let reads = 0
   const bundle = await generateSharedSources(options, {fetchOld: async token => {reads++; assert.equal(token, 'old'); return {blocks: {items: [heading]}}}})
@@ -171,7 +171,7 @@ test('cold cache old-document failure preserves both manual baselines while a si
   for (const output of bundle.outcomes[0].baseline.outputs) assert.deepEqual(fs.readFileSync(path.join(options.out, output.file)), fs.readFileSync(path.join(options.baselineRoot, output.path)))
   assert.deepEqual(bundle.effective_active.pages.map(page => page.page), ['sibling'])
 })
-test('first activation checks current inbound block IDs in both manuals and reports linking evidence', {timeout: 120000}, async t => {
+test('[9-1][ACTIVATE_CHECK_FAILED] first activation checks current inbound block IDs in both manuals and reports linking evidence', {timeout: 120000}, async t => {
   const options = await fixture(t)
   const base = {record: options.records[0], page: 'sample', active: options.prepared.data.active, previousSnapshot: options.prepared.data.previous_snapshot,
     currentSources: [inbound], sourceDir: options.sourceDir, rootToken, runId: '123'}
@@ -1024,7 +1024,7 @@ test('pinned fallback sidebar restores missing nested metadata before surviving 
     require('../validate-guides-coverage').validateGuidesCoverage({outputDir, sidebar})
   }
 })
-test('an activated record removed from Base or demoted from publishable canonical fails the run by name', {timeout: 120000}, async t => {
+test('[9-3][OWNERSHIP_REVERTED] an activated record removed from Base or demoted from publishable canonical fails the run by name', {timeout: 120000}, async t => {
   const options = await fixture(t, {active: true})
   const demote = [
     ['removed', records => records.filter(row => row.record_id !== 'rec0')],
@@ -1063,37 +1063,39 @@ async function publishedBaseline(options, dependencies = {}) {
 }
 const originUrl = 'https://origin.test/diagram.png'
 const changedImage = Buffer.from([137, 80, 78, 71, 9, 8, 7])
-for (const mode of ['changed', 'unchanged', 'missing', 'corrupt', 'unavailable-origin']) test(`recorded image ${mode} retains authenticated acceptance across both manuals and repeated occurrences`, {timeout: 120000}, async t => {
-  const options = await fixture(t, {externalImage: true})
-  const first = await publishedBaseline(options, {fetcher: {fetch: async () => image}})
-  const accepted = first.outcomes[0].images[0], reads = []
-  const bundle = await generateSharedSources(options, {fetchOld() {throw Error('No old document read')},
-    fetcher: {async fetch() {if (mode === 'unavailable-origin') throw Error('Origin unavailable'); return mode === 'unchanged' ? image : changedImage}},
-    async readAcceptedImage(url) {reads.push(url); if (mode === 'missing') throw Error('Missing accepted object'); return mode === 'corrupt' ? changedImage : image}})
-  if (['missing', 'corrupt', 'unavailable-origin'].includes(mode)) {
-    assert.equal(bundle.outcomes[0].status, 'fallback')
-    if (mode === 'unavailable-origin') assert.deepEqual(reads, [])
-    return
-  }
-  assert.equal(bundle.outcomes[0].status, 'success', JSON.stringify(bundle.outcomes))
-  assert.deepEqual(bundle.outcomes[0].images, [accepted])
-  for (const output of bundle.outcomes[0].outputs) assert.deepEqual(fs.readFileSync(path.join(options.out, output.file)), fs.readFileSync(path.join(options.baselineRoot, output.path)))
-  assert.deepEqual(fs.readFileSync(path.join(options.scratch, 'images', accepted.sha256)), image)
-  assert.deepEqual(reads, mode === 'changed' ? [`${options.imageBaseUrl}/${accepted.address}`] : [])
-  assert.equal(bundle.notices.length, mode === 'changed' ? 1 : 0)
-  if (mode === 'changed') assert.deepEqual(bundle.notices[0], {code: 'IMAGE_SOURCE_CHANGED', page: 'sample', source_page: 'sample',
-    url: originUrl, recorded: adapter.digest(image), observed: adapter.digest(changedImage)})
-  const {SharedImageUploader} = require('../../packages/docs-tooling/src/lark/sharedImageUploader')
-  const calls = []
-  await require('./guides-shared-images').uploadSharedImages({bundleRoot: options.out, scratch: options.scratch,
-    uploader: new SharedImageUploader({baseUrl: options.imageBaseUrl, client: {async send(command) {calls.push(command.constructor.name); return {Body: {transformToByteArray: async () => image}}}}})})
-  assert.deepEqual(calls, ['GetObjectCommand'])
-  const handoff = require('../../packages/docs-tooling/src/lark/sharedPageBundle').loadBundle(options.out)
-  for (const output of bundle.outcomes[0].outputs) await write(options.repositoryRoot, output.path, handoff.files.get(output.file))
-  const result = require('../../packages/docs-tooling/src/lark/sharedPagePublication').finalizePublication({workspace: options.repositoryRoot, handoff, candidate: options.candidate})
-  assert.equal(result.publication.cache_eligible, true)
-  const report = JSON.parse(fs.readFileSync(path.join(options.repositoryRoot, 'packages/docs-tooling/src/lark/meta/reports/guides-shared-publication.json')))
-  assert.deepEqual(report.notices, bundle.notices); assert.deepEqual(report.failures, [])
+test('[IMAGE_SOURCE_CHANGED] recorded images retain authenticated acceptance across both manuals and repeated occurrences', {timeout: 120000}, async t => {
+  for (const mode of ['changed', 'unchanged', 'missing', 'corrupt', 'unavailable-origin']) await t.test(mode, async t => {
+    const options = await fixture(t, {externalImage: true})
+    const first = await publishedBaseline(options, {fetcher: {fetch: async () => image}})
+    const accepted = first.outcomes[0].images[0], reads = []
+    const bundle = await generateSharedSources(options, {fetchOld() {throw Error('No old document read')},
+      fetcher: {async fetch() {if (mode === 'unavailable-origin') throw Error('Origin unavailable'); return mode === 'unchanged' ? image : changedImage}},
+      async readAcceptedImage(url) {reads.push(url); if (mode === 'missing') throw Error('Missing accepted object'); return mode === 'corrupt' ? changedImage : image}})
+    if (['missing', 'corrupt', 'unavailable-origin'].includes(mode)) {
+      assert.equal(bundle.outcomes[0].status, 'fallback')
+      if (mode === 'unavailable-origin') assert.deepEqual(reads, [])
+      return
+    }
+    assert.equal(bundle.outcomes[0].status, 'success', JSON.stringify(bundle.outcomes))
+    assert.deepEqual(bundle.outcomes[0].images, [accepted])
+    for (const output of bundle.outcomes[0].outputs) assert.deepEqual(fs.readFileSync(path.join(options.out, output.file)), fs.readFileSync(path.join(options.baselineRoot, output.path)))
+    assert.deepEqual(fs.readFileSync(path.join(options.scratch, 'images', accepted.sha256)), image)
+    assert.deepEqual(reads, mode === 'changed' ? [`${options.imageBaseUrl}/${accepted.address}`] : [])
+    assert.equal(bundle.notices.length, mode === 'changed' ? 1 : 0)
+    if (mode === 'changed') assert.deepEqual(bundle.notices[0], {code: 'IMAGE_SOURCE_CHANGED', page: 'sample', source_page: 'sample',
+      url: originUrl, recorded: adapter.digest(image), observed: adapter.digest(changedImage)})
+    const {SharedImageUploader} = require('../../packages/docs-tooling/src/lark/sharedImageUploader')
+    const calls = []
+    await require('./guides-shared-images').uploadSharedImages({bundleRoot: options.out, scratch: options.scratch,
+      uploader: new SharedImageUploader({baseUrl: options.imageBaseUrl, client: {async send(command) {calls.push(command.constructor.name); return {Body: {transformToByteArray: async () => image}}}}})})
+    assert.deepEqual(calls, ['GetObjectCommand'])
+    const handoff = require('../../packages/docs-tooling/src/lark/sharedPageBundle').loadBundle(options.out)
+    for (const output of bundle.outcomes[0].outputs) await write(options.repositoryRoot, output.path, handoff.files.get(output.file))
+    const result = require('../../packages/docs-tooling/src/lark/sharedPagePublication').finalizePublication({workspace: options.repositoryRoot, handoff, candidate: options.candidate})
+    assert.equal(result.publication.cache_eligible, true)
+    const report = JSON.parse(fs.readFileSync(path.join(options.repositoryRoot, 'packages/docs-tooling/src/lark/meta/reports/guides-shared-publication.json')))
+    assert.deepEqual(report.notices, bundle.notices); assert.deepEqual(report.failures, [])
+  })
 })
 test('new image URLs accept new bytes and never read an accepted object', {timeout: 120000}, async t => {
   const options = await fixture(t, {externalImage: true})

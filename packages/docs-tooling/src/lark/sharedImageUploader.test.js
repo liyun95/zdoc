@@ -30,7 +30,7 @@ for (const mode of ['new', 'existing', 'race']) test(`immutable ${mode} storage 
   assert.deepEqual(calls.map(c => c.constructor.name), mode === 'existing'
     ? ['GetObjectCommand'] : ['GetObjectCommand', 'PutObjectCommand', 'GetObjectCommand'])
 })
-test('tampering and corrupt readback fail without overwrite or deletion', async () => {
+test('[PUBLISH_IMAGE_UPLOAD_FAILED] tampering and corrupt readback fail without overwrite or deletion', async () => {
   const {uploader, calls} = fixture('corrupt')
   await assert.rejects(uploader.upload({group: 'guides', key, sha256: sha, bytes: Buffer.from('tamper')}), {code: 'PUBLISH_IMAGE_UPLOAD_FAILED'})
   assert.equal(calls.length, 0)

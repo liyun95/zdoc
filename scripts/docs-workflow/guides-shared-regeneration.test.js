@@ -99,7 +99,7 @@ for (const baseline of ['legacy', 'new', 'active']) test(`[PUBLISH_REGEN_MISMATC
   assert.deepEqual(result.snapshot.navigation_records.find(row => row.record_id === 'rec0'), before.previous_snapshot.navigation_records.find(row => row.record_id === 'rec0'))
   publication.publishedEvidence(options.baselineRoot, result.snapshot)
 })
-test('checkpoint CLI validates bound proof offline and rejects proof and output tampering', async t => {
+test('[PUBLISH_REGEN_MISMATCH] checkpoint CLI validates bound proof offline and rejects proof and output tampering', async t => {
   const value = await candidate(t), result = finalize(value.options, value.bundle)
   fs.rmSync(value.options.out, {recursive: true}); fs.rmSync(value.options.scratch, {recursive: true}); fs.rmSync(value.options.repo, {recursive: true})
   const validate = () => require('./guides-shared-publication').main(['--operation', 'validate', '--workspace', value.options.baselineRoot, '--snapshot', snapshotPath])
