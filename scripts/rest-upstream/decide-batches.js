@@ -158,6 +158,11 @@ async function decideBatches({diffPath, outPath, baseUrl, apiKeyEnv, model, repo
         const candidates = buildCandidateLines(diff, {fragmentFilter: fragment})
         if (candidates.length === 0) continue
         const candidateIds = new Set(candidates.map(line => line.d))
+        // Flagged relaxations are instructed to omit (rule 5), so they are not
+        // part of the expected stance surface; gating on them would punish
+        // exactly the compliance the rules demand.
+        const flaggedCount = candidates.filter(line => line.c.includes('requiresConfirmation=')).length
+        const coverageBase = candidates.length - flaggedCount
         const rejected = []
         const stances = []
         let attempts = 0
@@ -194,15 +199,15 @@ async function decideBatches({diffPath, outPath, baseUrl, apiKeyEnv, model, repo
                     stances.push(verdict.decision)
                 }
             }
-            coverage = stances.length / candidates.length
+            coverage = coverageBase === 0 ? 1 : stances.length / coverageBase
             if (coverage >= minCoverage) break
-            lastError = `stance coverage ${(coverage * 100).toFixed(1)}% < ${(minCoverage * 100).toFixed(1)}% (${stances.length}/${candidates.length})`
+            lastError = `stance coverage ${(coverage * 100).toFixed(1)}% < ${(minCoverage * 100).toFixed(1)}% (${stances.length}/${coverageBase})`
         }
         if (coverage < minCoverage) {
             fail(`REST_UPSTREAM_DECIDE_BATCH_FAILED: ${fragment} after ${attempts} attempt(s): ${lastError}`)
         }
         accepted.push(...stances)
-        batches.push({fragment, candidates: candidates.length, stances: stances.length, coverage, attempts, rejected})
+        batches.push({fragment, candidates: candidates.length, flaggedOmittable: flaggedCount, stanceBase: coverageBase, stances: stances.length, coverage, attempts, rejected})
     }
     fs.mkdirSync(path.dirname(path.resolve(outPath)), {recursive: true})
     fs.writeFileSync(outPath, `${accepted.map(decision => JSON.stringify(decision)).join('\n')}\n`)

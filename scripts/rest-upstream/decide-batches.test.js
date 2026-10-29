@@ -17,9 +17,12 @@ function writeDiff(dir) {
             {id: 'upstream-modified|post /v2/things|01-things-v2.json|requestBody|||name|constraint|maxLength',
                 category: 'upstream-modified', opKey: 'post /v2/things', fragment: '01-things-v2.json', scope: 'requestBody',
                 branch: '', responseStatus: '', field: 'name', change: {kind: 'constraint', key: 'maxLength', before: 32, after: 50}, evidence: ''},
-            {id: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||dryRun:query|required|',
+            {id: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||dryRun:query|description|',
                 category: 'upstream-modified', opKey: 'delete /v2/things/{ID}', fragment: '02-singles-v2.json', scope: 'parameter',
-                branch: '', responseStatus: '', field: 'dryRun:query', change: {kind: 'required', key: '', before: true, after: false}, evidence: '',
+                branch: '', responseStatus: '', field: 'dryRun:query', change: {kind: 'description', key: '', before: 'a', after: 'b'}, evidence: ''},
+            {id: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||zoneId:query|required|',
+                category: 'upstream-modified', opKey: 'delete /v2/things/{ID}', fragment: '02-singles-v2.json', scope: 'parameter',
+                branch: '', responseStatus: '', field: 'zoneId:query', change: {kind: 'required', key: '', before: true, after: false}, evidence: '',
                 requiresConfirmation: 'required-relaxation'},
         ],
     }
@@ -51,9 +54,9 @@ test('decide-batches merges per-fragment stances, records rejections, and writes
             ]}),
             '02-singles-v2.json': JSON.stringify({decisions: [
                 {diffEntryId: 'upstream-modified|invented-id', action: 'adopt'},
-                {diffEntryId: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||dryRun:query|required|', action: 'adopt'},
-                {diffEntryId: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||dryRun:query|required|', action: 'adopt'},
-                {diffEntryId: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||dryRun:query|required|', action: 'ledger'},
+                {diffEntryId: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||dryRun:query|description|', action: 'adopt'},
+                {diffEntryId: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||dryRun:query|description|', action: 'adopt'},
+                {diffEntryId: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||zoneId:query|required|', action: 'skip', reason: 'flagged relaxation; human decision pending'},
             ]}),
         }
         const {fetchImpl} = stubFetch(responses)
@@ -63,19 +66,22 @@ test('decide-batches merges per-fragment stances, records rejections, and writes
             diffPath, outPath, baseUrl: 'https://gateway.invalid', apiKeyEnv: 'DECIDE_TEST_KEY', model: 'test-model',
             reportPath, fetchImpl,
         })
-        assert.equal(summary.candidates, 3)
-        assert.equal(summary.stances, 3)
-        assert.equal(summary.rejectedLines, 3)
+        assert.equal(summary.candidates, 4)
+        assert.equal(summary.stances, 4)
+        assert.equal(summary.rejectedLines, 2)
         assert.equal(summary.batches, 2)
         const decisions = fs.readFileSync(outPath, 'utf8').trim().split('\n').map(line => JSON.parse(line))
-        assert.deepEqual(decisions.map(decision => decision.action), ['adopt', 'adopt', 'adopt'])
+        assert.deepEqual(decisions.map(decision => decision.action), ['adopt', 'adopt', 'adopt', 'skip'])
         const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'))
         const singles = report.batches.find(batch => batch.fragment === '02-singles-v2.json')
-        assert.equal(singles.coverage, 1)
+        // Two stances over a stance base of one (the flagged relaxation is
+        // omitted by rule): the model also took a stance on the flagged line.
+        assert.equal(singles.coverage, 2)
         assert.equal(singles.attempts, 1)
+        assert.equal(singles.flaggedOmittable, 1)
+        assert.equal(singles.stanceBase, 1)
         assert.match(singles.rejected[0].reason, /invented/)
         assert.equal(singles.rejected[1].reason, 'duplicate diffEntryId in one response')
-        assert.match(singles.rejected[2].reason, /^contract: .+classification/)
     } finally {
         fs.rmSync(dir, {recursive: true, force: true})
     }
@@ -136,7 +142,7 @@ test('a failing retry recovers when a later attempt reaches the coverage gate', 
             const content = options.body.includes('02-singles-v2.json') ? (
                 (singlesCalls += 1) === 1
                     ? JSON.stringify({decisions: []})
-                    : JSON.stringify({decisions: [{diffEntryId: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||dryRun:query|required|', action: 'skip', reason: 'flagged relaxation; human decision pending'}]})
+                    : JSON.stringify({decisions: [{diffEntryId: 'upstream-modified|delete /v2/things/{ID}|02-singles-v2.json|parameter|||dryRun:query|description|', action: 'adopt'}]})
             ) : full
             return {ok: true, status: 200, text: async () => '', json: async () => ({choices: [{message: {content}}]})}
         }
