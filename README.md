@@ -848,12 +848,15 @@ requires the separate real site/browser evidence described above. WP14 dev-PR an
 old-writer ownership cases, retirement, `T07`, `T08`, `T09` and `T10` remain deferred.
 
 Before WP9b-2 merges, the maintainer must supply artifact-only Fetch evidence for
-Guides and one SDK group, since link resolution is shared by every group. Guides
-uses `publish=false`, `run_translations=false` and `media_upload_mode=skip`. The
-current dispatch contract permits skip only for Guides, so the required SDK+skip
-evidence remains blocked pending an owner ruling; do not dispatch it with unsupported
-inputs or change workflow permissions to obtain it. These are external acceptance
-gates.
+Guides and one SDK group, since link resolution is shared by every group. Run the
+SDK Fetch with `group=<one SDK group>`, `publish=false`, `run_translations=false`
+and the default `media_upload_mode=write`. For Guides, use `group=guides`,
+`publish=false`, `run_translations=false` and `media_upload_mode=skip`. The SDK
+skip incompatibility is not an implementation blocker, and no workflow change is
+needed. The maintainer must check link conversion through `larkDocWriter.js`,
+confirm there are no new errors, and verify outputs are unchanged except for
+WP9b's intended behavior. If zero-upload SDK evidence is desired, enabling skip
+is a separate maintainer-owned workflow change outside WP9b.
 Retained regeneration comparisons must use real receipts from the first Fetch
 with merged WP9b-1; missing retained inputs, accepted objects or Git history are
 evidence gaps. Preflight every retained checkpoint, authenticate run/attempt,
