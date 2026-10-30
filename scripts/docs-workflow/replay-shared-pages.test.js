@@ -274,6 +274,33 @@ test('a failed new page with OWNERSHIP_PATH_MISMATCH never activates while exist
   for (const physical of ['guides', 'byoc']) assert.equal(replay.files(path.join(options.last.assembly, `content/en/${physical}`)).some(file => /\/new\.mdx?$/.test(file)), false)
 })
 
+test('site overlay supplies its synthetic home dependency without changing retained documents', {timeout}, async t => {
+  const options = await replay.replayFixture(t)
+  await replay.regenerate(options); await replay.assemble(options)
+  const site = path.join(options.root, 'site-without-home')
+  const retained = 'content/en/guides/tutorials/retained.md'
+  const retainedBytes = Buffer.from('---\nslug: /retained\ntitle: Retained\n---\nRetained baseline document.\n')
+  await write(site, retained, retainedBytes)
+  fs.mkdirSync(path.join(site, 'generated/en/sidebars'), {recursive: true})
+  for (const physical of ['guides', 'byoc']) {
+    fs.mkdirSync(path.join(site, `content/en/${physical}/tutorials`), {recursive: true})
+    assert.equal(fs.existsSync(path.join(site, `content/en/${physical}/tutorials/home.md`)), false)
+  }
+  replay.overlaySiteFixture(options, site)
+  for (const [manual, physical] of [['guides', 'guides'], ['guides-byoc', 'byoc']]) {
+    const sidebar = require(path.join(site, `generated/en/sidebars/${manual}.sidebar.js`))
+    assert.ok(sidebar.some(item => item.id === 'tutorials/home'))
+    const home = `content/en/${physical}/tutorials/home.md`
+    assert.ok(fs.existsSync(path.join(site, home)), `Synthetic sidebar requires ${home}`)
+    assert.deepEqual(fs.readFileSync(path.join(site, home)), fs.readFileSync(path.join(options.last.assembly, home)))
+  }
+  assert.deepEqual(fs.readFileSync(path.join(site, retained)), retainedBytes)
+  for (const physical of ['guides', 'byoc']) await write(site, `content/en/${physical}/tutorials/home.md`, retainedBytes)
+  replay.overlaySiteFixture(options, site)
+  for (const physical of ['guides', 'byoc']) assert.deepEqual(fs.readFileSync(path.join(site, `content/en/${physical}/tutorials/home.md`)), retainedBytes)
+  assert.deepEqual(fs.readFileSync(path.join(site, retained)), retainedBytes)
+})
+
 test('site browser startup failure always closes the actual local HTTP listener', {timeout}, async () => {
   let server
   await assert.rejects(replay.inspectSite({site: replay.TOOLING}, {
