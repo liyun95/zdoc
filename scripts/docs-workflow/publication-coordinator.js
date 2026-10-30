@@ -100,7 +100,7 @@ function translationArtifactIdentity(unit) {
   }
 }
 
-function parseJapaneseGuidesManifest(bytes, {selection, unit, label, kind}) {
+function parseJapaneseGuidesManifest(bytes, {selection, unit, label}) {
   let manifest
   try { manifest = JSON.parse(bytes.toString('utf8')) } catch { throw new Error(`${label} Guides batch-set manifest JSON is invalid`) }
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest) || manifest.schemaVersion !== 1 ||
@@ -114,7 +114,7 @@ function parseJapaneseGuidesManifest(bytes, {selection, unit, label, kind}) {
   return Object.freeze({...manifest})
 }
 
-async function prepareJapaneseGuidesBatchSetArtifact({client, artifactName, descriptor, runnerTemp, selection, unit, label, kind}) {
+async function prepareJapaneseGuidesBatchSetArtifact({client, artifactName, descriptor, runnerTemp, selection, unit, label}) {
   if (!descriptor) throw new Error(`${label} descriptor is missing`)
   const downloaded = await client.downloadArtifactFiles(artifactName, ['checkpoint-group.tar'])
   const archive = downloaded.files['checkpoint-group.tar']
@@ -124,7 +124,7 @@ async function prepareJapaneseGuidesBatchSetArtifact({client, artifactName, desc
   if (crypto.createHash('sha256').update(manifestBytes).digest('hex') !== descriptor.manifestSha256) {
     throw new Error(`${label} manifest checksum does not match ready descriptor`)
   }
-  const manifest = parseJapaneseGuidesManifest(manifestBytes, {selection, unit, label, kind})
+  const manifest = parseJapaneseGuidesManifest(manifestBytes, {selection, unit, label})
   return {...extractCheckpointArchive({archive, runnerTemp}), manifest}
 }
 
@@ -199,11 +199,11 @@ async function resolveJapaneseGuidesCandidate({selection, unit, client, runnerTe
     const ready = await client.downloadReady({selection, unitKey: unit.unitKey, maxPolls: 1, pollMilliseconds: 1})
     checkpoint = await prepareJapaneseGuidesBatchSetArtifact({
       client, artifactName: unit.artifacts.checkpoint, descriptor: ready.descriptor.artifacts.checkpoint,
-      runnerTemp, selection, unit, label: 'Japanese Guides checkpoint', kind: 'checkpoint',
+      runnerTemp, selection, unit, label: 'Japanese Guides checkpoint',
     })
     baseline = await prepareJapaneseGuidesBatchSetArtifact({
       client, artifactName: unit.artifacts.baseline, descriptor: ready.descriptor.artifacts.baseline,
-      runnerTemp, selection, unit, label: 'Japanese Guides baseline', kind: 'baseline',
+      runnerTemp, selection, unit, label: 'Japanese Guides baseline',
     })
     if (JSON.stringify(checkpoint.manifest) !== JSON.stringify(baseline.manifest)) {
       throw new Error('Japanese Guides checkpoint and baseline batch-set manifests differ')

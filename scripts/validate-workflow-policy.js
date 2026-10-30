@@ -584,8 +584,7 @@ function validateWorkflowPolicies(directory = workflowDirectory, options = {}) {
       if (file === 'fetch-docs.yml' || file === 'fetch-guides-requested.yml' || file === 'translate-codex.yml' || file === 'publish-translation.yml') {
         const writableJobs = Object.entries(workflow.jobs || {}).filter(([, job]) => job?.permissions?.contents === 'write')
         const expected = TOP_LEVEL_WRITER_INVENTORY.get(file)
-        const expectedTopLevelContents = 'read'
-        if (workflow.permissions?.contents !== expectedTopLevelContents || workflow.permissions?.actions !== 'read' ||
+        if (workflow.permissions?.contents !== 'read' || workflow.permissions?.actions !== 'read' ||
             JSON.stringify(writableJobs.map(([name]) => name)) !== JSON.stringify(expected)) {
           errors.push(`${file}: Git writer inventory must be exactly ${expected.join(',')}`)
         }
