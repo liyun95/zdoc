@@ -24,7 +24,7 @@ function record(id, page) {
       Slug: page, Labels: 'Fresh Base label', Targets: ['Zilliz.SaaS', 'Zilliz.PaaS'], Progress: 'Published',
       'Placement Type': 'Canonical', 'Release Channel': 'NEXT'}}
 }
-async function fixture(t, {pages = ['sample'], old = true, active = false, imageSource = false, singleTarget = false, metadataMarker = false, externalImage = false} = {}) {
+async function fixture(t, {pages = ['sample'], old = true, active = false, imageSource = false, singleTarget = false, metadataMarker = false, externalImage = false, ordinaryPages = 0} = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wp9-source-')))
   t.after(() => fs.rmSync(root, {recursive: true, force: true}))
   const repositoryRoot = path.join(root, 'master'), baselineRoot = path.join(root, 'dev'), repo = path.join(root, 'upstream'), sourceDir = path.join(root, 'sources')
@@ -51,9 +51,16 @@ async function fixture(t, {pages = ['sample'], old = true, active = false, image
   await git(repositoryRoot, 'add', '.'); await git(repositoryRoot, 'commit', '--quiet', '-m', 'Pinned selected configuration')
   const masterCommit = await git(repositoryRoot, 'rev-parse', 'HEAD')
   const records = pages.map((page, index) => ({...record(`rec${index}`, page), base_record_index: index}))
+  for (let index = 0; index < ordinaryPages; index++) {
+    const id = pages.length + index, slug = `ordinary-page-${index}`
+    const row = {...record(`rec${id}`, slug), base_record_index: id}
+    row.fields.Labels = `Ordinary navigation title ${index}: ${'Long section name '.repeat(32)}`
+    row.fields.Docs = {text: slug, link: `https://example.feishu.cn/wiki/old${id}`}
+    records.push(row)
+  }
   if (metadataMarker) for (const record of records) record.fields.Labels = 'Before --- After'
-  const previous = {schema_version: 3, manual: 'guides', build_env: 'uat', records: old ? pages.map((page, index) => ({record_id: `rec${index}`, slug: page,
-    placement_type: 'canonical', doc_token: index ? `old${index}` : 'old', output_paths: [`content/en/guides/tutorials/manage-data/${page}.md`, ...(singleTarget ? [] : [`content/en/byoc/tutorials/manage-data/${page}.mdx`])]})) : []}
+  const previous = {schema_version: 3, manual: 'guides', build_env: 'uat', records: old ? records.map(row => row.fields.Slug).map((page, index) => ({record_id: `rec${index}`, slug: page,
+    placement_type: 'canonical', doc_token: index ? `old${index}` : 'old', output_paths: index >= pages.length ? [] : [`content/en/guides/tutorials/manage-data/${page}.md`, ...(singleTarget ? [] : [`content/en/byoc/tutorials/manage-data/${page}.mdx`])]})) : []}
   const oldRecords = records.map((record, index) => ({...record, fields: {...record.fields, Docs: {text: record.fields.Docs.text, link: `https://example.feishu.cn/wiki/${index ? `old${index}` : 'old'}`}}}))
   const oldNavigation = require('../../packages/docs-tooling/src/lark/sourceSnapshot').createGuidesNavigationState(oldRecords)
   previous.navigation_records = old ? oldNavigation.navigationRecords : []
@@ -414,6 +421,9 @@ test('portable bundle authenticates both manual outputs, evidence, images and re
   const handoff = loadBundle(options.out, {masterSha: options.masterCommit, devBaselineSha: options.devCommit})
   assert.equal(handoff.routing.inspectedDocsByRecordId.size, options.records.length)
   assert.ok(Object.isFrozen(handoff.bundle))
+  const prettyFiles = new Map(handoff.files)
+  prettyFiles.set('bundle.json', Buffer.from(JSON.stringify(bundle, null, 2) + '\n'))
+  assert.deepEqual(validateBundle(prettyFiles).bundle, handoff.bundle)
   for (const target of bundle.outcomes[0].outputs) assert.match(handoff.files.get(target.file).toString(), /https:\/\/images.example.test\/shared\//)
   const change = mutate => {
     const files = new Map(handoff.files), data = structuredClone(bundle)
@@ -1489,4 +1499,89 @@ test('combined retained-evidence admission preserves authenticated aliases and p
   const report = JSON.parse(fs.readFileSync(path.join(options.repositoryRoot, 'packages/docs-tooling/src/lark/meta/reports/guides-shared-publication.json')))
   assert.deepEqual(report.failures, []); assert.ok(report.information.length)
   assert.ok(diagnostics.some(line => line.startsWith('[shared-aliases] Alias evidence incomplete for rec0:')))
+})
+
+// Exercise the production limits without allocating a full oversized payload on disk.
+test('bundle limits report the offending file, measured bytes and unchanged limit', t => {
+  const {loadBundle, validateBundle, FILE_LIMIT} = require('../../packages/docs-tooling/src/lark/sharedPageBundle')
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bundle-limits-')))
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}))
+  const file = path.join(root, 'bundle.json')
+  fs.writeFileSync(file, '')
+  fs.truncateSync(file, FILE_LIMIT + 1)
+  const message = /file size limit exceeded: "bundle.json" has 33554433 bytes; limit 33554432/
+  assert.throws(() => loadBundle(root), message)
+  assert.throws(() => validateBundle(new Map([['bundle.json', Buffer.alloc(FILE_LIMIT + 1)]])), message)
+  // Exactly at the limit reaches semantic validation, rather than a size rejection.
+  assert.throws(() => validateBundle(new Map([['other.json', Buffer.alloc(FILE_LIMIT)]])), /missing, duplicate or unsafe file bundle.json/)
+})
+test('bundle limits distinguish total payload bytes from single-file size', t => {
+  const {loadBundle, validateBundle, FILE_LIMIT} = require('../../packages/docs-tooling/src/lark/sharedPageBundle')
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bundle-total-')))
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}))
+  const bytes = Buffer.alloc(FILE_LIMIT), files = new Map()
+  for (let index = 0; index < 9; index++) {
+    const name = `part-${index}.json`, size = index === 8 ? 1 : FILE_LIMIT
+    fs.writeFileSync(path.join(root, name), ''); fs.truncateSync(path.join(root, name), size)
+    files.set(name, bytes.subarray(0, size))
+  }
+  const message = /payload size limit exceeded at "part-8.json": 268435457 bytes; limit 268435456/
+  assert.throws(() => loadBundle(root), message)
+  assert.throws(() => validateBundle(files), message)
+  files.delete('part-8.json')
+  assert.throws(() => validateBundle(files), /missing, duplicate or unsafe file bundle.json/)
+})
+test('bundle limits distinguish file count and reject non-regular files', t => {
+  const {loadBundle, validateBundle} = require('../../packages/docs-tooling/src/lark/sharedPageBundle')
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bundle-count-')))
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}))
+  const files = new Map()
+  for (let index = 0; index < 8193; index++) {
+    const name = `part-${String(index).padStart(4, '0')}.json`
+    files.set(name, Buffer.alloc(0)); fs.writeFileSync(path.join(root, name), '')
+  }
+  const message = /file count limit exceeded at "part-8192.json": 8193 files; limit 8192/
+  assert.throws(() => loadBundle(root), message)
+  assert.throws(() => validateBundle(files), message)
+  files.delete('part-8192.json')
+  assert.throws(() => validateBundle(files), /missing, duplicate or unsafe file bundle.json/)
+  fs.rmSync(root, {recursive: true}); fs.mkdirSync(root)
+  require('node:child_process').execFileSync('mkfifo', [path.join(root, 'pipe')])
+  assert.throws(() => loadBundle(root), /non-regular file: "pipe"/)
+})
+test('compact generated bundle retains production-scale evidence and all paired outputs', {timeout: 180000}, async t => {
+  const options = await fixture(t, {pages: Array.from({length: 16}, (_, index) => `shared-${index}`), ordinaryPages: 720})
+  const bundle = await generateSharedSources(options, {fetchOld: async () => ({blocks: {items: []}})})
+  const {loadBundle, validateBundle, FILE_LIMIT} = require('../../packages/docs-tooling/src/lark/sharedPageBundle')
+  assert.equal(bundle.outcomes.filter(row => row.status === 'success').length, 16)
+  const bytes = fs.readFileSync(path.join(options.out, 'bundle.json'))
+  const pretty = Buffer.from(JSON.stringify(bundle, null, 2) + '\n')
+  t.diagnostic(`emitted=${bytes.length}, compact=${Buffer.byteLength(JSON.stringify(bundle) + "\n")}, pretty=${pretty.length}, limit=${FILE_LIMIT}`)
+  assert.ok(pretty.length > FILE_LIMIT, 'fixture must reproduce the pretty-print size rejection')
+  assert.ok(bytes.length < FILE_LIMIT, 'producer must preserve evidence within the existing limit')
+  assert.deepEqual(JSON.parse(bytes), bundle)
+  const handoff = loadBundle(options.out, {masterSha: options.masterCommit, devBaselineSha: options.devCommit})
+  assert.deepEqual(handoff.bundle.preparation.alias_evidence, bundle.preparation.alias_evidence)
+  let outputs = 0
+  for (const outcome of bundle.outcomes) {
+    const receipt = JSON.parse(handoff.files.get(outcome.receipt))
+    assert.equal(adapter.digest(JSON.stringify(receipt.inputs)), outcome.identity.inputs_sha256)
+    for (const output of outcome.outputs) {
+      assert.equal(adapter.digest(handoff.files.get(output.file)), output.sha256); outputs++
+    }
+  }
+  assert.equal(outputs, 32)
+  const files = new Map(handoff.files)
+  files.set('bundle.json', pretty)
+  assert.throws(() => validateBundle(files), /file size limit exceeded: "bundle.json"/)
+  files.set('bundle.json', bytes)
+  files.set(bundle.outcomes[0].outputs[0].file, Buffer.from('tampered'))
+  assert.throws(() => validateBundle(files), /digest mismatch/)
+})
+test('generation rejects a still-oversized bundle before reporting success', {timeout: 120000}, async t => {
+  const options = await fixture(t)
+  // A selected record's preparation diagnostic is retained as evidence.
+  options.preparation.errors.push({record_id: 'rec0', message: 'x'.repeat(32 * 1024 * 1024)})
+  await assert.rejects(generateSharedSources(options, {fetchOld: async () => ({blocks: {items: []}})}),
+    /file size limit exceeded: "bundle.json" has \d+ bytes; limit 33554432/)
 })
