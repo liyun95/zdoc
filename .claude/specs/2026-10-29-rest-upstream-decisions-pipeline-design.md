@@ -15,7 +15,8 @@ lock(pinned 上游, 既有)
   → diff(既有)
   → 【新】candidates 生成器: diff → candidates.jsonl
       每行 {d: <diffEntryId>, c: "<opKey> scope branch field change before→after [requiresConfirmation=...]"}
-      只含可表态类别(upstream-modified/unattributed/upstream-added)；fragment-only/zdoc-only 不给
+      可表态类别全给(upstream-modified/unattributed/upstream-added/upstream-added-field/upstream-added-param/fragment-only)；
+      其中 added-field/added-param/fragment-only 是规则 7 的"预期 omit"诱饵行（模型须显式回避），ledger-classified 与 zdoc-only 不过筛
   → 【新】分批模型调用: candidates → decisions.jsonl(按 fragment 分批, 每批独立重试)
       直连 API(DeepSeek 官方/网关, 复用既有回退链), temperature 0, response_format json_object
       容错解析(偶发多 JSON 对象: 提取首个完整对象/逐对象缝合, 失败重试)
@@ -54,7 +55,7 @@ PoC 的 assembler 产 v1 兼容条目（opPath/value 齐全），85+ 既有测�
 | PR | 内容 | 依赖 | 验收锚点 | 规模 |
 |---|---|---|---|---|
 | **P1a 契约+核心模块** | decisions 契约 schema；`upstreamDiff/candidates.js`+`assembler.js`+CLI；单测覆盖 PoC 全部分支（operation deprecated/parameter(name:in 定位+boolean)/requestBody+response schema/branch 定位/required 两 scope 聚合/skip/ledger/prose override/未知 id fail-closed） | #946 已合（worktree 即此分支） | 从 run6/run9 artifact 摘录的小 fixture 回放：assembler 输出与 PoC 逐字节一致；矩阵登记新路径 | 中 |
-| **P1b 调用器** | `scripts/rest-upstream/decide-batches.js`：分批、批级重试、json_object 容错解析（多对象提取）、decisions 汇总落盘；**后置校验——发明 id 行拒收并记录、重复行去重、批级覆盖率闸（每批 stance 覆盖率 <80% 即批失败重试/fail，网关 v4.1-flash 复跑实证 33 批 4.7% 覆盖率会被此闸拦住）**；system prompt=D3 规则；单测注入模拟 fetch（含多对象/坏 id/超时/低覆盖） | P1a | PoC 的 candidates-25 fixture 端到端绿；矩阵登记 | 中 |
+| **P1b 调用器** | `scripts/rest-upstream/decide-batches.js`：分批、批级重试、json_object 容错解析（多对象提取）、decisions 汇总落盘；**后置校验——发明 id 行拒收并记录、重复行去重、批级覆盖率闸（分母=stance-expected 基线：候选减去规则 5 flagged 与规则 7 预期 omit 类，分子只数基内表态；默认下限 0.5——闸抓 33 批 4.7% 那种退化批而非强制完备，0.8 会误杀网关 v4.1-flash 真实的 66.7% 保守表态）**；system prompt=D3 规则；单测注入模拟 fetch（含多对象/坏 id/超时/低覆盖） | P1a | PoC 的 candidates-25 fixture 端到端绿；矩阵登记 | 中 |
 | **P2 workflow 切换** | `rest-upstream-refresh.yml`：agent 步骤（codex thread）→ candidates 生成 + decide-batches + assembler；applier/门禁链/land 步骤零改动；`codex-rest-refresh-agent.md` 退役；prepare 增产 candidates.jsonl（staging 仍产 diff/fragments/meta 供 assembler/applier）；agent timeout 语义改批级 | P1a+P1b | dispatch 一次真实 refresh（预期=首次全绿生产 run）；docs-tooling 调用清单登记核对 | 中 |
 | **P3 人审面** | PR body 增分歧清单（decisions vs 全 adopt 基线）；unaddressed 报告对齐 decisions 语义（omitted=skip-for-review + reason 汇总） | P2 | refresh PR body 预算内呈现全量分歧；workflow-policy/contract 测试绿 | 小 |
 | **P4（远期，可选）** | change-set v2 收窄 schema 作 assembler 输出的防御纵深；applier 对 assembler 产物的信任度提升（normalizations 语义精化） | P2 稳定后 | — | 小 |
@@ -69,3 +70,13 @@ PoC 的 assembler 产 v1 兼容条目（opPath/value 齐全），85+ 既有测�
 - **候选量爆炸**：漂移 10 倍时分批线性扩展（~5000 行/百批），时长/成本上升但 refresh 是人工 dispatch，可接受；必要时加候选行数熔断（超阈值 fail 早、报人工）。
 - **模型输出解析**：PoC 23 批见 2 次多对象输出，容错+重试实证够用；若持续失败可换纯 JSONL 逐行约定（无 response_format 依赖）。
 - **开放**：①生产模型定官方 flash 还是网关——**网关 v4.1-flash 复跑数据已给答案：首发官方 flash**（98.8% 一致+零发明 vs 网关 91.3%+发明 id+33 批 4.7% 覆盖率；架构闸下两者都安全，只影响人工处理量），网关留备用（vars 一换即切）；②分歧基线固定"全 adopt"（无状态、简单）还是引入历史行为参考——建议先全 adopt；③run6/run9 fixture 摘录范围（建议每个分支形态 1-2 条，控制 fixture 体积）。
+
+## 5. 评审修正案（10-30，code-review needs-changes 全项闭环）
+
+1. **P1 矩阵缺口**：删除的 `.github/prompts/codex-rest-refresh-agent.md` 仍须留在矩阵 paths（全量 diff selector 会走已删路径）；已重加映射。
+2. **P1 lifecycle 锚点**：schema 级 required 漂移的 lifecycle 叶子必须锚在 schema 对象（applier 把 required 引用条目绑到"声明该字段的 schema 的 .properties"，字段对象不是合法 locus）；parameter/operation/constraint 漂移仍锚在漂移对象。milvus `--lifecycle-track` 全链 e2e（skeleton→diff→candidates→decisions→assemble→apply）锁定。
+3. **P1 coverage 基线**：规则 7 类别（added-field/added-param/fragment-only）从 stance-expected 基线剔除（candidates 记录带 stanceExpected 位），分子只数基内表态（对 flagged 行表态不得掩盖基内遗漏）。
+4. **P2 branch-N**：assembler 复刻 applier branchLabelAt 的位置回退（未标 x-tab-label 的 oneOf/anyOf 成员按 branch-N 1 基解析，且要求目标成员仍无标签）。
+5. **P2 copyIndex**：参数字段 `name:in#N`（diff 对重复参数的 0 基副本号）按 N 取第 N 次出现，applier 同款剥 # 后缀语义。
+6. **P2 越界表态降级**：新增 `stanceError(decision, entry)`（diff-only 可组装性子集），decide-batches 逐行拒收并记录；assembler 自身闸保持 fail-closed 不变。
+7. 文档/实现分歧（候选类别、80%→0.5）随本节一并修正；排序改字节稳定 plain `<`（pipeline 其余处同规）。

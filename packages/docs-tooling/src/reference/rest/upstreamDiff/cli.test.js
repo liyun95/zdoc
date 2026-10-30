@@ -226,6 +226,71 @@ test('diff then candidates then decisions then assemble then apply round trip th
     }
 })
 
+test('milvus lifecycle round trip: a required tightening lands its diff-suggested x-last-modified through decide-assemble-apply', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-cli-lifecycle-'))
+    try {
+        const fragmentsDir = path.join(dir, 'fragments')
+        fs.mkdirSync(fragmentsDir)
+        // The fragment declares the field but does not require it; the pinned
+        // skeleton (binding:"required" in extractor terms) does — the exact
+        // required-tightening drift the lifecycle track earns a bump for.
+        fs.writeFileSync(path.join(fragmentsDir, '05-collection-operations-v2.json'), `${JSON.stringify({
+            openapi: '3.0.1',
+            paths: {'/v2/vectordb/collections/has': {post: {
+                summary: 'Has Collection',
+                requestBody: {content: {'application/json': {schema: {type: 'object', properties: {
+                    dbName: {type: 'string', maxLength: 255},
+                }}}}},
+                responses: {'200': {description: 'ok'}},
+            }}},
+        }, null, 2)}\n`)
+        fs.writeFileSync(path.join(dir, 'titles.json'), '{}\n')
+        fs.writeFileSync(path.join(dir, 'skeleton.json'), JSON.stringify({
+            schemaVersion: '1.0',
+            extractedFrom: {repository: 'milvus-io/milvus', sourceDir: 'internal/distributed/proxy/httpserver', mountPrefix: '/v2/vectordb'},
+            operations: [{path: '/v2/vectordb/collections/has', method: 'post', handler: 'hasCollection', requestStruct: 'HasReq',
+                requestSchema: {$ref: '#/components/schemas/HasReq'}}],
+            components: {schemas: {HasReq: {type: 'object', required: ['dbName'], properties: {dbName: {type: 'string'}}}}},
+        }, null, 2) + '\n')
+
+        const outDir = path.join(dir, 'diff')
+        const diff = runCli(['rest-upstream-diff', '--source', 'milvus-data-plane', '--skeleton', path.join(dir, 'skeleton.json'),
+            '--fragments', fragmentsDir, '--out', outDir, '--lifecycle-track', '3.0.x'])
+        assert.equal(diff.status, 0, diff.stderr)
+        const diffDocument = JSON.parse(fs.readFileSync(path.join(outDir, 'diff.json'), 'utf8'))
+        const requiredEntry = diffDocument.entries.find(entry => entry.change.kind === 'required' && entry.field === 'dbName')
+        assert.ok(requiredEntry, `expected a required drift, got: ${diffDocument.entries.map(entry => entry.id).join(', ')}`)
+        assert.equal(requiredEntry.change.after, true)
+        assert.deepEqual(requiredEntry.lifecycle, {'x-last-modified': '3.0.x'})
+
+        const candidates = runCli(['rest-upstream-candidates', '--diff', path.join(outDir, 'diff.json'), '--out', path.join(dir, 'candidates.jsonl')])
+        assert.equal(candidates.status, 0, candidates.stderr)
+        fs.writeFileSync(path.join(dir, 'decisions.jsonl'), `${JSON.stringify({diffEntryId: requiredEntry.id, action: 'adopt'})}\n`)
+        const changeSetFile = path.join(dir, 'change-set.json')
+        const assemble = runCli(['rest-upstream-assemble', '--diff', path.join(outDir, 'diff.json'), '--decisions', path.join(dir, 'decisions.jsonl'),
+            '--fragments', fragmentsDir, '--out', changeSetFile])
+        assert.equal(assemble.status, 0, assemble.stderr)
+        const changeSet = JSON.parse(fs.readFileSync(changeSetFile, 'utf8'))
+        assert.deepEqual(changeSet.entries.map(entry => [entry.kind, entry.opPath.split('/').pop()]), [
+            ['constraint', 'required'],
+            ['lifecycle', 'x-last-modified'],
+        ])
+        // The lifecycle leaf sits on the schema object (the applier binds
+        // required-cited entries to the schema declaring the field), and the
+        // applier accepts the assembled pair end to end.
+        const applyOut = path.join(dir, 'applied')
+        const apply = runCli(['rest-upstream-apply', '--diff', path.join(outDir, 'diff.json'), '--change-set', changeSetFile,
+            '--fragments', fragmentsDir, '--titles', path.join(dir, 'titles.json'), '--out', applyOut])
+        assert.equal(apply.status, 0, apply.stderr)
+        const applied = JSON.parse(fs.readFileSync(path.join(applyOut, '05-collection-operations-v2.json'), 'utf8'))
+        const schema = applied.paths['/v2/vectordb/collections/has'].post.requestBody.content['application/json'].schema
+        assert.deepEqual(schema.required, ['dbName'])
+        assert.equal(schema['x-last-modified'], '3.0.x')
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
+})
+
 test('diff refuses source-tree sources until the extractor skeleton exists, and unclassified fragments', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rest-upstream-cli-tree-'))
     try {

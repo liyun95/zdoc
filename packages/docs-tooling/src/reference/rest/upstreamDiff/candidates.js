@@ -13,6 +13,10 @@ const STANCEABLE_CATEGORIES = new Set([
     'fragment-only',
 ])
 
+// Rule 6 asks for a ledger proposal on these; everything else stanceable is an
+// instructed omission (rule 7) and stays out of the stance-coverage base.
+const STANCE_EXPECTED_CATEGORIES = new Set(['upstream-modified', 'unattributed', 'upstream-added'])
+
 function candidateSummary(entry) {
     const change = entry.change || {}
     return [
@@ -29,20 +33,32 @@ function candidateSummary(entry) {
 
 // Ledger-classified drift is already decided stock; zdoc-only drift is
 // deliberate documentation design. Everything stanceable is offered to the
-// decision stage, one line per diff entry.
-function buildCandidateLines(diffDocument, {fragmentFilter = null} = {}) {
-    const lines = []
+// decision stage, one record per diff entry. `stanceExpected` marks the
+// entries the decision rules expect a stance for — flagged relaxations are
+// instructed omissions (rule 5), as are the rule-7 field/retirement classes —
+// so the coverage gate can measure compliance instead of punishing it.
+function buildCandidateRecords(diffDocument, {fragmentFilter = null} = {}) {
+    const records = []
     for (const entry of diffDocument.entries) {
         if (!STANCEABLE_CATEGORIES.has(entry.category)) continue
         if ((entry.ledgerStatus ?? 'pending') === 'classified') continue
         if (fragmentFilter && entry.fragment !== fragmentFilter) continue
-        lines.push({d: entry.id, c: candidateSummary(entry)})
+        records.push({
+            d: entry.id,
+            c: candidateSummary(entry),
+            stanceExpected: STANCE_EXPECTED_CATEGORIES.has(entry.category) && !(entry.category === 'upstream-modified' && entry.requiresConfirmation),
+        })
     }
-    return lines
+    return records
+}
+
+// The model-facing wire shape: id plus summary only.
+function buildCandidateLines(diffDocument, options = {}) {
+    return buildCandidateRecords(diffDocument, options).map(record => ({d: record.d, c: record.c}))
 }
 
 function serializeCandidateLines(lines) {
     return `${lines.map(line => JSON.stringify(line)).join('\n')}\n`
 }
 
-module.exports = {buildCandidateLines, serializeCandidateLines, STANCEABLE_CATEGORIES}
+module.exports = {buildCandidateLines, buildCandidateRecords, serializeCandidateLines, STANCEABLE_CATEGORIES, STANCE_EXPECTED_CATEGORIES}

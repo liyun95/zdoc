@@ -119,21 +119,42 @@ function schemaContainerPath({base, scope, responseStatus, branch, fragmentDocum
     const schema = resolvePointer(fragmentDocument, schemaPath)
     const containerName = schema && (schema.oneOf ? 'oneOf' : schema.anyOf ? 'anyOf' : null)
     if (!containerName) fail('REST_UPSTREAM_ASSEMBLE_BRANCH_CONTAINER_MISSING', `${schemaPath} branch=${branch}`)
-    const branchIndex = schema[containerName].findIndex(member => member && member['x-tab-label'] === branch)
-    if (branchIndex < 0) fail('REST_UPSTREAM_ASSEMBLE_BRANCH_NOT_FOUND', `${schemaPath}/${containerName} has no x-tab-label=${branch}`)
+    const members = schema[containerName]
+    let branchIndex = members.findIndex(member => member && member['x-tab-label'] === branch)
+    // diff.js labels unlabeled oneOf/anyOf members by position (branch-N,
+    // 1-based) and the applier's branchLabelAt resolves the same fallback; a
+    // positional citation may only land on a member that is still unlabeled.
+    if (branchIndex < 0) {
+        const positional = /^branch-([0-9]+)$/.exec(branch)
+        const index = positional ? Number(positional[1]) - 1 : -1
+        if (index >= 0 && index < members.length && members[index] && members[index]['x-tab-label'] === undefined) branchIndex = index
+    }
+    if (branchIndex < 0) fail('REST_UPSTREAM_ASSEMBLE_BRANCH_NOT_FOUND', `${schemaPath}/${containerName} has no branch ${branch}`)
     const branchPath = `${schemaPath}/${containerName}/${branchIndex}`
-    return {schemaPath: branchPath, container: schema[containerName][branchIndex]}
+    return {schemaPath: branchPath, container: members[branchIndex]}
 }
 
 function locateParameter({base, field, fragmentDocument}) {
     const separator = field.indexOf(':')
     if (separator <= 0) fail('REST_UPSTREAM_ASSEMBLE_FIELD_INVALID', field)
     const name = field.slice(0, separator)
-    const where = field.slice(separator + 1) || 'query'
+    const rest = field.slice(separator + 1)
+    // diff.js mints copy indexes for duplicated parameters (name:in#N, the
+    // 0-based occurrence) and the applier compares with the suffix stripped;
+    // resolve the same occurrence here.
+    const hash = rest.indexOf('#')
+    const where = (hash < 0 ? rest : rest.slice(0, hash)) || 'query'
+    const copy = hash < 0 ? null : Number(rest.slice(hash + 1))
     const parameters = resolvePointer(fragmentDocument, `${base}/parameters`) || []
-    const index = parameters.findIndex(parameter => parameter && parameter.name === name && parameter.in === where)
-    if (index < 0) fail('REST_UPSTREAM_ASSEMBLE_PARAMETER_NOT_FOUND', `${base}/parameters name=${name} in=${where}`)
-    return {parameterPath: `${base}/parameters/${index}`}
+    const matches = []
+    for (const [index, parameter] of parameters.entries()) {
+        if (parameter && parameter.name === name && parameter.in === where) matches.push(index)
+    }
+    const position = copy ?? 0
+    if (matches.length === 0 || position >= matches.length) {
+        fail('REST_UPSTREAM_ASSEMBLE_PARAMETER_NOT_FOUND', `${base}/parameters name=${name} in=${where}${copy === null ? '' : ` copy=${copy}`}`)
+    }
+    return {parameterPath: `${base}/parameters/${matches[position]}`}
 }
 
 // Shared stance context: the drift coordinates and the fragment locus they
@@ -209,12 +230,19 @@ function mainEntry({decision, entry, context}) {
 }
 
 // Rule 10: contract drift earns lifecycle writes; the diff derives the exact
-// suggested leaves, the assembler copies them onto the drifted object.
+// suggested leaves, the assembler copies them onto the drifted object. A
+// schema-scope required drift anchors on the schema itself: the applier binds
+// required-cited entries to the schema declaring the cited field (its
+// .properties), so the field object is not a legal locus for them.
 function lifecycleEntries({entry, context}) {
     const base = evidenceBase(entry)
+    const change = entry.change || {}
+    const anchor = entry.scope !== 'parameter' && entry.scope !== 'operation' && change.kind === 'required'
+        ? context.scopePath
+        : context.fieldObjectPath
     const leaves = Object.keys(entry.lifecycle || {}).filter(key => LIFECYCLE_KEYS.has(key))
     return leaves.map(leaf => ({diffEntryId: entry.id, kind: 'lifecycle', targetFragment: entry.fragment,
-        opPath: `${context.fieldObjectPath}/${leaf}`, value: entry.lifecycle[leaf],
+        opPath: `${anchor}/${leaf}`, value: entry.lifecycle[leaf],
         evidence: `${base} ${leaf}=${JSON.stringify(entry.lifecycle[leaf])} (diff-suggested lifecycle)`, override: false}))
 }
 
@@ -248,7 +276,8 @@ function assembleChangeSet({diffDocument, decisions, fragmentLoader}) {
         entries.push(mainEntry({decision, entry, context}))
         if (entry.lifecycle) entries.push(...lifecycleEntries({entry, context}))
     }
-    entries.sort((left, right) => left.diffEntryId.localeCompare(right.diffEntryId) || left.kind.localeCompare(right.kind))
+    const orderIds = (left, right) => (left < right ? -1 : left > right ? 1 : 0)
+    entries.sort((left, right) => orderIds(left.diffEntryId, right.diffEntryId) || orderIds(left.kind, right.kind))
     return {
         schemaVersion: '1.0',
         source: diffDocument.source,
@@ -257,4 +286,29 @@ function assembleChangeSet({diffDocument, decisions, fragmentLoader}) {
     }
 }
 
-module.exports = {parseDecisions, loadDecisions, assembleChangeSet, decisionShapeError, CONSTRAINT_KEYS, LIFECYCLE_KEYS}
+// Assemblability of one stance from the diff entry alone (no fragment needed).
+// The batched decision stage uses this to downgrade an out-of-grid stance to a
+// per-line rejection instead of losing every other stance with the run; the
+// assembler's own gates stay fail-closed and re-check everything.
+function stanceError(decision, entry) {
+    if (!decision || !entry) return 'unknown diff entry'
+    if (decision.action === 'skip') return null
+    if (decision.action === 'ledger') {
+        if (!LEDGERABLE_CATEGORIES.has(entry.category)) {
+            return `ledger drafts must cite an operation-level drift (${[...LEDGERABLE_CATEGORIES].sort().join(', ')}), not ${entry.category}`
+        }
+        return null
+    }
+    if (!ADOPTABLE_CATEGORIES.has(entry.category)) {
+        return `only upstream-modified drift is mechanically adoptable (${entry.category} needs a ledger proposal or human content work)`
+    }
+    const change = entry.change || {}
+    if (PROSE_KINDS.has(change.kind) || change.kind === 'deprecated' || change.kind === 'required') return null
+    if (change.kind === 'constraint') {
+        if (!CONSTRAINT_KEYS.has(change.key)) return `constraint key ${JSON.stringify(change.key)} is not mechanically writable`
+        return null
+    }
+    return `change kind ${JSON.stringify(change.kind)} has no mechanical write`
+}
+
+module.exports = {parseDecisions, loadDecisions, assembleChangeSet, decisionShapeError, stanceError, CONSTRAINT_KEYS, LIFECYCLE_KEYS}

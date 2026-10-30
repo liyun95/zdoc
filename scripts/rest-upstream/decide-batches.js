@@ -15,8 +15,8 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const TOOLING_ROOT = path.join(__dirname, '..', '..', 'packages', 'docs-tooling', 'src', 'reference', 'rest')
-const {buildCandidateLines} = require(path.join(TOOLING_ROOT, 'upstreamDiff', 'candidates'))
-const {decisionShapeError} = require(path.join(TOOLING_ROOT, 'upstreamDiff', 'assembler'))
+const {buildCandidateRecords} = require(path.join(TOOLING_ROOT, 'upstreamDiff', 'candidates'))
+const {decisionShapeError, stanceError} = require(path.join(TOOLING_ROOT, 'upstreamDiff', 'assembler'))
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
 const DEFAULT_RETRIES = 3
@@ -112,11 +112,16 @@ function parseModelContent(content) {
 // Post-validation of one model stance line. Returns {decision} when the line is
 // a usable stance for this batch, or {rejected, reason} — a bad line never
 // fails the batch on its own; the coverage gate and the assembler judge.
-function acceptDecisionLine(line, candidateIds) {
+// Assemblability (the diff-only subset of the assembler's gates) rejects the
+// line here too, so one out-of-grid stance cannot discard every other stance
+// with the run.
+function acceptDecisionLine(line, candidateIds, entryById) {
     if (!line || typeof line !== 'object' || Array.isArray(line)) return {rejected: 'not an object'}
     if (typeof line.diffEntryId !== 'string' || !candidateIds.has(line.diffEntryId)) return {rejected: `unknown or invented diffEntryId: ${JSON.stringify(line.diffEntryId)}`}
     const shapeError = decisionShapeError(line)
     if (shapeError) return {rejected: `contract: ${shapeError}`}
+    const assemblabilityError = stanceError(line, entryById.get(line.diffEntryId))
+    if (assemblabilityError) return {rejected: `not mechanically writable: ${assemblabilityError}`}
     return {decision: line}
 }
 
@@ -151,18 +156,23 @@ async function decideBatches({diffPath, outPath, baseUrl, apiKeyEnv, model, repo
     const apiKey = process.env[apiKeyEnv]
     if (!apiKey) fail(`REST_UPSTREAM_DECIDE_API_KEY_MISSING: --api-key-env ${apiKeyEnv} is not set`)
     const diff = JSON.parse(fs.readFileSync(diffPath, 'utf8'))
+    const entryById = new Map(diff.entries.map(entry => [entry.id, entry]))
     const fragments = [...new Set(diff.entries.map(entry => entry.fragment).filter(Boolean))].sort()
     const batches = []
     const accepted = []
     for (const fragment of fragments) {
-        const candidates = buildCandidateLines(diff, {fragmentFilter: fragment})
-        if (candidates.length === 0) continue
+        const records = buildCandidateRecords(diff, {fragmentFilter: fragment})
+        if (records.length === 0) continue
+        const candidates = records.map(record => ({d: record.d, c: record.c}))
         const candidateIds = new Set(candidates.map(line => line.d))
-        // Flagged relaxations are instructed to omit (rule 5), so they are not
-        // part of the expected stance surface; gating on them would punish
-        // exactly the compliance the rules demand.
-        const flaggedCount = candidates.filter(line => line.c.includes('requiresConfirmation=')).length
-        const coverageBase = candidates.length - flaggedCount
+        // The coverage base counts only the candidates the decision rules
+        // expect a stance for: flagged relaxations are instructed omissions
+        // (rule 5), and the rule-7 field/retirement classes are never stance
+        // targets. Gating on instructed omissions would punish exactly the
+        // compliance the rules demand.
+        const stanceBaseIds = new Set(records.filter(record => record.stanceExpected).map(record => record.d))
+        const coverageBase = stanceBaseIds.size
+        const omittableCount = records.length - coverageBase
         const rejected = []
         const stances = []
         let attempts = 0
@@ -189,7 +199,7 @@ async function decideBatches({diffPath, outPath, baseUrl, apiKeyEnv, model, repo
             stances.length = 0
             rejected.length = 0
             for (const line of parsed.decisions) {
-                const verdict = acceptDecisionLine(line, candidateIds)
+                const verdict = acceptDecisionLine(line, candidateIds, entryById)
                 if (verdict.rejected) {
                     rejected.push({line, reason: verdict.rejected})
                 } else if (seen.has(verdict.decision.diffEntryId)) {
@@ -199,15 +209,18 @@ async function decideBatches({diffPath, outPath, baseUrl, apiKeyEnv, model, repo
                     stances.push(verdict.decision)
                 }
             }
-            coverage = coverageBase === 0 ? 1 : stances.length / coverageBase
+            // Only stances inside the base prove coverage; a stance on an
+            // instructed-omission line must not mask omitted base candidates.
+            const baseStances = stances.filter(stance => stanceBaseIds.has(stance.diffEntryId)).length
+            coverage = coverageBase === 0 ? 1 : baseStances / coverageBase
             if (coverage >= minCoverage) break
-            lastError = `stance coverage ${(coverage * 100).toFixed(1)}% < ${(minCoverage * 100).toFixed(1)}% (${stances.length}/${coverageBase})`
+            lastError = `stance coverage ${(coverage * 100).toFixed(1)}% < ${(minCoverage * 100).toFixed(1)}% (${baseStances}/${coverageBase})`
         }
         if (coverage < minCoverage) {
             fail(`REST_UPSTREAM_DECIDE_BATCH_FAILED: ${fragment} after ${attempts} attempt(s): ${lastError}`)
         }
         accepted.push(...stances)
-        batches.push({fragment, candidates: candidates.length, flaggedOmittable: flaggedCount, stanceBase: coverageBase, stances: stances.length, coverage, attempts, rejected})
+        batches.push({fragment, candidates: candidates.length, omittableByRule: omittableCount, stanceBase: coverageBase, stances: stances.length, coverage, attempts, rejected})
     }
     fs.mkdirSync(path.dirname(path.resolve(outPath)), {recursive: true})
     fs.writeFileSync(outPath, `${accepted.map(decision => JSON.stringify(decision)).join('\n')}\n`)

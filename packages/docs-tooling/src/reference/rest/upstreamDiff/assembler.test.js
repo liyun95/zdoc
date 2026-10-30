@@ -3,7 +3,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const {parseDecisions, loadDecisions, assembleChangeSet} = require('./assembler')
+const {parseDecisions, loadDecisions, assembleChangeSet, stanceError} = require('./assembler')
 const {diffDigestOf} = require('./changeSet')
 
 // Fragment copy shaped like the staged copies: scenario branches are oneOf /
@@ -27,10 +27,18 @@ const FRAGMENTS = new Map([
                 parameters: [
                     {name: 'projectId', in: 'query', required: false, schema: {type: 'string'}},
                     {name: 'dryRun', in: 'query', required: true, schema: {type: 'boolean'}},
+                    {name: 'Authorization', in: 'header', required: true},
+                    {name: 'Authorization', in: 'header', required: true},
                 ],
                 responses: {'200': {content: {'application/json': {schema: {anyOf: [
                     {'x-tab-label': 'success', properties: {code: {type: 'integer'}}},
-                ]}}}}},
+                ]}}}}}
+            }},
+            '/v2/widgets': {post: {
+                requestBody: {content: {'application/json': {schema: {anyOf: [
+                    {properties: {size: {type: 'integer'}}},
+                    {properties: {name: {type: 'string'}}},
+                ]}}}},
             }},
             '/v2/gadgets': {post: {summary: 'Create Gadget.', responses: {'200': {description: 'ok'}}}},
         },
@@ -73,6 +81,14 @@ function diffDocument() {
                 branch: '', responseStatus: '', field: '',
                 change: {kind: 'deprecated', key: '', before: false, after: true}, evidence: '',
                 lifecycle: {'x-last-modified': '3.2.x', 'x-deprecated-since': '3.2.x'}},
+            {id: 'upstream-modified|post /v2/widgets|01-things-v2.json|requestBody|branch-1||size|constraint|maximum',
+                category: 'upstream-modified', opKey: 'post /v2/widgets', fragment: '01-things-v2.json', scope: 'requestBody',
+                branch: 'branch-1', responseStatus: '', field: 'size',
+                change: {kind: 'constraint', key: 'maximum', before: null, after: 100}, evidence: ''},
+            {id: 'upstream-modified|delete /v2/things/{ID}|01-things-v2.json|parameter|||Authorization:header#1|constraint|description',
+                category: 'upstream-modified', opKey: 'delete /v2/things/{ID}', fragment: '01-things-v2.json', scope: 'parameter',
+                branch: '', responseStatus: '', field: 'Authorization:header#1',
+                change: {kind: 'description', key: '', before: null, after: 'Second auth header.'}, evidence: ''},
             {id: 'unattributed|post /v2/etl/merge|01-things-v2.json|requestBody|||onError|field-uncovered|',
                 category: 'unattributed', opKey: 'post /v2/etl/merge', fragment: '01-things-v2.json', scope: 'requestBody',
                 branch: '', responseStatus: '', field: 'onError',
@@ -191,6 +207,40 @@ test('skip rows produce nothing; ledger rows become operation-bound drafts', () 
     ])
     assert.equal(changeSet.entries[0].ledgerDraft.opKey, 'post /v2/etl/merge')
     assert.equal(changeSet.entries[1].ledgerDraft.opKey, 'post /v2/snapshots')
+})
+
+test('a required drift with a lifecycle suggestion anchors the lifecycle leaves on the schema object', () => {
+    // The applier binds required-cited entries to the schema declaring the
+    // field (its .properties), so the field object is not a legal lifecycle
+    // locus for them; the schema itself is.
+    const diff = diffDocument()
+    diff.entries[1].lifecycle = {'x-last-modified': '3.0.x'}
+    const changeSet = assembleChangeSet({diffDocument: diff, decisions: [{diffEntryId: diff.entries[1].id, action: 'adopt'}], fragmentLoader})
+    assert.deepEqual(changeSet.entries.map(entry => [entry.kind, entry.opPath]), [
+        ['constraint', '/paths/~1v2~1things/post/requestBody/content/application~1json/schema/required'],
+        ['lifecycle', '/paths/~1v2~1things/post/requestBody/content/application~1json/schema/x-last-modified'],
+    ])
+})
+
+test('positional branch-N citations resolve unlabeled oneOf/anyOf members', () => {
+    const changeSet = assemble([{diffEntryId: 'upstream-modified|post /v2/widgets|01-things-v2.json|requestBody|branch-1||size|constraint|maximum', action: 'adopt'}])
+    assert.equal(changeSet.entries[0].opPath, '/paths/~1v2~1widgets/post/requestBody/content/application~1json/schema/anyOf/0/properties/size/maximum')
+})
+
+test('copy-indexed parameter fields resolve the cited duplicate occurrence', () => {
+    const changeSet = assemble([{diffEntryId: 'upstream-modified|delete /v2/things/{ID}|01-things-v2.json|parameter|||Authorization:header#1|constraint|description', action: 'adopt'}])
+    assert.equal(changeSet.entries[0].opPath, '/paths/~1v2~1things~1{ID}/delete/parameters/3/description')
+})
+
+test('stanceError mirrors the assembler gates on the diff entry alone', () => {
+    const diff = diffDocument()
+    const byId = new Map(diff.entries.map(entry => [entry.id, entry]))
+    assert.equal(stanceError({action: 'adopt'}, byId.get('upstream-modified|post /v2/things|01-things-v2.json|response|success|200|code|description|')), null)
+    assert.equal(stanceError({action: 'adopt'}, byId.get('upstream-modified|post /v2/things|01-things-v2.json|requestBody|||actions|required|')), null)
+    assert.match(stanceError({action: 'adopt'}, byId.get('unattributed|post /v2/etl/merge|01-things-v2.json|requestBody|||onError|field-uncovered|')), /only upstream-modified/)
+    assert.match(stanceError({action: 'ledger'}, byId.get('upstream-added-field|delete /v2/things/{ID}|01-things-v2.json|response||200|data|field-uncovered|')), /operation-level drift/)
+    assert.match(stanceError({action: 'adopt'}, {category: 'upstream-modified', change: {kind: 'param-uncovered'}}), /param-uncovered/)
+    assert.equal(stanceError({action: 'skip'}, byId.get('upstream-added|post /v2/snapshots|01-things-v2.json|operation|||||')), null)
 })
 
 test('fail-closed: unknown ids, field-level ledger targets, and non-mechanical adopt targets', () => {
