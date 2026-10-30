@@ -78,6 +78,13 @@ function changedFilesBetween(base, head, cwd = REPOSITORY_ROOT) {
   return output.toString('utf8').split('\0').filter(Boolean)
 }
 
+// The matrix maps live paths: a path deleted on the head side of a diff has no
+// surviving surface left to test, so drop it instead of reporting a gap.
+// Explicit-path mode keeps strict behavior so a typo still fails loudly.
+function existingDiffFiles(files) {
+  return files.filter(file => fs.existsSync(path.join(REPOSITORY_ROOT, file)))
+}
+
 function selectTests(files, matrix = loadMatrix(), ownership = loadOwnershipContract()) {
   const normalizedFiles = [...new Set(files.map(normalizeRepositoryPath))]
   if (normalizedFiles.length === 0) throw new Error('At least one changed repository path is required')
@@ -112,7 +119,7 @@ function main(argv = process.argv.slice(2)) {
     if (baseIndex === -1 || headIndex === -1 || !args[baseIndex + 1] || !args[headIndex + 1]) throw new Error('--base and --head must be provided together')
     const consumed = new Set([baseIndex, baseIndex + 1, headIndex, headIndex + 1])
     if (args.some((_value, index) => !consumed.has(index))) throw new Error('Do not mix explicit paths with --base/--head')
-    files = changedFilesBetween(args[baseIndex + 1], args[headIndex + 1])
+    files = existingDiffFiles(changedFilesBetween(args[baseIndex + 1], args[headIndex + 1]))
   } else files = args
   const selected = selectTests(files)
   if (json) {
@@ -129,4 +136,4 @@ if (require.main === module) {
   try { main() } catch (error) { console.error(error.message); process.exitCode = 1 }
 }
 
-module.exports = {branchPolicy, changedFilesBetween, loadMatrix, loadOwnershipContract, matchesPattern, normalizeRepositoryPath, resolveCommit, selectTests}
+module.exports = {branchPolicy, changedFilesBetween, existingDiffFiles, loadMatrix, loadOwnershipContract, matchesPattern, normalizeRepositoryPath, resolveCommit, selectTests}

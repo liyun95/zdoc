@@ -6,7 +6,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
 
-const {branchPolicy, changedFilesBetween, loadMatrix, loadOwnershipContract, matchesPattern, normalizeRepositoryPath, resolveCommit, selectTests} = require('./select-tests-for-changes')
+const {branchPolicy, changedFilesBetween, existingDiffFiles, loadMatrix, loadOwnershipContract, matchesPattern, normalizeRepositoryPath, resolveCommit, selectTests} = require('./select-tests-for-changes')
 
 const repositoryRoot = path.resolve(__dirname, '../..')
 
@@ -52,6 +52,14 @@ test('path matching supports exact, prefix-star, and recursive directory entries
   assert.equal(matchesPattern('scripts/docs-workflow/publication-contracts.test.js', 'scripts/docs-workflow/publication-contracts*'), true)
   assert.equal(matchesPattern('scripts/docs-workflow/publication-scheduler.js', 'scripts/docs-workflow/publication-contracts*'), false)
   assert.equal(matchesPattern('README.md', 'README.md'), true)
+})
+
+test('diff-mode selector input drops paths deleted on the head side', () => {
+  assert.deepEqual(existingDiffFiles([
+    'package.json',
+    'scripts/docs-workflow/retired-from-the-tree.js',
+  ]), ['package.json'])
+  assert.throws(() => selectTests(['scripts/docs-workflow/retired-from-the-tree.js']), /no entry/u)
 })
 
 test('branch policy derives master, dev, preserved exceptions, and candidate-derived ownership from the sync contract', () => {

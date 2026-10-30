@@ -24,7 +24,7 @@ The selector returns the union of matched areas in execution order: focused unit
 pnpm test:for-change -- --json scripts/docs-workflow/translation-recovery-planner.js
 ```
 
-An unmapped path fails instead of silently suggesting incomplete coverage. Add or refine a matrix entry when introducing a new workflow surface.
+An unmapped path fails instead of silently suggesting incomplete coverage. Add or refine a matrix entry when introducing a new workflow surface. In `--base`/`--head` diff mode the selector drops paths that no longer exist on the head side, because a deleted file has no surviving surface to test; explicit-path mode still fails on unknown paths so a typo cannot pass silently.
 
 ## Master/dev branch and path ownership
 
