@@ -8,7 +8,7 @@
 
 **Tech stack:** YAML configuration, pnpm 10.33.0, existing TypeScript shared-docs CLI, Vitest, complete local Git history, and the existing shared-docs lock/validation workflows.
 
-Status: plan prepared for review. No shared-docs configuration or publication state has been edited. Implementation follows the plan ruling.
+Status: approved implementation completed locally. The inherited Go source defect was repaired and merged in Milvus PRs #3770/#3771 after CI passed. Both baseline and candidate were regenerated against the new source; a clean four-file upstream candidate is prepared. Publication of the zdoc candidate remains pending concrete-command approval.
 
 ## Fixed inputs and scope
 
@@ -16,8 +16,8 @@ Status: plan prepared for review. No shared-docs configuration or publication st
 | --- | --- |
 | zdoc master / tooling | `93967f19a131814f004735cdbdf3162eabf99e21` |
 | zdoc dev / comparison input | `387e287244ccd586052bb3d7c22669f634e17cad` |
-| Milvus v3.0.x / merged source | `7b8e6c91cbff9e9b455aa2f7a345f62d166a8cc2` ([upstream #3768](https://github.com/milvus-io/milvus-docs/pull/3768)) |
-| Milvus preview / alignment counterpart | `5be941927dc2025d3452d10a1338c32377f91217` ([upstream #3769](https://github.com/milvus-io/milvus-docs/pull/3769)) |
+| Milvus v3.0.x / merged source | `2cc671a9a2cd2154b4696da31447127c61eae941` ([alignment #3768](https://github.com/milvus-io/milvus-docs/pull/3768), [Go fix #3770](https://github.com/milvus-io/milvus-docs/pull/3770)) |
+| Milvus preview / alignment counterpart | `ed759e7e6ae3dd833d2e20105dd583a01d7b3a45` ([alignment #3769](https://github.com/milvus-io/milvus-docs/pull/3769), [Go fix #3771](https://github.com/milvus-io/milvus-docs/pull/3771)) |
 
 The group tracks v3.0.x. Preview is not a second zdoc lock source. Existing 16 page configurations and their locks must remain byte-for-byte unchanged. The retained dev snapshot has 16 active pages, and the three new candidates remain canonical CURRENT records targeting both Cloud manuals. Snapshot evidence is not a live Base read.
 
@@ -39,27 +39,27 @@ The only extra fork-review file is this plan. No tooling, workflows, generated c
 
 ## Task 1: Prepare immutable local inputs
 
-- [ ] Recheck origin/master and origin/dev. If either changes, record the new pins and inspect changes relevant to shared configuration and the three dev pages before continuing. Never overwrite the user's main checkout.
-- [ ] Install the pinned workspace in this exact worktree:
+- [x] Recheck origin/master and origin/dev. If either changes, record the new pins and inspect changes relevant to shared configuration and the three dev pages before continuing. Never overwrite the user's main checkout.
+- [x] Install the pinned workspace in this exact worktree:
 
 ```bash
 corepack enable
 pnpm install --frozen-lockfile
 ```
 
-- [ ] Create a separate complete-history Milvus clone; do not use the earlier shallow research clone for generation:
+- [x] Create a separate complete-history Milvus clone; do not use the earlier shallow research clone for generation:
 
 ```bash
 ONBOARD_EVIDENCE="$(cd .. && pwd)/analyzer-filters-onboarding-evidence-20261030"
 git clone --filter=blob:none --single-branch --branch v3.0.x --no-tags --sparse https://github.com/milvus-io/milvus-docs.git "$ONBOARD_EVIDENCE/milvus-full"
 git -C "$ONBOARD_EVIDENCE/milvus-full" sparse-checkout set site/en
 test "$(git -C "$ONBOARD_EVIDENCE/milvus-full" rev-parse --is-shallow-repository)" = false
-test "$(git -C "$ONBOARD_EVIDENCE/milvus-full" rev-parse refs/heads/v3.0.x)" = 7b8e6c91cbff9e9b455aa2f7a345f62d166a8cc2
+test "$(git -C "$ONBOARD_EVIDENCE/milvus-full" rev-parse refs/heads/v3.0.x)" = 2cc671a9a2cd2154b4696da31447127c61eae941
 ```
 
 If the tracking head has advanced, inspect the new source before updating the pin; do not force-move a checked-out branch. Reads of historical locks must succeed through complete ancestry.
 
-- [ ] Materialize the pinned dev input without a publication remote:
+- [x] Materialize the pinned dev input without a publication remote:
 
 ```bash
 mkdir "$ONBOARD_EVIDENCE/dev-input"
@@ -72,7 +72,7 @@ Retain an input manifest with source/tooling/dev SHAs and SHA-256 hashes of ever
 
 ## Task 2: Generate the 16-page baseline
 
-- [ ] Run the official whole-group command before changing configuration:
+- [x] Run the official whole-group command before changing configuration:
 
 ```bash
 pnpm docs-tooling shared-docs build --shared-docs "$ONBOARD_EVIDENCE/baseline/guides" --repo "$ONBOARD_EVIDENCE/milvus-full" --dev "$ONBOARD_EVIDENCE/dev-input" --out "$ONBOARD_EVIDENCE/baseline-output" > "$ONBOARD_EVIDENCE/baseline-build.log" 2>&1
@@ -82,13 +82,13 @@ Expect 32 successful outputs, two manuals for each existing page, and no planned
 
 ## Task 3: Add only the three registrations
 
-- [ ] Run the matrix before editing:
+- [x] Run the matrix before editing:
 
 ```bash
 pnpm test:for-change -- shared-docs/guides/pages/lowercase-filter/page.yaml shared-docs/guides/pages/ascii-folding-filter/page.yaml shared-docs/guides/pages/alphanumonly-filter/page.yaml shared-docs/guides/product-names.yaml
 ```
 
-- [ ] Create the three files with this exact common structure:
+- [x] Create the three files with this exact common structure:
 
 ```python
 from pathlib import Path
@@ -108,7 +108,7 @@ publish:
 
 No metadata override is needed initially. Check generated metadata against the pinned dev pages: no beta, version, BYOC or NEXT tags should be introduced. Title/description changes from using Milvus source must be explained separately from code changes.
 
-- [ ] Extend the existing `allow` array in `shared-docs/guides/product-names.yaml` by exactly these two entries, preserving the current check list and two existing allows:
+- [x] Extend the existing `allow` array in `shared-docs/guides/product-names.yaml` by exactly these two entries, preserving the current check list and two existing allows:
 
 ```yaml
   - 'Milvus 2.0 @ Scale! #AI #Vector_Databasé'
@@ -119,7 +119,7 @@ The quotes preserve the hash characters and full literal expected output. Never 
 
 ## Task 4: Generate candidate locks and all 19 pages locally
 
-- [ ] Copy the candidate group to evidence scratch and generate missing locks there only:
+- [x] Copy the candidate group to evidence scratch and generate missing locks there only:
 
 ```bash
 cp -R shared-docs/guides "$ONBOARD_EVIDENCE/candidate/guides"
@@ -129,14 +129,14 @@ pnpm docs-tooling shared-docs build --shared-docs "$ONBOARD_EVIDENCE/candidate/g
 
 Expect exactly three new scratch locks, each with current = next = merged v3.0.x source SHA. Existing lock bytes must match the baseline. Expect 38 outputs, 32 unchanged and six newly generated. Local lock files do not enter the implementation commit.
 
-- [ ] Compare every baseline MDX and `images.json` byte-for-byte with the corresponding candidate output. Abort the candidate if any of the original 32 MDX files changes. Preserve hashes and a list of the six added paths.
-- [ ] For each added output, assert exactly three Tabs groups, eight unique languages per group (24 TabItems), and a separate expected-output block. Check all eight input strings, authentication corrections, no unresolved variables or shared markers, and no NextChannel pair with equal locks. The existing MDX compilation path must succeed; counting fences alone is insufficient.
-- [ ] Check `./analyzer-overview#example-use` against the existing Guides and BYOC target heading and confirm Standard Tokenizer resolves to the shared target. Keep the ASCII folding Wikipedia URL. The target slug fallback and shared-page resolver already cover these links; do not add redundant mappings. Only if actual generation reports LINK_UNRESOLVED may `links.yaml` receive the exact verified destination, followed by matrix selection and whole-group regeneration.
-- [ ] Compare all six new outputs with their current dev counterparts, preserving a per-page difference report. Expected differences: source-owned prose/title/description, source markup converted to Cloud MDX, variable expansion, completed eight-language examples, explicit C#/NodeJS/Rust corrections and C++ imports, and removal of the obsolete Milvus heading suffix. Explain every other semantic difference. Preserve input, expected tokens, path/slug and no-tag behavior.
+- [x] Compare every baseline MDX and `images.json` byte-for-byte with the corresponding candidate output. Abort the candidate if any of the original 32 MDX files changes. Preserve hashes and a list of the six added paths.
+- [x] For each added output, assert exactly three Tabs groups, eight unique languages per group (24 TabItems), and a separate expected-output block. Check all eight input strings, authentication corrections, no unresolved variables or shared markers, and no NextChannel pair with equal locks. The existing MDX compilation path must succeed; counting fences alone is insufficient.
+- [x] Check `./analyzer-overview#example-use` against the existing Guides and BYOC target heading and confirm Standard Tokenizer resolves to the shared target. Keep the ASCII folding Wikipedia URL. The target slug fallback and shared-page resolver already cover these links; do not add redundant mappings. Only if actual generation reports LINK_UNRESOLVED may `links.yaml` receive the exact verified destination, followed by matrix selection and whole-group regeneration.
+- [x] Compare all six new outputs with their current dev counterparts, preserving a per-page difference report. Expected differences: source-owned prose/title/description, source markup converted to Cloud MDX, variable expansion, completed eight-language examples, explicit C#/NodeJS/Rust corrections and C++ imports, and removal of the obsolete Milvus heading suffix. Explain every other semantic difference. Preserve input, expected tokens, path/slug and no-tag behavior.
 
 ## Task 5: Validate and review the configuration diff
 
-- [ ] Execute the selector union in the exact implementation checkout:
+- [x] Execute the selector union in the exact implementation checkout:
 
 ```bash
 pnpm test:shared-docs
@@ -147,8 +147,8 @@ git diff --check
 
 The configuration-only selector does not require full Docusaurus site builds or production replay. The full shared-docs generation/MDX checks above are required. Never describe source-scanner, unit or MDX checks as a full site build, live SDK run, or activation test. If scope changes into publication tooling, stop and re-evaluate the matrix and real-artifact requirements.
 
-- [ ] Review the exact final diff, the 32 unchanged outputs, six new outputs, exact sample allows, links, metadata, all-page diagnostics and unchanged historical locks. Keep the evidence root. Do not modify tests to mirror these reversible registration files or weaken existing checks.
-- [ ] Commit only the three page configurations and two exact allow entries, plus a conditional justified link-map change. Preserve plan/implementation history on the fork draft. An implementation push or PR update requires the driver's concrete-command approval unless already granted for that exact action.
+- [x] Review the exact final diff, the 32 unchanged outputs, six new outputs, exact sample allows, links, metadata, all-page diagnostics and unchanged historical locks. Keep the evidence root. Do not modify tests to mirror these reversible registration files or weaken existing checks.
+- [x] Commit only the three page configurations and two exact allow entries, plus a conditional justified link-map change. Preserve plan/implementation history on the fork draft. An implementation push or PR update requires the driver's concrete-command approval unless already granted for that exact action.
 
 ## Task 6: Prepare a clean same-repository onboarding PR
 
@@ -177,3 +177,23 @@ No Base write, manual Fetch, Translation, upload, external maintainer message or
 - Baseline `pnpm test:shared-docs`: 60 files passed; 771 tests passed, four skipped. `pnpm typecheck` passed. `pnpm test:workflow-matrix`: 18 passed, zero skipped.
 - The actual scanner probe confirmed the exact two-phrase requirement. Existing Cloud Guides/BYOC files retain FALSE beta/version tags and an `example-use` target heading.
 - No candidate registrations, lock generation, whole-group candidate build, Docusaurus build or activation has been performed. Baseline test results do not establish candidate acceptance.
+
+## Implementation checkpoint and source defect (2026-10-30)
+
+- Four configuration files implemented locally; links.yaml and all generated/publication paths remain unchanged. Temporary locks exist only in the evidence directory.
+- Complete commit history was insufficient for the initial blob-filtered source clone: the reader required old locked blobs to be local. Reading `git archive <locked-SHA> site/en` for the five existing source commits hydrated those objects without changing refs. The first missing-blob log is retained; the baseline rerun succeeded.
+- Baseline generation: 32 outputs. Candidate generation: 38 outputs. All original 32 MDX files, 16 locks and the image manifest match byte-for-byte. Six new outputs each contain three eight-language groups and match all 24 expanded source examples exactly. Prose-only comparison with current Cloud is unchanged.
+- Candidate checks: shared-docs 60 files passed, 771 tests passed and four skipped; typecheck passed; workflow-matrix 18 passed. Actual product-name scanner rejects negative controls and accepts six generated pages. Full site, SDK execution and production activation were not tested.
+- **Source defect found and subsequently resolved:** all three inherited Go snippets use `/client/v2/milvusclient`, `NewRunAnalyzerOption(texts)` and `WithAnalyzerParams(string(bs))`. Official client/v2.6.5 declares variadic string input and map parameters, so the snippets are type-incompatible. Prior syntax-only checks did not detect this. Current Cloud uses the compatible v3/map form, so onboarding as-is would regress those examples. The initial independent review was corrected after a focused SDK comparison.
+- Proposed separate Milvus repair: use `/client/v3/milvusclient`, `NewRunAnalyzerOption(texts...)`, `WithAnalyzerParams(analyzerParams)` and remove the redundant JSON marshal/import. Official client/v3.0.0 at `c4412246516808be99a16dcefc43110cbf3180ae` confirms these signatures (client/go.mod and client/milvusclient/read_options.go). This is API-source evidence, not compilation.
+- Prepare and validate that source fix under a new authorization, merge it into the tracked source, then regenerate the three candidate scratch locks and whole-group outputs against the new approved source. Do not publish the current configuration candidate as ready.
+
+Source repair checkpoint: v3.0.x `90892ebc5f35b38a1421fc811a054280f01a7da1`, preview `adf867901be4c4996130cb1f0681d3891b7a3408`; six original programs reproduce both type failures against v2.6.5, six corrected programs compile against v3.0.0 (Go 1.26.4 darwin/arm64). No service calls. Regeneration still waits for an approved merged source.
+
+## Revalidation after the Go source repair
+
+The driver authorized creation and conditional merge of both Milvus repair PRs. Their exact approved heads passed CI and were merged: v3.0.x `2cc671a9a2cd2154b4696da31447127c61eae941`, preview `ed759e7e6ae3dd833d2e20105dd583a01d7b3a45`. The source checkout was fast-forwarded without rewriting history.
+
+Both the unchanged baseline group and new candidate group were generated against the repaired source. All existing 32 MDX outputs, 16 locks and images.json remain byte-identical; six new outputs have 24 language examples each, unchanged prose, preserved flags/links/expected tokens and no product-name diagnostics. Three negative product-name controls remain rejected. Each candidate scratch lock pins both channels to the repaired merge SHA.
+
+All six Go programs extracted from the generated MDX compile against client/v3.0.0 with Go 1.26.4, without execution. The source example defect no longer blocks onboarding. A clean upstream candidate at `1a9bf700c` contains one DCO-signed commit and exactly the four approved configuration paths, excluding this plan and local locks. The complete upstream diff passes the test selector. The real onboarding PR must still be same-repository so the bot can create locks and validate its exact pushed head.
