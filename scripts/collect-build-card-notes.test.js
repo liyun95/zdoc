@@ -808,3 +808,38 @@ test('shared publication summary renders typed image notices with both digests',
     assert.doesNotMatch(note, /SHARED_ANCHOR_UNKNOWN/);
   });
 });
+
+test('shared publication summary includes informational alias gaps in successful reports', () => {
+  withTempCwd(() => {
+    const directory = 'tmp/shared-report'; fs.mkdirSync(directory, {recursive: true});
+    fs.writeFileSync(path.join(directory, 'guides-shared-publication.json'), JSON.stringify({schema_version: 1,
+      generated_at: new Date().toISOString(), failures: [], notices: [],
+      information: ['Historical aliases could not be recovered from the shallow Fetch checkout.']}));
+
+    const note = require('./collect-build-card-notes').sharedPublicationNote({directory});
+
+    assert.equal(note, [
+      '# Guides shared pages',
+      '',
+      '- Information: Historical aliases could not be recovered from the shallow Fetch checkout.',
+    ].join('\n'));
+    assert.doesNotMatch(note, /failure|failed/i);
+  });
+});
+
+test('shared publication summary retains failures and notices alongside information', () => {
+  withTempCwd(() => {
+    const directory = 'tmp/shared-report'; fs.mkdirSync(directory, {recursive: true});
+    fs.writeFileSync(path.join(directory, 'guides-shared-publication.json'), JSON.stringify({schema_version: 1,
+      generated_at: new Date().toISOString(),
+      failures: [{record_id: 'rec', code: 'ACTIVATE_CHECK_FAILED', message: 'Old heading missing'}],
+      notices: [{code: 'IMAGE_SOURCE_CHANGED', page: 'sample', source_page: 'sample', url: 'https://origin.test/image.png', recorded: 'a'.repeat(64), observed: 'b'.repeat(64)}],
+      information: ['Historical aliases could not be recovered from the shallow Fetch checkout.']}));
+
+    const note = require('./collect-build-card-notes').sharedPublicationNote({directory});
+
+    assert.match(note, /ACTIVATE_CHECK_FAILED: rec: Old heading missing/);
+    assert.match(note, /IMAGE_SOURCE_CHANGED: sample: https:\/\/origin\.test\/image\.png/);
+    assert.match(note, /Information: Historical aliases could not be recovered from the shallow Fetch checkout\./);
+  });
+});

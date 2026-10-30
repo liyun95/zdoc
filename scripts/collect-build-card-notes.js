@@ -299,7 +299,8 @@ function sharedPublicationNote({directory} = {}) {
   return ['# Guides shared pages', '', ...report.failures.map(row => `- ${row.code}: ${row.record_id}: ${row.message}`),
     ...report.notices.map(row => row.code === 'IMAGE_SOURCE_CHANGED'
       ? `- ${row.code}: ${row.source_page || row.page}: ${row.url} → ${row.page}; recorded=${row.recorded}; observed=${row.observed}`
-      : `- ${row.code || 'SHARED_ANCHOR_UNKNOWN'}: ${row.source_page || row.source_token}: ${row.url} → ${row.page}`)].join('\n')
+      : `- ${row.code || 'SHARED_ANCHOR_UNKNOWN'}: ${row.source_page || row.source_token}: ${row.url} → ${row.page}`),
+    ...(Array.isArray(report.information) ? report.information.filter(line => typeof line === 'string').map(line => `- Information: ${line}`) : [])].join('\n')
 }
 
 const GUIDES_REPORTS = Object.freeze([
